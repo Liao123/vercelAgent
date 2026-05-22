@@ -15,4 +15,6 @@ export type ChatMessage = {
   content: string;
   /** data URL，用于展示与再次提交多轮对话 */
   images?: string[];
+  /** 实际调用的模型名（如 gpt-5.5） */
+  model?: string;
 };

@@ -13,7 +13,8 @@ export default function Home() {
           AI Chat × Vercel
         </h1>
         <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-          支持 GPT 中转或 DeepSeek（OpenAI 兼容接口）
+          鹊桥 GPT 中转 · 当前模型 GPT-5（
+          {process.env.OPENAI_MODEL ?? "gpt-5.5"}）
         </p>
       </header>
 

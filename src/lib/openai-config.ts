@@ -43,11 +43,11 @@ export function getApiConfig(): ApiConfig | null {
       chatUrl: resolveChatUrl(openaiBase),
       imagesUrl: resolveImagesUrl(openaiBase),
       responsesUrl: resolveResponsesUrl(openaiBase),
-      chatModel: process.env.OPENAI_MODEL ?? "gpt-5.4-mini",
+      chatModel: process.env.OPENAI_MODEL ?? "gpt-5.5",
       visionModel:
         process.env.OPENAI_VISION_MODEL ??
         process.env.OPENAI_MODEL ??
-        "gpt-5.4-mini",
+        "gpt-5.5",
       imageModel: process.env.OPENAI_IMAGE_MODEL ?? "gpt-image-1",
       provider: "OpenAI 兼容中转",
     };

@@ -89,6 +89,7 @@ export function Chat() {
           role: "assistant",
           content: data.content ?? "",
           images: Array.isArray(data.images) ? data.images : [],
+          model: typeof data.model === "string" ? data.model : undefined,
         },
       ]);
     } catch (err) {
@@ -122,7 +123,9 @@ export function Chat() {
             }`}
           >
             <span className="mb-1 block text-xs font-medium opacity-70">
-              {msg.role === "user" ? "你" : "助手"}
+              {msg.role === "user"
+                ? "你"
+                : `助手${msg.model ? ` · ${msg.model}` : ""}`}
             </span>
             <MessageBody content={msg.content} images={msg.images} />
           </div>
