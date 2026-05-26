@@ -7,7 +7,7 @@
 
 ## 环境变量
 
-### 方式 A：GPT 中转（不用 DeepSeek）
+### 方式 A：GPT 中转（不使用 DeepSeek）
 
 在 `.env.local` 或 Vercel 环境变量中配置：
 
