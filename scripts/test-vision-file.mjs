@@ -40,7 +40,7 @@ for (const model of ["gpt-5.4-mini", "gpt-5.4"]) {
     console.log("content preview:", String(msg?.content).slice(0, 200));
     console.log("keys:", msg ? Object.keys(msg) : "no msg");
     if (data.error) console.log("error:", data.error);
-  } catch (e) {
+  } catch {
     console.log("parse fail", text.slice(0, 200));
   }
 }

@@ -22,6 +22,11 @@
 - 当前目标不是普通聊天应用，而是逐步演进成开发智能体。
 - 当前已有架构规划文档：`docs/agent-architecture.md`。
 - 当前已有进度文档：`docs/agent-progress.md`。
+- 当前已有 agent 骨架目录：`src/agent`。
+- 当前 `/api/chat` 已开始通过 `ModelProvider` 调用模型。
+- 当前已有 `/api/agent/workspace` 只读工作区信息接口。
+- 当前已有 `/api/agent/tasks` 任务事件流雏形接口。
+- 当前已有 `/api/agent/git` 受控 Git 写操作接口。
 
 ## 用户目标
 
@@ -106,6 +111,70 @@ Codex CLI 是 Apache-2.0 开源项目，有成熟架构价值。但它主要是 
 - 文档里的工作项状态要及时更新。
 - 每次实现新模块前，先确认它对应 `docs/agent-progress.md` 中哪个工作项。
 - 当前阶段不要展开 Chrome DevTools 的元素读取、样式读取、network、console 和 design spec。
+- A004-A021 已完成，下一步从 A022 浏览器打开能力占位开始。
+- 当前 `npm run build` 通过。
+- 当前 `npm run lint` 已通过。
+- 当前 `npm run build` 仍有一个 Turbopack NFT tracing 警告，来源是 Next route 里引入 workspace 文件系统读取。当前不影响构建，后续拆出本地 agent-server 时处理。
+- 当前 patch 工具支持 unified diff 预览和应用，但应用必须使用与 patch hash 匹配的已批准 approval。
+- 当前 patch 工具暂不支持新建、删除、重命名、二进制文件和复杂 git patch。
+- 当前已有结构化文件变更工具：`src/agent/tools/file-mutations.ts` 和 `/api/agent/files`。
+- 结构化文件变更支持 `create`、`write`、`delete`、`rename`；preview 会生成 approval，apply 必须携带匹配且已批准的 `approvalId`。
+- 当前已有受控 Git 写操作工具：`src/agent/tools/git-tools.ts` 和 `/api/agent/git`。
+- Git 写操作支持 `branch`、`commit`、`push`；preview 会生成 `git.mutate:<hash>` approval，apply 必须携带匹配且已批准的 `approvalId`。
+- Agent Loop 当前新增 `git.mutation.prepare`，只允许模型准备 Git 写操作和审批请求，不允许直接执行 branch/commit/push。
+- 不要让模型绕过 `/api/agent/git` 直接执行 Git 写操作；branch/commit/push 后续即使进入更强 loop，也必须走审批和 trace。
+- Approval Store 当前会写入 `.agent-state/approvals.json`；不要只依赖内存 Map，Next route/runtime 实例之间内存不可靠。
+- Agent Loop 当前新增 `file.mutation.prepare`，只允许模型准备文件变更和审批请求，不允许直接 apply。
+- 新建/删除/重命名文件优先走 `/api/agent/files`；旧 patch 工具继续负责 unified diff 修改已有文件，后续再统一升级更完整 patch parser。
+- 当前已有 `src/agent/memory` 上下文管理骨架，可生成 system、project_rules、thread_memory、task_memory、turn_context、retrieved_context、tool_result 分层上下文。
+- 当前已有确定性上下文压缩骨架，可将多段 `ContextSection` 压缩成结构化 `ContextSummary`，并在任务事件中发出 `context.compacted`。
+- 当前压缩机制还不是模型级语义 compact，后续可接 ModelProvider 做更高质量摘要。
+- 当前已有 token 预算管理，默认最大输入 32000，预留输出 4000，并按 ContextSection 优先级筛选上下文。
+- 当前已有轻量项目索引器，可识别 page、layout、api_route、component、agent、script、config、doc、source、asset 等文件类型，并提取 route、imports、exports、API methods、业务关键词和摘要。
+- 当前项目索引还没有 SQLite 持久化、AST 精确分析和向量检索。
+- 当前已有中文需求定位文件能力，可基于项目索引输出候选文件、分数和命中原因。
+- 当前文件定位还是规则/关键词版，没有 embedding、AST 引用图和历史任务记忆加权。
+- 当前已有验证工具，只允许运行 package.json 中存在的白名单 npm scripts：lint、build、test、typecheck。
+- 当前项目有 lint/build 脚本，暂无 test/typecheck 脚本。
+- 当前已有最小开发闭环 `/api/agent/develop`，可串起需求、项目索引、文件定位、可选 patch 预览/应用、验证和总结。
+- 当前开发闭环还不会让模型自动生成 patch；修改文件需要调用方显式传入 patch，且 apply 时必须提供匹配 approval。
+- 当前已有模型驱动 Agent Loop：`src/agent/core/agent-loop.ts`、`src/agent/core/agent-loop-tools.ts` 和 `/api/agent/loop`。
+- Agent Loop 协议：模型每轮必须返回 JSON，形如 `{"action":"tool_call","tool":"...","args":{}}` 或 `{"action":"final","summary":"..."}`。
+- 当前 Agent Loop 开放工具：workspace.inspect、project.index、file.locate、file.list、file.read、file.search、git.status、git.diff、browser.open、file.mutation.prepare、git.mutation.prepare。
+- 当前 Agent Loop 不开放直接写文件、shell、Git 写操作、安装依赖；文件和 Git 的 prepare 工具只创建 approval，不执行 apply。
+- AgentPanel 当前有 `开发闭环` / `Agent Loop` 模式切换；开发闭环是固定流程，Agent Loop 是模型驱动工具循环。
+- AgentPanel 当前已有审批 UI：自动读取 `/api/agent/approvals`，展示 approval 列表，并支持批准/拒绝 pending approval。
+- 当前审批 UI 还没有结构化 diff/文件内容对比；只展示 title、reason、risk、action、status。后续做 Git 写操作前可以继续增强审批详情。
+- 当前前端 UI 已接入开发闭环事件流，首页右侧有 `AgentPanel`，可调用 `/api/agent/develop` 并展示事件 JSON。
+- 当前已有 Web 阶段内置浏览器占位：`src/agent/browser`、`/api/agent/browser` 和 `BrowserPanel`。它能记录/打开 URL，并用 iframe 在首页预览。
+- 当前浏览器目标状态会落到 `.agent-state/browser.json`，不要只依赖模块级内存；Next.js 不同 route/runtime 实例之间的内存状态不可靠。
+- 当前 `/api/agent/develop` 会识别用户需求中的第一个 URL，并发出 `browser.open` 工具事件，作为 AI 触发打开 URL 的最小链路。
+- Web 内置浏览器只是原型壳，会受 iframe 嵌入限制；后续 Electron/本地客户端阶段需要把它替换成 WebView/Chrome DevTools 能力。
+- 已补充后续 backlog：Trace Store 持久化、Workspace 项目选择、真正 Agent Loop、完整文件修改能力、Git 写操作、多层项目规则合并、前端 UI 接 Agent 事件流。
+- 当前 AgentPanel 还是调试视图，尚未做精细化 diff/approval 交互，也未接 patch 输入。
+- 当前 Trace Store 会同时写入内存和 `.agent-traces/` 本地 JSON 文件，并可通过 `/api/agent/traces` 查询。
+- `.agent-traces/` 已加入 `.gitignore`，不要提交运行 trace。
+- 当前 Trace 持久化还不是 SQLite；如果后续需要复杂查询、过滤、分页，再升级。
+- 当前支持通过 `/api/agent/workspace` 和 AgentPanel 手动设置 workspace 路径，配置落在 `.agent-state/workspace.json`。
+- `.agent-state/` 已加入 `.gitignore`，不要提交本地 workspace 配置。
+- 当前 Workspace 选择是 Web 阶段的路径输入方案；真正系统目录选择器留到 Electron 或本地客户端。
+- 当前项目规则读取支持多层 `AGENTS.md`：会递归读取 workspace 内的 `AGENTS.md`，跳过 `.git`、`.next`、`.agent-state`、`.agent-traces`、`node_modules`、`dist`、`build`、`coverage`。
+- 规则文件对象包含 `path`、`content`、`truncated`、`scopePath`、`depth`、`source`；`selectProjectRulesForPath` 可按目标文件选择适用规则。
+- 根目录 `README.md` 和 `CLAUDE.md` 仍作为全局规则/项目背景读取，不按目录 scope 递归。
+- AgentPanel 的 Workspace 区域需要保留明确的读取/设置反馈；如果用户说“设置按钮点不动”，优先检查路径输入、接口返回和 UI 状态提示。
+- 产品方向上应预留桌面端。浏览器环境无法像 Codex 桌面端那样可靠弹出系统目录选择器并把本机路径交给服务端；Electron/本地客户端更适合承载项目选择、本地文件读写、命令执行、Chrome DevTools 连接和权限沙箱。
+- 迁移策略不是立刻重写成 Electron，而是继续保持 Agent Runtime 与 UI 解耦，先把 `src/agent` 能力做稳，再让 Web UI 和 Electron UI 共享同一套本地 runtime/API。
+- 当前优先级建议：下一步增强审批详情展示，尤其是文件 diff 和 Git status/diff/remote/目标分支；然后再评估 shell 工具审批或 Electron/本地客户端方案。
+- 明天接续入口：先做 A034 审批详情快照，再做 A035 审批后的执行闭环。
+- A034 的关键原因：当前 approval 只保存授权动作和状态，没有持久化 operation/preview；页面刷新后无法只靠 approval 列表还原文件 diff 或 Git 命令详情。
+- A034 推荐做法：给 ApprovalRecord 增加可 JSON 持久化的详情字段，例如 `details` 或 `metadata`，由 `/api/agent/files` 和 `/api/agent/git` 的 preview 写入。
+- A034 文件详情应包含：operation type、path/fromPath/toPath、existsBefore/existsAfter、oldSize/newSize、oldContent/newContent 的安全摘要或截断版本。
+- A034 Git 详情应包含：operation type、preview command、branchName/branch/remote/setUpstream、risk notes。后续可补 git status/diff 快照。
+- A035 的关键原因：当前前端可以批准/拒绝 approval，但批准后没有 UI apply 闭环；apply API 仍需要原始 operation。
+- A035 安全设计：`批准` 和 `执行` 必须是两个动作。批准只改变 approval 状态，执行必须由用户再次点击触发，不能由模型或 UI 自动 apply。
+- A035 测试边界：如需测试 Git apply，优先只测 branch；不要测试 commit/push，除非用户重新明确授权。不要安装依赖、不要删除文件、不要改 `.env` 或密钥文件。
+- 暂时不引入 LangChain。当前项目更需要 Codex-like 的轻量 Agent Runtime、审批、trace、patch 和上下文控制；LangChain 可能增加抽象复杂度，等后续确实需要现成 retriever/graph 编排时再评估。
+- 暂时不引入 LangGraph。当前还没有复杂多节点状态机和多 agent graph 需求，先把自研 Agent Runtime 主链路跑通；等需要可恢复 graph、分支执行或多 agent 编排时再评估。
 
 ## 待补充信息
 

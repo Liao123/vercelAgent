@@ -3,6 +3,8 @@
  */
 "use client";
 
+/* eslint-disable @next/next/no-img-element */
+
 import { FormEvent, useRef, useState } from "react";
 import { MessageBody } from "@/components/message-body";
 import type { ChatMessage } from "@/lib/chat-types";
