@@ -11,8 +11,10 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   let body: {
     userRequest?: string;
+    referenceImages?: string[];
     maxIterations?: number;
     model?: string;
+    threadId?: string;
   };
   try {
     body = await request.json();
@@ -20,17 +22,36 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid request body." }, { status: 400 });
   }
 
-  const userRequest = body.userRequest?.trim();
-  if (!userRequest) {
-    return Response.json({ error: "userRequest is required." }, { status: 400 });
+  const userRequest = body.userRequest?.trim() ?? "";
+
+  const referenceImages = Array.isArray(body.referenceImages)
+    ? body.referenceImages.filter(
+        (item): item is string =>
+          typeof item === "string" && item.startsWith("data:image/"),
+      )
+    : undefined;
+
+  if (!userRequest && (!referenceImages || referenceImages.length === 0)) {
+    return Response.json(
+      { error: "userRequest or referenceImages is required." },
+      { status: 400 },
+    );
   }
 
   const writer = createAgentEventStream();
 
+  const threadId =
+    typeof body.threadId === "string" && body.threadId.trim()
+      ? body.threadId.trim()
+      : undefined;
+
   void runAgentLoop({
-    userRequest,
+    userRequest: userRequest || "请根据附图完成开发任务。",
+    referenceImages:
+      referenceImages && referenceImages.length > 0 ? referenceImages : undefined,
     maxIterations: body.maxIterations,
     model: body.model,
+    threadId,
     onEvent: (event) => writer.emit(event),
   })
     .then(() => {

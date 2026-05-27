@@ -9,3 +9,4 @@ export * from "@/agent/tools/git-tools";
 export * from "@/agent/tools/patch-tools";
 export * from "@/agent/tools/path-safety";
 export * from "@/agent/tools/project-rules";
+export * from "@/agent/tools/shell-tools";

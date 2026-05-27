@@ -8,6 +8,8 @@ import { extractAssistantText } from "@/lib/extract-assistant-text";
 import type { ApiConfig } from "@/lib/openai-config";
 import { parseAssistantPayload } from "@/lib/parse-message";
 import type {
+  CompactInput,
+  CompactOutput,
   ModelInput,
   ModelOutput,
   ModelProvider,
@@ -147,5 +149,42 @@ export class ChatCompletionsProvider implements ModelProvider {
     }
 
     yield { type: "completed" };
+  }
+
+  async compact(input: CompactInput): Promise<CompactOutput> {
+    const model = this.config.chatModel;
+    const output = await this.generate({
+      messages: [
+        {
+          role: "system",
+          content: [
+            "You merge coding-agent history into compact memory for the next model turn.",
+            "Output plain text with exactly these sections:",
+            "## Summary",
+            "(bullet points of what was done and learned)",
+            "## Changed files",
+            "(one path per line, or \"none\")",
+            "Preserve approval IDs, errors, branch names, and blockers from pinned facts.",
+            "Do not invent facts. Drop duplicate file reads.",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: [
+            `User task:\n${input.userRequest}`,
+            input.pinnedFacts ? `\nPinned facts (authoritative):\n${input.pinnedFacts}` : "",
+            input.priorMemory
+              ? `\nPrior compacted memory:\n${input.priorMemory}`
+              : "",
+            `\nNew steps to merge:\n${JSON.stringify(input.sections, null, 2)}`,
+          ].join("\n"),
+        },
+      ],
+      model,
+      maxTokens: input.maxTokens ?? 1_100,
+      temperature: 0,
+    });
+
+    return { summary: output.content.trim(), model: output.model };
   }
 }

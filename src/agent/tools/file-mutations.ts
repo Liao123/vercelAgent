@@ -7,11 +7,9 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { contentSnapshot } from "@/agent/approval/content-snapshot";
 import { createApprovalRequest, requireApprovedApproval } from "@/agent/approval";
-import type {
-  ApprovalContentSnapshot,
-  ApprovalFileMutationPreview,
-} from "@/agent/types";
+import type { ApprovalFileMutationPreview } from "@/agent/types";
 import {
   resolveInsideWorkspace,
   toWorkspaceRelative,
@@ -168,19 +166,6 @@ function normalizeOperation(
   return {
     type: "delete",
     path: validateRelativePath("path", operation.path),
-  };
-}
-
-const CONTENT_SNAPSHOT_LIMIT = 12_000;
-
-function contentSnapshot(content: string): ApprovalContentSnapshot {
-  const truncated = content.length > CONTENT_SNAPSHOT_LIMIT;
-  const text = truncated ? content.slice(0, CONTENT_SNAPSHOT_LIMIT) : content;
-  return {
-    text,
-    length: content.length,
-    lineCount: content.length === 0 ? 0 : content.split(/\r\n|\r|\n/).length,
-    truncated,
   };
 }
 

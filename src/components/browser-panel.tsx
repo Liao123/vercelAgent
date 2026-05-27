@@ -21,7 +21,7 @@ function normalizeUrlInput(input: string): string {
   return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
 }
 
-export function BrowserPanel() {
+export function BrowserPanel({ embedded = false }: { embedded?: boolean }) {
   const [urlInput, setUrlInput] = useState("http://localhost:3000");
   const [target, setTarget] = useState<BrowserTargetView | null>(null);
   const [loading, setLoading] = useState(false);
@@ -94,16 +94,22 @@ export function BrowserPanel() {
     }
   }
 
+  const shellClass = embedded
+    ? "flex min-h-0 flex-col gap-2"
+    : "flex h-full min-h-0 flex-col gap-3 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950";
+
   return (
-    <section className="flex h-full min-h-0 flex-col gap-3 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-      <div>
-        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-          内置浏览器
-        </h2>
-        <p className="mt-1 text-xs text-zinc-500">
-          当前是 Web 预览壳；后续桌面端接 WebView 和 Chrome DevTools。
-        </p>
-      </div>
+    <section className={shellClass}>
+      {!embedded && (
+        <div>
+          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+            内置浏览器
+          </h2>
+          <p className="mt-1 text-xs text-zinc-500">
+            当前是 Web 预览壳；后续桌面端接 WebView 和 Chrome DevTools。
+          </p>
+        </div>
+      )}
 
       <form onSubmit={openUrl} className="flex gap-2">
         <input
@@ -134,14 +140,16 @@ export function BrowserPanel() {
         </p>
       )}
 
-      <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900">
+      <div
+        className={`min-h-0 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 ${embedded ? "flex-1" : "flex-1"}`}
+      >
         {target ? (
           <iframe
             key={target.version}
             src={target.url}
             title="内置浏览器预览"
             sandbox="allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
-            className="h-full min-h-[420px] w-full bg-white"
+            className={`h-full w-full bg-white ${embedded ? "min-h-[200px]" : "min-h-[420px]"}`}
             onLoad={() => setFrameFailed(false)}
             onError={() => setFrameFailed(true)}
           />

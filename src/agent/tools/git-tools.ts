@@ -7,8 +7,12 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
+import { contentSnapshot } from "@/agent/approval/content-snapshot";
 import { createApprovalRequest, requireApprovedApproval } from "@/agent/approval";
-import type { ApprovalGitMutationPreview } from "@/agent/types";
+import type {
+  ApprovalGitMutationPreview,
+  ApprovalGitWorkspaceSnapshot,
+} from "@/agent/types";
 
 const execFileAsync = promisify(execFile);
 
@@ -186,11 +190,42 @@ function commandText(args: string[]): string {
     .join(" ")}`;
 }
 
-export function prepareGitMutation(input: {
+async function collectGitWorkspaceSnapshot(
+  cwd: string,
+  operation: GitMutationOperation,
+): Promise<ApprovalGitWorkspaceSnapshot | undefined> {
+  try {
+    const status = await getGitStatus(cwd);
+    const diff = await getGitDiff(cwd);
+    const branchResult = await runGit(cwd, ["branch", "--show-current"]);
+    const branch = branchResult.stdout.trim() || undefined;
+    let remoteUrl: string | undefined;
+    if (operation.type === "push") {
+      const remote = operation.remote ?? "origin";
+      const remoteResult = await runGit(cwd, ["remote", "get-url", remote]);
+      remoteUrl = remoteResult.stdout.trim() || undefined;
+    }
+    return {
+      branch,
+      status: contentSnapshot(
+        [status.stdout, status.stderr].filter(Boolean).join("\n"),
+      ),
+      diff: contentSnapshot(
+        [diff.stdout, diff.stderr].filter(Boolean).join("\n"),
+      ),
+      remoteUrl,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export async function prepareGitMutation(input: {
+  cwd: string;
   taskId: string;
   operation: GitMutationOperation;
   createApproval?: boolean;
-}): PreparedGitMutation {
+}): Promise<PreparedGitMutation> {
   const operation = normalizeGitMutation(input.operation);
   const requiredApprovalAction = getGitMutationApprovalAction(operation);
   const operationHash = requiredApprovalAction.replace("git.mutate:", "");
@@ -205,10 +240,12 @@ export function prepareGitMutation(input: {
   if (operation.type === "push") {
     notes.push("Push sends local commits to a remote repository.");
   }
+  const workspace = await collectGitWorkspaceSnapshot(input.cwd, operation);
   const preview: ApprovalGitMutationPreview = {
     command: commandText(args),
     risk,
     notes,
+    workspace,
   };
 
   return {
@@ -240,7 +277,8 @@ export async function applyGitMutation(input: {
   operation: GitMutationOperation;
   approvalId: string;
 }): Promise<AppliedGitMutation> {
-  const prepared = prepareGitMutation({
+  const prepared = await prepareGitMutation({
+    cwd: input.cwd,
     taskId: input.taskId,
     operation: input.operation,
   });

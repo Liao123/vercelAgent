@@ -65,7 +65,8 @@ export function recordToolCall(
     state.lastToolError = error;
     if (
       toolName === "file.replace.prepare" ||
-      toolName === "file.mutation.prepare"
+      toolName === "file.mutation.prepare" ||
+      toolName === "patch.prepare"
     ) {
       state.lastPrepareError = error;
     }
@@ -77,13 +78,15 @@ export function recordToolCall(
     state.lastToolError = message;
     if (
       toolName === "file.replace.prepare" ||
-      toolName === "file.mutation.prepare"
+      toolName === "file.mutation.prepare" ||
+      toolName === "patch.prepare"
     ) {
       state.lastPrepareError = message;
     }
   } else if (
     toolName === "file.replace.prepare" ||
-    toolName === "file.mutation.prepare"
+    toolName === "file.mutation.prepare" ||
+    toolName === "patch.prepare"
   ) {
     state.lastPrepareError = undefined;
   }
@@ -111,7 +114,7 @@ export function buildRuntimeCheckpoint(state: AgentLoopRunState): string {
 
   if (state.likelyEditRequest && !state.approvalPrepared) {
     lines.push(
-      "Required for this task: produce exactly one approval via file.replace.prepare or file.mutation.prepare.",
+      "Required for this task: produce exactly one approval via file.replace.prepare, file.mutation.prepare, or patch.prepare.",
       "Do not action=final until approval exists or you have exhausted reasonable tool strategies.",
       "Suggested flow: file.locate → file.read → (optional file.search) → file.replace.prepare with exact search from disk.",
     );

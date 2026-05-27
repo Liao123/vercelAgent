@@ -28,8 +28,27 @@ export type ModelStreamEvent =
   | { type: "completed"; output?: ModelOutput }
   | { type: "error"; error: string };
 
+export type CompactInput = {
+  userRequest: string;
+  priorMemory?: string;
+  sections: Array<{
+    title: string;
+    kind: string;
+    excerpt: string;
+  }>;
+  pinnedFacts?: string;
+  maxTokens?: number;
+};
+
+export type CompactOutput = {
+  summary: string;
+  model: string;
+};
+
 export interface ModelProvider {
   name: string;
   generate(input: ModelInput): Promise<ModelOutput>;
   stream(input: ModelInput): AsyncIterable<ModelStreamEvent>;
+  /** 可选：专用上下文压缩（Codex/Cursor 式 compact 模型调用） */
+  compact?(input: CompactInput): Promise<CompactOutput>;
 }

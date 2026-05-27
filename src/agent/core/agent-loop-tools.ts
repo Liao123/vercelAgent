@@ -11,11 +11,14 @@ import {
   type ProjectIndex,
 } from "@/agent/indexer";
 import {
+  applyUnifiedPatch,
+  createPatchApproval,
   getGitDiff,
   getGitStatus,
   listDirectory,
   prepareFileMutation,
   prepareGitMutation,
+  prepareShellCommand,
   readTextFile,
   searchText,
   type FileMutationOperation,
@@ -35,7 +38,9 @@ export type AgentLoopToolName =
   | "browser.open"
   | "file.replace.prepare"
   | "file.mutation.prepare"
-  | "git.mutation.prepare";
+  | "git.mutation.prepare"
+  | "shell.command.prepare"
+  | "patch.prepare";
 
 export type AgentLoopToolSpec = {
   name: AgentLoopToolName;
@@ -430,11 +435,67 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
     async execute(args, context) {
       const operation = parseGitMutationOperation(args);
       return {
-        result: prepareGitMutation({
+        result: await prepareGitMutation({
+          cwd: context.workspace.rootPath,
           taskId: context.taskId,
           operation,
           createApproval: true,
         }),
+      };
+    },
+  },
+  {
+    name: "shell.command.prepare",
+    description:
+      "Prepare a whitelisted npm script (lint, build, test, typecheck) and create an approval. Does not run the command.",
+    args: {
+      script: "One of: lint, build, test, typecheck. Must exist in package.json.",
+    },
+    async execute(args, context) {
+      const script = stringArg(args, "script") as
+        | "lint"
+        | "build"
+        | "test"
+        | "typecheck";
+      if (!["lint", "build", "test", "typecheck"].includes(script)) {
+        throw new Error("script must be lint, build, test, or typecheck.");
+      }
+      return {
+        result: await prepareShellCommand({
+          rootPath: context.workspace.rootPath,
+          taskId: context.taskId,
+          script,
+          createApproval: true,
+        }),
+      };
+    },
+  },
+  {
+    name: "patch.prepare",
+    description:
+      "Submit a unified diff (modify/create/delete/rename) and create an approval. Use for multi-file or /dev/null patches. Does not apply until user approves.",
+    args: {
+      patch: "Full unified diff text with ---/+++ headers and @@ hunks.",
+    },
+    async execute(args, context) {
+      const patch = stringArg(args, "patch");
+      const patchResult = await applyUnifiedPatch({
+        rootPath: context.workspace.rootPath,
+        patch,
+        mode: "preview",
+      });
+      const approval = createPatchApproval({
+        taskId: context.taskId,
+        patch,
+        result: patchResult,
+      });
+      const changedCount = patchResult.files.filter((file) => file.changed).length;
+      return {
+        result: {
+          ...patchResult,
+          approval,
+          summary: `Patch 预览 · ${changedCount} / ${patchResult.files.length} 个文件有变化`,
+        },
       };
     },
   },

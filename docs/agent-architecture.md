@@ -41,9 +41,9 @@
 
 当前关键文件：
 
-- `src/app/api/chat/route.ts`：聊天 API 路由
-- `src/components/chat.tsx`：聊天主界面
-- `src/lib/*`：消息转换、图片处理、模型配置等工具
+- `src/app/page.tsx`、`src/components/agent-workspace.tsx`：Agent 工作区 UI
+- `src/app/api/agent/*`：Agent API（loop、审批、工具等）
+- `src/agent/model/chat-completions-provider.ts`：OpenAI 兼容模型调用（非聊天页面）
 
 重要约束：
 

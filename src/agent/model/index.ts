@@ -21,6 +21,8 @@ export function createConfiguredModelProvider(): ModelProvider | null {
 }
 
 export type {
+  CompactInput,
+  CompactOutput,
   ModelInput,
   ModelOutput,
   ModelProvider,

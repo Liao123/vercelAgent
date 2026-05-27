@@ -1,6 +1,6 @@
 # 开发智能体本地记忆
 
-更新时间：2026-05-27
+更新时间：2026-05-27（今日收工）
 
 本文档用于记录项目长期事实、架构决策、用户偏好和后续开发注意事项。它不是聊天记录，也不是密钥存储。
 
@@ -14,7 +14,7 @@
 
 ## 项目事实
 
-- 当前项目路径：`D:\案例\vec-next`
+- 当前开发仓库路径：`D:\workspace\vercelAgent`（文档早期曾写 `D:\案例\vec-next`，以实际 workspace 为准）。
 - 当前项目是 Next.js + React + TypeScript 应用。
 - 当前 Next.js 版本：16.2.6。
 - 当前 React 版本：19.2.4。
@@ -23,7 +23,7 @@
 - 当前已有架构规划文档：`docs/agent-architecture.md`。
 - 当前已有进度文档：`docs/agent-progress.md`。
 - 当前已有 agent 骨架目录：`src/agent`。
-- 当前 `/api/chat` 已开始通过 `ModelProvider` 调用模型。
+- 模型调用统一走 `ModelProvider`（`chat-completions-provider`），不再提供独立 `/api/chat` 聊天路由。
 - 当前已有 `/api/agent/workspace` 只读工作区信息接口。
 - 当前已有 `/api/agent/tasks` 任务事件流雏形接口。
 - 当前已有 `/api/agent/git` 受控 Git 写操作接口。
@@ -78,6 +78,93 @@
 决策：
 
 项目必须实现上下文管理、上下文压缩和 token 预算管理。
+
+### D013：Agent Loop 上下文压缩策略（A051）
+
+决策：
+
+- Loop 每次模型调用前走 `compactAgentLoopMessages`：固定保留头部（system + 原始 user）与尾部最近 12 条消息；中间段合并为单条 `[COMPACTED_MEMORY]`。
+- 超预算时先确定性 `compressContext`，仍过大且 provider 可用时再语义 compact（一次额外模型调用）。
+- 工具结果入 messages 前经 `shapeToolResultForObservation` 截断，避免单次 `file.read` 撑爆上下文。
+- 环境变量 `AGENT_LOOP_SEMANTIC_COMPACT=false` 可关闭语义层，仅保留确定性压缩。
+
+原因：
+
+对齐 Cursor/Codex Agent 的长任务行为：旧 tool 观测可丢细节但保留路径/错误/审批事实；尾部保留最近推理与工具结果供模型继续。
+
+### D014：滚动任务记忆与 Pinned Facts（A052）
+
+决策：
+
+- 压缩产物为结构化 `[COMPACTED_MEMORY]`：`## Pinned facts` / `## Summary` / `## Changed files`。
+- 再次压缩时解析 prior memory，与新一轮 evicted 中间段合并（确定性 + `ModelProvider.compact`），不重复全文塞回模型。
+- `approval_*`、路径、分支、错误从 evicted 消息抽取进 Pinned，永不依赖模型“记得”。
+- `file.*.prepare` / `patch.prepare` 观测只保留 `approvalId` 等关键字段，避免审批预览重复占 token。
+
+原因：
+
+贴近 Cursor/Codex 的 rolling compaction + pinned context，而不是单次全量摘要。
+
+### D015：Trace 全文记忆 + Thread 跨任务（A053）
+
+决策：
+
+- 每次压缩把完整 `[COMPACTED_MEMORY]` 写入 `context.compacted.memoryContent`（Trace 可复盘）。
+- 同步写入 `.agent-state/thread-memory.json`，按 `threadId` 索引。
+- 新 Task 传 `threadId` 时：system → 滚动记忆 → 当前 user 请求 → 反思/工具 tail。
+- UI 默认勾选「延续会话记忆」；「新会话」清空 threadId。
+
+原因：
+
+对齐 Cursor/Codex 的 session/thread 级记忆，而不是每个 Task 从零开始。
+
+### D018：开发闭环不再投入（2026-05-27 用户确认）
+
+决策：
+
+- 日常开发**只使用 Agent Loop**（`/api/agent/loop`）。
+- **开发闭环**（`/api/agent/develop`）为早期无模型流水线：索引 → 规则定位文件 → 仅当 API 传入 patch 时才改文件；**不调用 LLM**，界面自然语言不会自动生成代码。
+- UI 保留 Loop/闭环切换与 `AgentRunModeHint` 即可；**不必再增强 develop 路线**。
+
+### 收工快照（2026-05-27，便于明天接续）
+
+**上下文 / 会话相关代码**：
+
+| 模块 | 路径 |
+| --- | --- |
+| Loop 压缩 | `src/agent/memory/loop-context-compactor.ts`、`loop-pinned-facts.ts` |
+| 持久化 | `src/agent/memory/thread-memory-store.ts`、`thread-meta-store.ts`、`agent-thread-index.ts` |
+| Loop 接入 | `src/agent/core/agent-loop.ts`（每轮 generate 前 compact；`threadId` 注入记忆） |
+| API | `/api/agent/loop`、`/api/agent/threads`（GET/PATCH/DELETE）、`/api/agent/thread-memory` |
+| UI | `agent-session-sidebar.tsx`、`agent-compacted-memory-panel.tsx`、`agent-run-mode-hint.tsx` |
+
+**环境变量**：`AGENT_LOOP_SEMANTIC_COMPACT=false` 可关闭语义压缩（仅确定性）。
+
+**明天优先验证**：长任务压缩 + 侧栏「继续」+ 审批 ID 是否在 `[COMPACTED_MEMORY]` 的 Pinned 段保留。
+
+### D016：会话侧栏与记忆摘要索引（A054）
+
+决策：
+
+- 左栏上半「会话」来自 `buildAgentThreadList`（thread-memory + traces 合并）。
+- 下半「任务」可按选中会话筛选；点会话 = 设置 `threadId` 并开启延续记忆。
+- 列表展示 `summaryPreview`（压缩时写入 thread-memory 与 trace.thread.contextSummary）。
+
+原因：
+
+用户需要像 Cursor 一样选历史会话继续，而不是只在任务粒度翻 Trace。
+
+### D017：会话重命名 / 删记忆 / 一键继续（A055）
+
+决策：
+
+- 自定义标题存 `thread-meta.json`，列表优先展示 `customTitle`。
+- `DELETE /api/agent/threads?threadId=` 只删 `thread-memory` 条目，Trace 保留。
+- 侧栏「继续」= 选中 threadId + 延续记忆 + 输入框预填 `lastUserRequest`。
+
+原因：
+
+对齐 Cursor 会话管理：可改名、可清记忆重来、可一键接着聊。
 
 原因：
 
@@ -142,19 +229,45 @@ Codex CLI 是 Apache-2.0 开源项目，有成熟架构价值。但它主要是 
 - Agent Loop 协议：模型每轮必须返回 JSON，形如 `{"action":"tool_call","tool":"...","args":{}}` 或 `{"action":"final","summary":"..."}`。
 - 当前 Agent Loop 开放工具：workspace.inspect、project.index、file.locate、file.list、file.read、file.search、git.status、git.diff、browser.open、file.replace.prepare、file.mutation.prepare、git.mutation.prepare。
 - 当前 Agent Loop 不开放直接写文件、shell、Git 写操作、安装依赖；文件和 Git 的 prepare 工具只创建 approval，不执行 apply。真正 apply 仍需要用户在审批 UI 中先批准、再点击执行。
-- AgentPanel 当前有 `开发闭环` / `Agent Loop` 模式切换；默认是 `Agent Loop`，因为固定开发闭环不会自动生成改动。开发闭环保留作调试/定位流程。
+- AgentPanel 仍有 `开发闭环` / `Agent Loop` 切换；**默认 Loop**。用户 2026-05-27 确认不必再投入闭环；见 D018。
 - AgentPanel 当前已有审批 UI：自动读取 `/api/agent/approvals`，展示 approval 列表，并支持批准/拒绝 pending approval。
 - 当前审批 UI 已能展示 A034 的结构化审批详情：文件变更会显示操作类型、路径、大小变化和截断 before/after；Git 写操作会显示操作类型、目标参数、预览命令和风险 notes。
 - 当前审批 UI 已接入 A035 执行闭环：`批准` 和 `执行` 是两个动作，approved 且未成功执行的 approval 才显示 `执行`，执行结果会持久化并在刷新后继续展示。
 - A036 已修复一个真实可用性问题：用户在页面说“把首页鹊桥去掉”时，旧默认开发闭环只定位/总结，不会真正生成改动。现在默认走 Agent Loop，并新增 `file.replace.prepare` 精确文本替换工具。
 - A036 兜底能力：对“首页 + 去掉/删除/移除某段文本”的请求，运行时会稳定准备 `src/app/page.tsx` 写入 approval；这只生成审批，不自动写文件。
-- 当前前端 UI 已接入开发闭环事件流，首页右侧有 `AgentPanel`，可调用 `/api/agent/develop` 并展示事件 JSON。
-- 当前已有 Web 阶段内置浏览器占位：`src/agent/browser`、`/api/agent/browser` 和 `BrowserPanel`。它能记录/打开 URL，并用 iframe 在首页预览。
+- 当前首页布局（A050）：左栏项目+任务历史 → **中栏**（上：活动流+涉及文件+内联待授权，**下：固定输入框**）→ **右栏**任务规划步骤+运行状态+内置浏览器显示/隐藏。不再在 Agent 首页挂载通用 `Chat` 组件。
+- 已移除旧版通用聊天 UI（`chat.tsx`、`/api/chat`、`/api/images`、文生图链路）。识图仅用于 Agent：`referenceImages` + `readImageFile`。
+- Agent Loop 附图：`buildAgentUserContent` + `/api/agent/loop` 的 `referenceImages`；最多 4 张。开发闭环暂不接图。
+- 活动流由 `src/components/agent-event-timeline.tsx` 渲染为可读卡片；`layout=default` 时仍保留 JSON 分组调试视图。
+- 当前已有 Web 阶段内置浏览器占位：`src/agent/browser`、`/api/agent/browser` 和 `BrowserPanel`。它在 Agent Workspace 底部辅助面板中打开。
 - 当前浏览器目标状态会落到 `.agent-state/browser.json`，不要只依赖模块级内存；Next.js 不同 route/runtime 实例之间的内存状态不可靠。
 - 当前 `/api/agent/develop` 会识别用户需求中的第一个 URL，并发出 `browser.open` 工具事件，作为 AI 触发打开 URL 的最小链路。
 - Web 内置浏览器只是原型壳，会受 iframe 嵌入限制；后续 Electron/本地客户端阶段需要把它替换成 WebView/Chrome DevTools 能力。
 - 已补充后续 backlog：Trace Store 持久化、Workspace 项目选择、真正 Agent Loop、完整文件修改能力、Git 写操作、多层项目规则合并、前端 UI 接 Agent 事件流。
-- 当前 AgentPanel 还是调试视图，尚未做精细化 diff/approval 交互，也未接 patch 输入。
+- A037/A038 已完成：UI 更接近 Codex/Cursor Agent 单工作区；patch preview 审批也写入 `details` 并可通过 `/api/agent/approvals/execute` 执行。
+- A039 已完成：审批详情使用 `DiffView` 行级 +/- 高亮；活动流支持类型筛选与「调试 JSON」；Git commit/push 有高风险提示横幅。
+- A040 已完成：Git 审批 preview 含 `workspace` 快照（status、diff、branch、push 的 remoteUrl）。
+- A041 已完成：Shell 仅白名单 `npm run lint|build|test|typecheck`，走 `shell.command.prepare` 与 execute 闭环；Push 在 UI 需二次确认。
+- A042 已完成：Agent Workspace「历史」面板可浏览 `.agent-traces/`（`/api/agent/traces` + `TracePanel`）。
+- A043 已完成：unified diff 支持新建/删除/重命名（`---`/`+++` 含 `/dev/null`），与 file mutation 互补。
+- A044 已完成：`DiffView` 默认 split 左右对照（可切统一 diff）；活动流合并工具起止事件、支持折叠与结果摘要。
+- A045 已完成：Agent Loop 工具 `patch.prepare` 可提交 unified diff 走 `patch_apply` 审批（preview only，执行仍靠用户点「执行」）。
+- A046 已完成：任务 SSE 含 `trace.linked`；主区可跳转历史 Trace；历史可「恢复到主工作区」并筛本次任务审批；`/api/agent/traces?taskId=` 按任务查 trace。
+- A047 已完成：patch 审批用 `PatchFilesDiffView` 多文件 Tab；`DiffView` split 模式带变更前/后行号对齐。
+- A048 已完成：活动流/审批展示 patch 多文件摘要；Patch 原文默认折叠；`patch.prepare` 会 `createPatchApproval` 并返回 `approval`。
+
+### D012：三栏工作区（A049，2026-05 落地）
+
+决策：
+
+A049 将首页改为 Cursor/Codex 向三栏：左（项目 + Trace 任务历史）、中（输入 + 紧凑活动流）、右（变更审查）；聊天/浏览器通过最左图标栏展开次级侧栏，不再用底部抽屉。
+
+仍缺、后续再做：
+
+- 左栏 **文件树**（目前只有任务历史，没有 repo 文件浏览）
+- 中栏 **内嵌编辑器**（目前中栏仍是活动流，不是代码编辑区）
+- 活动流 → 右侧审批 **锚点滚动**
+- **何时做桌面端（Electron）**：在 Web 版已跑通「Loop → 审批 → 执行」且你本人能接受粘贴 workspace 路径的前提下，**不必急着做桌面端**。建议在出现以下 2～3 项时再立项：① 需要系统目录选择器（非技术用户不能粘贴路径）；② 需要可靠 Chrome DevTools / WebView（iframe 被 CSP 挡住你的主流程）；③ 需要本地 shell 命令审批且沙箱要强隔离；④ 需要离线或内网单机部署。在此之前继续用 Web + `src/agent` 与 UI 解耦，桌面壳以后可复用同一套 API。
 - 当前 Trace Store 会同时写入内存和 `.agent-traces/` 本地 JSON 文件，并可通过 `/api/agent/traces` 查询。
 - `.agent-traces/` 已加入 `.gitignore`，不要提交运行 trace。
 - 当前 Trace 持久化还不是 SQLite；如果后续需要复杂查询、过滤、分页，再升级。
@@ -167,8 +280,8 @@ Codex CLI 是 Apache-2.0 开源项目，有成熟架构价值。但它主要是 
 - AgentPanel 的 Workspace 区域需要保留明确的读取/设置反馈；如果用户说“设置按钮点不动”，优先检查路径输入、接口返回和 UI 状态提示。
 - 产品方向上应预留桌面端。浏览器环境无法像 Codex 桌面端那样可靠弹出系统目录选择器并把本机路径交给服务端；Electron/本地客户端更适合承载项目选择、本地文件读写、命令执行、Chrome DevTools 连接和权限沙箱。
 - 迁移策略不是立刻重写成 Electron，而是继续保持 Agent Runtime 与 UI 解耦，先把 `src/agent` 能力做稳，再让 Web UI 和 Electron UI 共享同一套本地 runtime/API。
-- 当前优先级建议：A034/A035/A036 已完成；下一步可增强更通用的代码编辑能力、审批执行结果 UI、Git status/diff/remote 快照、shell 工具审批，或评估 Electron/本地客户端方案。
-- 接续入口：不要重复做 A034/A035/A036。后续如果继续编辑能力，优先做更通用的文本编辑/patch 生成，而不是只补首页兜底。
+- 当前优先级建议：A034-A049 已完成；下一步可左栏文件树、中栏编辑器占位、审批锚点，或评估 Electron。
+- 接续入口：不要重复做 A034-A049。旧 approval 无 `details` 不可执行，需重新发起任务。
 - A034 已完成：ApprovalRecord 增加可 JSON 持久化的 `details` 字段，`/api/agent/files` 和 `/api/agent/git` 的 preview 会写入 operation、operationHash 和 preview。
 - A034 文件详情已包含：operation type、path/fromPath/toPath、existsBefore/existsAfter、oldSize/newSize、sizeDelta、oldContent/newContent 的截断快照。
 - A034 Git 详情已包含：operation type、preview command、branchName/branch/remote/setUpstream、risk notes。后续可继续补 git status/diff 快照，但这不阻塞 A035。

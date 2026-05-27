@@ -92,7 +92,8 @@ export async function POST(request: Request) {
       return Response.json({ result });
     }
 
-    const result = prepareGitMutation({
+    const result = await prepareGitMutation({
+      cwd: workspace.rootPath,
       taskId,
       operation,
       createApproval: true,

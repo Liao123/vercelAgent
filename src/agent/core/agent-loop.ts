@@ -15,8 +15,20 @@ import {
   recordToolCall,
   type AgentLoopRunState,
 } from "@/agent/core/agent-loop-state";
-import { createConfiguredModelProvider, type ModelProvider } from "@/agent/model";
-import { createTrace, appendTraceEvent } from "@/agent/trace/trace-store";
+import {
+  createConfiguredModelProvider,
+  type ModelProvider,
+} from "@/agent/model";
+import {
+  agentMessagesHaveImages,
+  buildAgentUserContent,
+} from "@/lib/build-agent-user-content";
+import { getApiConfig } from "@/lib/openai-config";
+import {
+  appendTraceEvent,
+  createTrace,
+  updateTraceThread,
+} from "@/agent/trace/trace-store";
 import {
   newId,
   nowIso,
@@ -29,12 +41,26 @@ import {
   type ToolCallRecord,
   type Turn,
 } from "@/agent/types";
+import {
+  buildToolObservationMessage,
+  compactAgentLoopMessages,
+  createLoopCompactEventPayload,
+} from "@/agent/memory/loop-context-compactor";
+import {
+  buildThreadMemoryInjectionMessage,
+  getThreadMemory,
+  saveThreadMemory,
+} from "@/agent/memory/thread-memory-store";
 import { getCurrentWorkspace } from "@/agent/workspace";
 
 export type AgentLoopInput = {
   userRequest: string;
+  /** 参考图 data URL（走 vision 模型） */
+  referenceImages?: string[];
   maxIterations?: number;
   model?: string;
+  /** 延续已有 Thread，并注入其滚动任务记忆 */
+  threadId?: string;
   onEvent?: (event: AgentEvent) => void;
 };
 
@@ -131,20 +157,16 @@ function createSystemPrompt(workspaceRoot: string): string {
     "For code-change requests:",
     "- Gather evidence first: project.index, file.locate, file.read, file.search as needed.",
     "- Never guess file.replace.prepare search text from loose Chinese (e.g. 删除首页123文字). Read the file and copy an exact substring from disk.",
-    "- Small edits: file.replace.prepare. Large rewrites: file.mutation.prepare.",
+    "- Small edits: file.replace.prepare. Single-file full replace: file.mutation.prepare. Multi-file or /dev/null diffs: patch.prepare.",
     "- Mutation prepare tools only create approvals; the user approves and executes in the UI.",
     "- Do not action=final on edit tasks until an approval was prepared, unless you explain clearly why it is impossible.",
+    "- To verify: shell.command.prepare with lint, build, test, or typecheck (only if script exists in package.json).",
+    "- Git branch/commit/push: git.mutation.prepare only; never assume they ran.",
     "On tool errors: action=reflect, then try a different strategy (another path, file.search, different exact search string).",
-    "Do not run shell, install packages, or git write in this loop.",
+    "Do not run arbitrary shell, install packages, or auto-execute git/shell without user approval in the UI.",
     `Workspace root: ${workspaceRoot}`,
     `Tools: ${JSON.stringify(toolList)}`,
   ].join("\n");
-}
-
-function safeJson(value: unknown, maxChars = 24_000): string {
-  const json = JSON.stringify(value, null, 2);
-  if (json.length <= maxChars) return json;
-  return `${json.slice(0, maxChars)}\n...[truncated ${json.length - maxChars} chars]`;
 }
 
 function extractJsonObjectCandidates(text: string): string[] {
@@ -314,10 +336,7 @@ function fallbackSummary(error: unknown): string {
 }
 
 function observationMessage(toolName: string, result: unknown): AgentMessage {
-  return {
-    role: "user",
-    content: `Observation from ${toolName}:\n${safeJson(result)}`,
-  };
+  return buildToolObservationMessage(toolName, result);
 }
 
 function emitReflection(
@@ -431,13 +450,20 @@ export async function runAgentLoop(
 
   const now = nowIso();
   const workspace = await getCurrentWorkspace();
+  const priorThreadMemory = input.threadId
+    ? getThreadMemory(input.threadId)
+    : undefined;
   const thread: Thread = {
-    id: newId("thread"),
+    id: input.threadId ?? newId("thread"),
     workspaceId: workspace.id,
-    title: input.userRequest.slice(0, 80) || "Agent loop task",
+    title:
+      (priorThreadMemory?.lastUserRequest?.slice(0, 40) ??
+        input.userRequest.slice(0, 80)) ||
+      "Agent loop task",
     status: "running",
     createdAt: now,
     updatedAt: now,
+    contextSummary: priorThreadMemory?.memoryContent.slice(0, 400),
   };
   const task: Task = {
     id: newId("task"),
@@ -474,6 +500,7 @@ export async function runAgentLoop(
   };
   emit({ type: "thread.created", threadId: thread.id, thread });
   emit({ type: "task.created", taskId: task.id, task });
+  emit({ type: "trace.linked", taskId: task.id, traceId: trace.id });
   emit({ type: "turn.created", turnId: turn.id, turn });
   emit({ type: "plan.updated", taskId: task.id, plan });
 
@@ -492,11 +519,19 @@ export async function runAgentLoop(
       role: "system",
       content: createSystemPrompt(workspace.rootPath),
     },
-    {
-      role: "user",
-      content: input.userRequest,
-    },
   ];
+  if (priorThreadMemory?.memoryContent) {
+    messages.push(
+      buildThreadMemoryInjectionMessage(priorThreadMemory.memoryContent),
+    );
+  }
+  messages.push({
+    role: "user",
+    content: buildAgentUserContent(
+      input.userRequest,
+      input.referenceImages,
+    ),
+  });
   pushReflectionToMessages(messages, openingReflection, buildRuntimeCheckpoint(runState));
 
   let toolContext: AgentLoopToolContext = { workspace, taskId: task.id };
@@ -507,15 +542,76 @@ export async function runAgentLoop(
   );
 
   let modelUnavailable = false;
+  let contextCompactRound = 0;
 
   for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
+    const compactResult = await compactAgentLoopMessages({
+      messages,
+      userRequest: input.userRequest,
+      provider,
+      enableSemanticCompact: process.env.AGENT_LOOP_SEMANTIC_COMPACT !== "false",
+      compactRound: contextCompactRound + 1,
+    });
+    if (compactResult.method !== "none") {
+      contextCompactRound = compactResult.round;
+      messages.length = 0;
+      messages.push(...compactResult.messages);
+      const payload = createLoopCompactEventPayload(compactResult);
+      if (payload) {
+        const memoryContent =
+          payload.memoryContent ?? compactResult.memoryContent;
+        emit({
+          type: "context.compacted",
+          taskId: task.id,
+          summaryId: payload.summaryId,
+          method: payload.method,
+          estimatedTokensBefore: payload.estimatedTokensBefore,
+          estimatedTokensAfter: payload.estimatedTokensAfter,
+          round: payload.round,
+          middleMessageCount: payload.middleMessageCount,
+          summaryPreview: payload.summaryPreview,
+          memoryContent,
+          threadId: thread.id,
+          pinnedApprovalCount: payload.pinnedApprovalCount,
+          changedFileCount: payload.changedFileCount,
+        });
+        if (memoryContent) {
+          const summaryPreview = payload.summaryPreview ?? memoryContent.slice(0, 420);
+          saveThreadMemory({
+            threadId: thread.id,
+            workspaceId: workspace.id,
+            summaryId: payload.summaryId,
+            memoryContent,
+            round: payload.round,
+            method: payload.method,
+            updatedAt: nowIso(),
+            lastTaskId: task.id,
+            lastUserRequest: input.userRequest,
+            title: thread.title,
+            summaryPreview,
+          });
+          thread.contextSummary = summaryPreview;
+          updateTraceThread(trace.id, {
+            contextSummary: summaryPreview,
+            updatedAt: nowIso(),
+          });
+        }
+      }
+    }
+
     let output;
     try {
+      const loopModel =
+        input.model ??
+        (agentMessagesHaveImages(messages)
+          ? getApiConfig()?.visionModel
+          : undefined);
+
       output = await provider.generate({
         messages,
-        model: input.model,
+        model: loopModel,
         temperature: 0,
-        maxTokens: 1400,
+        maxTokens: agentMessagesHaveImages(messages) ? 2000 : 1400,
         metadata: { taskId: task.id, iteration },
       });
     } catch (error) {
@@ -715,6 +811,16 @@ export async function runAgentLoop(
     updatedAt: nowIso(),
     summary,
   };
+  const latestMemory = getThreadMemory(thread.id);
+  const completedThread: Thread = {
+    ...thread,
+    status: "completed",
+    updatedAt: nowIso(),
+    summary,
+    contextSummary:
+      latestMemory?.memoryContent.slice(0, 500) ?? thread.contextSummary,
+  };
+
   emit({
     type: "task.completed",
     taskId: task.id,
@@ -724,7 +830,7 @@ export async function runAgentLoop(
 
   return {
     traceId: trace.id,
-    thread,
+    thread: completedThread,
     task: completedTask,
     turn: completedTurn,
     events,

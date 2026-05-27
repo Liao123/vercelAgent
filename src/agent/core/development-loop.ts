@@ -4,10 +4,9 @@
  * 串起需求、项目索引、文件定位、可选 patch 预览/应用、验证和总结。
  * 这里还不让模型自动生成 patch，先把工具链的安全闭环跑通。
  */
-import { createApprovalRequest } from "@/agent/approval";
 import { extractFirstOpenableUrl, openBrowserUrl } from "@/agent/browser";
 import { buildProjectIndex, locateFilesForRequest } from "@/agent/indexer";
-import { applyUnifiedPatch } from "@/agent/tools";
+import { applyUnifiedPatch, createPatchApproval } from "@/agent/tools";
 import { createTrace, appendTraceEvent } from "@/agent/trace/trace-store";
 import {
   newId,
@@ -135,6 +134,7 @@ export async function runDevelopmentLoop(
   const events: AgentEvent[] = [
     { type: "thread.created", threadId: thread.id, thread },
     { type: "task.created", taskId: task.id, task },
+    { type: "trace.linked", taskId: task.id, traceId: trace.id },
     { type: "turn.created", turnId: turn.id, turn },
     { type: "plan.updated", taskId: task.id, plan },
   ];
@@ -241,12 +241,10 @@ export async function runDevelopmentLoop(
       }
       patchSummary = `Applied patch to ${patchResult.files.length} file(s).`;
     } else {
-      const approval = createApprovalRequest({
+      const approval = createPatchApproval({
         taskId: task.id,
-        title: "Apply patch",
-        reason: "Applying this patch will modify workspace files.",
-        risk: "medium",
-        action: patchResult.requiredApprovalAction,
+        patch: input.patch,
+        result: patchResult,
       });
       events.push({
         type: "approval.required",

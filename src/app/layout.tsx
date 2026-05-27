@@ -18,8 +18,8 @@ const geistMono = Geist_Mono({
 
 // 页面 <head> 中的 title、description 等
 export const metadata: Metadata = {
-  title: "AI Chat | Vercel",
-  description: "Next.js + OpenAI 兼容 API（GPT 中转 / DeepSeek）",
+  title: "Agent Workspace",
+  description: "任务型开发智能体：审批后执行、工具调用、代码变更",
 };
 
 export default function RootLayout({

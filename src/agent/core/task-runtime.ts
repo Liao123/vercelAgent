@@ -137,6 +137,7 @@ export async function startTask(input: StartTaskInput): Promise<StartTaskResult>
   const events: AgentEvent[] = [
     { type: "thread.created", threadId: thread.id, thread },
     { type: "task.created", taskId: task.id, task },
+    { type: "trace.linked", taskId: task.id, traceId: trace.id },
     { type: "turn.created", turnId: turn.id, turn },
     { type: "plan.updated", taskId: task.id, plan },
     { type: "tool.started", taskId: task.id, toolCall },

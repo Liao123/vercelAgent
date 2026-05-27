@@ -73,6 +73,8 @@ export type Thread = {
   createdAt: string;
   updatedAt: string;
   summary?: string;
+  /** 最近一次上下文压缩后的滚动记忆摘要（预览） */
+  contextSummary?: string;
 };
 
 export type Task = {
@@ -164,10 +166,46 @@ export type ApprovalGitMutationOperation =
       setUpstream?: boolean;
     };
 
+export type ApprovalGitWorkspaceSnapshot = {
+  branch?: string;
+  status?: ApprovalContentSnapshot;
+  diff?: ApprovalContentSnapshot;
+  remoteUrl?: string;
+};
+
 export type ApprovalGitMutationPreview = {
   command: string;
   risk: ApprovalRisk;
   notes: string[];
+  /** commit/push 等操作执行前的工作区快照。 */
+  workspace?: ApprovalGitWorkspaceSnapshot;
+};
+
+export type ApprovalShellScript = "lint" | "build" | "test" | "typecheck";
+
+export type ApprovalShellMutationPreview = {
+  command: string;
+  risk: ApprovalRisk;
+  notes: string[];
+  script: ApprovalShellScript;
+  available: boolean;
+};
+
+export type ApprovalPatchFilePreview = {
+  filePath: string;
+  oldPath?: string;
+  newPath?: string;
+  kind?: "modify" | "create" | "delete" | "rename";
+  changed: boolean;
+  oldContent?: ApprovalContentSnapshot;
+  newContent?: ApprovalContentSnapshot;
+};
+
+export type ApprovalPatchPreview = {
+  fileCount: number;
+  changedCount: number;
+  files: ApprovalPatchFilePreview[];
+  patchPreview: ApprovalContentSnapshot;
 };
 
 export type ApprovalDetails =
@@ -182,6 +220,19 @@ export type ApprovalDetails =
       operationHash: string;
       operation: ApprovalGitMutationOperation;
       preview: ApprovalGitMutationPreview;
+    }
+  | {
+      kind: "patch_apply";
+      operationHash: string;
+      /** 完整 patch，供 execute 使用。 */
+      patch: string;
+      preview: ApprovalPatchPreview;
+    }
+  | {
+      kind: "shell_command";
+      operationHash: string;
+      operation: { type: "npm_script"; script: ApprovalShellScript };
+      preview: ApprovalShellMutationPreview;
     };
 
 export type ApprovalExecution = {
@@ -232,6 +283,7 @@ export type AgentReflection = {
 export type AgentEvent =
   | { type: "thread.created"; threadId: string; thread: Thread }
   | { type: "task.created"; taskId: string; task: Task }
+  | { type: "trace.linked"; taskId: string; traceId: string }
   | { type: "turn.created"; turnId: string; turn: Turn }
   | { type: "plan.updated"; taskId: string; plan: AgentPlan }
   | { type: "model.delta"; taskId: string; text: string }
@@ -249,7 +301,21 @@ export type AgentEvent =
       taskId: string;
       result: VerificationResult;
     }
-  | { type: "context.compacted"; taskId: string; summaryId: string }
+  | {
+      type: "context.compacted";
+      taskId: string;
+      summaryId: string;
+      method?: "deterministic" | "semantic";
+      estimatedTokensBefore?: number;
+      estimatedTokensAfter?: number;
+      round?: number;
+      middleMessageCount?: number;
+      summaryPreview?: string;
+      memoryContent?: string;
+      threadId?: string;
+      pinnedApprovalCount?: number;
+      changedFileCount?: number;
+    }
   | {
       type: "reflection.updated";
       taskId: string;

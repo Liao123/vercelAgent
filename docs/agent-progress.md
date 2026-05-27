@@ -1,6 +1,6 @@
 # 开发智能体项目进度
 
-更新时间：2026-05-27
+更新时间：2026-05-27（今日收工）
 
 本文档用于记录开发智能体项目的工作项、当前状态、验收标准和执行记录。后续每完成一个工作项，都必须更新本文档。
 
@@ -94,6 +94,26 @@ deferred    暂缓，不属于当前阶段
 | A034 | done | 审批详情快照 | Approval 记录能保存文件/Git 操作的结构化预览，前端可查看 diff、命令、风险和影响范围。 |
 | A035 | done | 审批后的执行闭环 | 用户批准后，前端能对已批准的文件/Git 操作发起 apply，并展示执行结果；仍禁止自动执行。 |
 | A036 | done | Agent Loop 可用改代码入口 | 默认运行 Agent Loop；模型能准备文件改动审批；简单首页文本删除请求能稳定生成待审批改动。 |
+| A037 | done | 统一 Agent Workspace UI | 首页改为单页 Agent 工作区：左侧活动流、右侧变更审查；聊天/浏览器收起到底部辅助面板，更接近 Codex/Cursor Agent。 |
+| A038 | done | Patch 审批详情与执行 | `patch_apply` 写入 approval.details；开发闭环 patch preview 可持久化 diff；`/api/agent/approvals/execute` 支持 patch apply。 |
+| A039 | done | 审查与活动流产品化 | 审批区行级 diff 高亮（`DiffView`）；活动流类型筛选与调试 JSON 开关；Git commit/push 高风险提示。 |
+| A040 | done | Git 审批工作区快照 | Git preview 持久化 branch、status、diff、push 时 remote URL；审批 UI 展示快照。 |
+| A041 | done | Shell 白名单审批 | `shell.command.prepare` + `/api/agent/shell`；仅 lint/build/test/typecheck；execute 走审批闭环；Push 二次确认执行。 |
+| A042 | done | Trace 历史 UI | Agent Workspace「历史」面板浏览 `.agent-traces/`；列表 + 可读事件时间线。 |
+| A043 | done | Patch parser 增强 | unified diff 支持新建（/dev/null）、删除、重命名与修改；审批 UI 展示操作类型。 |
+| A044 | done | 审查与活动流 UI 增强 | `DiffView` 默认 split 左右对照、可切换统一 diff；活动流合并 tool.started/completed、可折叠工具/计划/反思行。 |
+| A045 | done | Agent Loop `patch.prepare` | Loop 可提交 unified diff 生成 `patch_apply` 审批；不直接写盘；与 file.replace/mutation.prepare 并列。 |
+| A046 | done | Trace 与当前任务联动 | SSE `trace.linked`；主区「在历史 Trace 中查看」；历史面板「恢复到主工作区」+ 当前任务标记；`GET /api/agent/traces?taskId=`。 |
+| A047 | done | 多文件 Patch Diff UI | `PatchFilesDiffView` 按文件 Tab 切换；split diff 左右行号对齐（`toSplitAlignedRows`）。 |
+| A048 | done | Patch 活动流摘要与原文折叠 | 工具/审批展示多文件摘要；patch 原文默认折叠；`patch.prepare` 正确创建 approval。 |
+| A049 | done | 三栏 Agent 工作区（Cursor/Codex 向） | 左：项目+任务历史；中：输入+紧凑活动流；右：变更审查；图标栏切换聊天/预览。 |
+| A050 | done | Codex 向信息流布局 | 中：底栏输入+上滑活动流/涉及文件/内联简短审批；右：规划步骤+运行态+浏览器折叠；移除 Agent 页通用 Chat 入口。 |
+| A051 | done | Agent Loop 上下文压缩（Codex 风格） | `loop-context-compactor` 接入 Loop：工具结果整形、head/tail 保留、中间段确定性+可选语义 compact；SSE `context.compacted`；活动流可见压缩事件。 |
+| A052 | done | 滚动任务记忆 + Pinned Facts | 增量合并 prior memory、结构化 `## Pinned/Summary/Changed files`、`ModelProvider.compact`、审批观测瘦身、右栏任务记忆。 |
+| A053 | done | Trace 全文记忆 + Thread 跨任务 | `context.compacted.memoryContent` 写入 Trace；`.agent-state/thread-memory.json`；Loop `threadId` 延续；Trace/中栏记忆面板；「延续会话记忆」开关。 |
+| A054 | done | 会话侧栏 + 记忆摘要索引 | `/api/agent/threads`；左栏会话列表（摘要/轮次）+ 按会话筛选任务；压缩同步 `summaryPreview` 到 thread-memory 与 trace.thread。 |
+| A055 | done | 会话管理操作 | PATCH 重命名、`thread-meta.json`、DELETE 删滚动记忆、侧栏「继续/命名/删记忆」、预填上次需求。 |
+| A056 | done | 体验与说明 | 内联重命名、记忆导出 Markdown、记忆面板复制/导出、Loop vs 闭环模式说明组件。 |
 
 ## 完成记录
 
@@ -212,20 +232,68 @@ deferred    暂缓，不属于当前阶段
 - A036 补充修正：普通 Agent Loop 分支里，模型通过 `file.mutation.prepare` / `file.replace.prepare` 等工具生成 approval 后，之前没有统一发出 `approval.required` 事件，导致审批可能已写入 `.agent-state/approvals.json`，但前端当次任务里看起来“没收到审批”。现已在 `src/agent/core/agent-loop.ts` 统一补发该事件。
 - A036 前端体验修正：`AgentPanel` 现在会在 SSE 收到 `approval.required` 时立刻把新审批插入列表；审批列表改为 pending 优先、最新优先，并对当前任务生成的审批显示“本次任务”标记，避免历史审批淹没新审批。
 - A036 通用编辑链路复测：实际发起“把 `src/app/page.tsx` 里的 `AI Chat × Vercel` 改成 `AI Chat × Codex`”后，任务 `task_5d5fcb28-3be8-48c1-994e-e50d4275622b` 成功生成新的 pending approval `approval_a1b0d906-1b13-4b8b-9a3a-4d1c0463c12c`，对应审批已写入 `.agent-state/approvals.json`，验证普通 Agent Loop 的非首页兜底改代码请求现在也能稳定产出审批。
+- A037 已完成：新增 `src/components/agent-workspace.tsx`，首页改为全屏 Agent Workspace（活动流 + 变更审查双栏；聊天/预览为底部可折叠辅助面板）。
+- A037 已完成：新增 `src/components/agent-event-timeline.tsx`，主路径用可读活动卡片展示 SSE 事件。
+- A038 已完成：`ApprovalDetails` 增加 `patch_apply`；开发闭环 patch preview 持久化 diff；`/api/agent/approvals/execute` 支持 patch。
+- 验证：`npm run lint` 通过，`npm run build` 通过。
+- A039 已完成：`src/lib/line-diff.ts` + `src/components/diff-view.tsx` 为审批详情提供 +/- 行级 diff；`agent-event-timeline` 增加类型筛选与「调试 JSON」开关；Git commit/push 审批展示高风险横幅。
+- 验证：`npm run lint` 通过，`npm run build` 通过。
+- A040 已完成：`prepareGitMutation` 异步采集 `git status` / `git diff` / 当前分支 / push 的 remote URL，写入 `approval.details.preview.workspace`。
+- A041 已完成：`src/agent/tools/shell-tools.ts`、`/api/agent/shell`、`shell.command.prepare`（Agent Loop）；`/api/agent/approvals/execute` 支持 `shell_command`；Push 执行需二次点击「确认 Push」。
+- 验证：`npm run lint` 通过，`npm run build` 通过。
+- A042 已完成：新增 `src/components/trace-panel.tsx`；Agent Workspace 顶部增加「历史」辅助面板，调用 `/api/agent/traces` 列表与详情，详情用 `AgentEventTimeline` 展示。
+- 验证：`npm run lint` 通过，`npm run build` 通过。
+- A043 已完成：`patch-tools` 支持 modify/create/delete/rename；`/dev/null` 路径；apply 时自动 mkdir、unlink、重命名写新删旧；含删除的 patch 审批风险升为 high。
+- 验证：`npm run lint` 通过，`npm run build` 通过。
+- A044 已完成：`src/components/diff-view.tsx` 默认 split（Before | After），可切换统一 diff；`agent-panel` 审批区使用 `layout="split"`。
+- A044 已完成：`src/components/agent-event-timeline.tsx` 合并 `tool.started`+`tool.completed`、可折叠计划/反思/工具行、工具结果摘要与「已合并工具事件」开关。
+- A045 已完成：`agent-loop-tools.ts` 新增 `patch.prepare`（调用 `applyUnifiedPatch` preview + approval）；`agent-loop.ts` 系统提示与 `agent-loop-state.ts` 反思检查点已纳入 patch 路径。
+- 验证：`npm run lint` 通过，`npm run build` 通过。
+- A046 已完成：`trace.linked` 事件关联 taskId/traceId；`agent-workspace-bridge` 连接主面板与 TracePanel；历史「恢复到主工作区」恢复活动流并筛选「仅本次任务」审批；`getTraceByTaskId` + `?taskId=` API。
+- 验证：`npm run lint` 通过，`npm run build` 通过。
+- A047 已完成：`src/components/patch-files-diff.tsx` 多文件 patch Tab；`line-diff.toSplitAlignedRows` + `DiffView` split 模式左右行号对齐。
+- 验证：`npm run lint` 通过，`npm run build` 通过。
+- A048 已完成：`patch-summary.ts`；活动流 patch 多文件摘要；审批区 Patch 原文默认折叠；`patch.prepare` 返回 `approval` 并走 `approval.required`。
+- 验证：`npm run lint` 通过，`npm run build` 通过。
+- A049 已完成：首页 `AgentWorkspace` 三栏 + 左侧图标栏（Agent/聊天/预览）；`AgentTraceSidebar`；`AgentPanel layout=triple`；活动流 `density=compact`。
+- 验证：`npm run lint` 通过，`npm run build` 通过。
+- A051 已完成：新增 `src/agent/memory/loop-context-compactor.ts`；每次 `provider.generate` 前按 token 预算压缩 messages（保留 system+用户任务+最近 12 条 tail）；中间历史先 `compressContext` 再可选模型语义 compact（`AGENT_LOOP_SEMANTIC_COMPACT=false` 可关）。
+- A051 已完成：工具观测写入前按工具类型截断（`file.read`/`git.diff`/`file.search`/`project.index`）；活动流展示 `context.compacted` 及 token 估算。
+- 验证：`npm run lint` 通过，`npm run build` 通过。
+- A052 已完成：`loop-pinned-facts` 钉住审批/路径/分支/错误；多轮压缩合并 prior `[COMPACTED_MEMORY]`；`ChatCompletionsProvider.compact()`；`prepare` 类工具观测只保留 approvalId；右栏「任务记忆」+ 活动流可展开摘要。
+- 验证：`npm run lint` 通过，`npm run build` 通过。
+- A053 已完成：`context.compacted` 携带完整 `memoryContent`；`thread-memory-store` 跨 Task 持久化；`/api/agent/thread-memory`；Trace 详情与中栏 `AgentCompactedMemoryPanel`；Loop 支持 `threadId` + UI「延续会话记忆」/「新会话」。
+- 验证：`npm run lint` 通过，`npm run build` 通过。
+- A054 已完成：`agent-session-sidebar`（会话 + 任务双列表）；`GET /api/agent/threads`；`summaryPreview` 同步 thread-memory / trace.thread。
+- A055 已完成：`thread-meta-store`；`PATCH/DELETE /api/agent/threads`；侧栏「继续 / 命名 / 删记忆」、预填 `lastUserRequest`。
+- A056 已完成：内联重命名、记忆导出 `.md`、中栏记忆复制/导出；`AgentRunModeHint`（Loop vs 闭环说明，闭环后续不投入）。
+- 验证：A054–A056 均 `npm run lint`、`npm run build` 通过。
 
-## 当前下一步
+## 今日收工（2026-05-27）
 
-当前 A034-A036 已完成。下一步不要先跳 Electron，也不要先做 Chrome DevTools 深度读取；优先补真实改代码体验和后续 backlog。
+**阶段结论**：主链路已是 **Agent Loop + 审批执行 + Trace**；今日重点把 **Codex/Cursor 式上下文压缩与会话记忆**（A051–A056）接到 Loop 并可在 UI 使用。
 
-### 下一步优先级
+**今日交付摘要**：
 
-1. 增强审批执行后的 UI 细节。
-   - 当前执行结果只显示摘要和错误，后续可以展开展示文件结果/Git stdout/stderr。
-   - 对高风险 Git push/commit 继续补更完整的 git status/diff/remote 快照。
+| 范围 | 内容 |
+| --- | --- |
+| 压缩 | `loop-context-compactor`、pinned facts、滚动 `[COMPACTED_MEMORY]`、`ModelProvider.compact` |
+| 会话 | `thread-memory.json`、`thread-meta.json`、`/api/agent/threads`、左栏会话侧栏 |
+| UI | 延续记忆 / 新会话 / 继续+预填 / 重命名 / 删记忆 / 导出 md / 记忆面板 |
+| 说明 | 闭环（develop）不调用模型，日常只用 **Loop**；用户明确**不必再管闭环** |
 
-2. 继续规划下一批 backlog。
-   - 可选方向：更通用的文本编辑/patch 生成、shell 工具审批、patch parser 增强、trace 查询 UI、Electron/本地客户端方案评估。
-   - 在做任何 commit/push/shell/install 能力前，继续保持审批和沙箱优先。
+**本地状态目录（勿提交 git）**：`.agent-state/`（approvals、thread-memory、thread-meta、browser 等）、`.agent-traces/`。
+
+**启动续作**：`npm run dev` → 打开首页 Agent Workspace → 左栏选 workspace 路径 → 默认 **Loop** 输入任务。
+
+## 明天建议接续（优先级）
+
+1. **实机长任务验证压缩**：多轮 `file.read` + `prepare` 审批，确认活动流出现「上下文已压缩」、右栏/导出记忆内容合理、延续会话后模型仍记得审批 ID。
+2. **活动流 → 审批锚点**：点击 `approval.required` 或工具行，右侧/内联审批区滚动定位对应卡片（A037 遗留）。
+3. **压缩质量调优**（可选）：pinned 抽取规则、语义 compact 提示词、tail 条数（当前 12）。
+4. **暂缓**：开发闭环增强、左栏文件树、内嵌编辑器、Electron、Chrome DevTools 深度读取。
+
+用户已明确：**暂不做**文件树与编辑器；**不必再投入**开发闭环（`/api/agent/develop` 可保留不动）。
 
 ### 后续不要忘记
 

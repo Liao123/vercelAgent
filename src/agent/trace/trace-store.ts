@@ -59,6 +59,21 @@ export function appendTraceEvent(traceId: string, event: AgentEvent): void {
   persistTraceSoon(trace);
 }
 
+export function updateTraceThread(
+  traceId: string,
+  patch: Partial<Pick<Thread, "title" | "summary" | "contextSummary" | "updatedAt">>,
+): void {
+  const trace = traces.get(traceId);
+  if (!trace?.thread) return;
+  trace.thread = {
+    ...trace.thread,
+    ...patch,
+    updatedAt: patch.updatedAt ?? new Date().toISOString(),
+  };
+  trace.updatedAt = trace.thread.updatedAt;
+  persistTraceSoon(trace);
+}
+
 export async function getTrace(traceId: string): Promise<TraceRecord | undefined> {
   const memoryTrace = traces.get(traceId);
   if (memoryTrace) return memoryTrace;
@@ -71,6 +86,13 @@ export async function getTrace(traceId: string): Promise<TraceRecord | undefined
   } catch {
     return undefined;
   }
+}
+
+export async function getTraceByTaskId(
+  taskId: string,
+): Promise<TraceRecord | undefined> {
+  const traces = await listTraces();
+  return traces.find((trace) => trace.task?.id === taskId);
 }
 
 export async function listTraces(): Promise<TraceRecord[]> {

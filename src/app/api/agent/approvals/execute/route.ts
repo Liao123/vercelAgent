@@ -11,8 +11,12 @@ import {
 import {
   applyFileMutation,
   applyGitMutation,
+  applyShellCommand,
+  applyUnifiedPatch,
+  describePatchFiles,
   type AppliedFileMutation,
   type AppliedGitMutation,
+  type PatchResult,
 } from "@/agent/tools";
 import { getCurrentWorkspace } from "@/agent/workspace";
 
@@ -56,6 +60,15 @@ function compactGitResult(result: AppliedGitMutation) {
     command: result.result.command,
     stdout: truncateOutput(result.result.stdout),
     stderr: truncateOutput(result.result.stderr),
+  };
+}
+
+function compactPatchResult(result: PatchResult) {
+  return {
+    kind: "patch_apply",
+    applied: result.applied,
+    files: describePatchFiles(result),
+    changedCount: result.files.filter((file) => file.changed).length,
   };
 }
 
@@ -109,6 +122,42 @@ export async function POST(request: Request) {
         status: "succeeded",
         summary: `Applied ${result.preview.type} for ${filePathSummary(result)}.`,
         result: compactFileResult(result),
+      });
+      return Response.json({ approval: updatedApproval, result });
+    }
+
+    if (approval.details.kind === "shell_command") {
+      const result = await applyShellCommand({
+        rootPath: workspace.rootPath,
+        taskId: approval.taskId,
+        script: approval.details.operation.script,
+        approvalId: approval.id,
+      });
+      const updatedApproval = recordApprovalExecution(approval.id, {
+        status: "succeeded",
+        summary: `Ran ${result.preview.command}.`,
+        result: {
+          kind: "shell_command",
+          command: result.result.command,
+          success: result.result.success,
+          output: truncateOutput(result.result.output),
+        },
+      });
+      return Response.json({ approval: updatedApproval, result });
+    }
+
+    if (approval.details.kind === "patch_apply") {
+      const result = await applyUnifiedPatch({
+        rootPath: workspace.rootPath,
+        patch: approval.details.patch,
+        mode: "apply",
+        approvalId: approval.id,
+      });
+      const paths = describePatchFiles(result);
+      const updatedApproval = recordApprovalExecution(approval.id, {
+        status: "succeeded",
+        summary: `Applied patch to ${paths.join(", ") || "workspace files"}.`,
+        result: compactPatchResult(result),
       });
       return Response.json({ approval: updatedApproval, result });
     }
