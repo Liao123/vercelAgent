@@ -9,13 +9,11 @@ import { BrowserPanel } from "@/components/browser-panel";
 export default function Home() {
   return (
     <div className="flex min-h-full flex-col items-center bg-zinc-100 px-4 py-10 dark:bg-zinc-950">
-      {/* 页面标题区 */}
+      {/* 页面区 */}
       <header className="mb-8 text-center">
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-          AI Chat × Codex
-        </h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">测试标题2</h1>
         <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-          123GPT 中转 · 当前模型 GPT-5（
+          GPT 中转 · 当前模型 GPT-5（
           {process.env.OPENAI_MODEL ?? "gpt-5.5"}）
         </p>
       </header>

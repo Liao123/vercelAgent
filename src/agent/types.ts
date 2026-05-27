@@ -221,6 +221,14 @@ export type VerificationResult = {
   completedAt: string;
 };
 
+/** Agent Loop 反思检查点，供 UI 展示「想清楚了没有」。 */
+export type AgentReflection = {
+  understanding: string;
+  blockers: string[];
+  plannedNext: string;
+  source: "model" | "runtime";
+};
+
 export type AgentEvent =
   | { type: "thread.created"; threadId: string; thread: Thread }
   | { type: "task.created"; taskId: string; task: Task }
@@ -242,6 +250,11 @@ export type AgentEvent =
       result: VerificationResult;
     }
   | { type: "context.compacted"; taskId: string; summaryId: string }
+  | {
+      type: "reflection.updated";
+      taskId: string;
+      reflection: AgentReflection;
+    }
   | { type: "task.completed"; taskId: string; task: Task; summary: string }
   | { type: "task.failed"; taskId: string; task?: Task; error: string };
 

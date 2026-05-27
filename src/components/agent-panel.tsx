@@ -38,6 +38,7 @@ type WorkspaceInfoView = {
 
 type EventBucket = {
   plans: AgentEvent[];
+  reflections: AgentEvent[];
   tools: AgentEvent[];
   approvals: AgentEvent[];
   verifications: AgentEvent[];
@@ -119,6 +120,28 @@ function upsertApproval(
   return sortApprovals([next, ...filtered]);
 }
 
+function mergeApprovalLists(
+  ...lists: Array<ApprovalRecordView[] | ApprovalEventView[]>
+): ApprovalRecordView[] {
+  const merged = new Map<string, ApprovalRecordView>();
+  for (const list of lists) {
+    for (const item of list) {
+      const next = normalizeApprovalView(item);
+      merged.set(next.id, next);
+    }
+  }
+  return sortApprovals([...merged.values()]);
+}
+
+function approvalFromRequiredEvent(
+  event: Extract<AgentEvent, { type: "approval.required" }>,
+): ApprovalRecordView {
+  return normalizeApprovalView({
+    ...event.approval,
+    taskId: event.approval.taskId ?? event.taskId,
+  });
+}
+
 function filterApprovals(
   approvals: ApprovalRecordView[],
   filters: ApprovalFilterState,
@@ -138,6 +161,7 @@ function filterApprovals(
 function bucketEvents(events: AgentEvent[]): EventBucket {
   const bucket: EventBucket = {
     plans: [],
+    reflections: [],
     tools: [],
     approvals: [],
     verifications: [],
@@ -147,6 +171,7 @@ function bucketEvents(events: AgentEvent[]): EventBucket {
 
   for (const event of events) {
     if (event.type === "plan.updated") bucket.plans.push(event);
+    else if (event.type === "reflection.updated") bucket.reflections.push(event);
     else if (event.type.startsWith("tool.")) bucket.tools.push(event);
     else if (event.type === "approval.required") bucket.approvals.push(event);
     else if (event.type === "verification.completed") {
@@ -351,6 +376,7 @@ export function AgentPanel() {
   const [loadingWorkspace, setLoadingWorkspace] = useState(false);
   const [loadingApprovals, setLoadingApprovals] = useState(false);
   const [approvalStatus, setApprovalStatus] = useState<string | null>(null);
+  const [taskSummary, setTaskSummary] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const bucket = useMemo(() => bucketEvents(events), [events]);
   const filteredApprovals = useMemo(
@@ -367,8 +393,11 @@ export function AgentPanel() {
         const res = await fetch("/api/agent/approvals");
         const data = await res.json();
         if (!res.ok || cancelled) return;
-        setApprovals(
-          sortApprovals(Array.isArray(data.approvals) ? data.approvals : []),
+        setApprovals((current) =>
+          mergeApprovalLists(
+            current,
+            Array.isArray(data.approvals) ? data.approvals : [],
+          ),
         );
       } catch {
         // The manual refresh button surfaces approval API failures.
@@ -441,8 +470,11 @@ export function AgentPanel() {
       const res = await fetch("/api/agent/approvals");
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "读取审批失败。");
-      setApprovals(
-        sortApprovals(Array.isArray(data.approvals) ? data.approvals : []),
+      setApprovals((current) =>
+        mergeApprovalLists(
+          current,
+          Array.isArray(data.approvals) ? data.approvals : [],
+        ),
       );
       setApprovalStatus("审批列表已刷新。");
     } catch (err) {
@@ -476,9 +508,74 @@ export function AgentPanel() {
         );
         return sortApprovals(next);
       });
-      setApprovalStatus(status === "approved" ? "已批准。" : "已拒绝。");
+      setApprovalStatus(
+        status === "approved"
+          ? "已批准。请点击本条右侧的「执行」才会真正修改磁盘上的代码。"
+          : "已拒绝。",
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "处理审批失败。");
+    } finally {
+      setLoadingApprovals(false);
+    }
+  }
+
+  async function approveAndExecute(approval: ApprovalRecordView) {
+    if (!approval.details) {
+      setError("该审批缺少可执行详情，无法一键执行。请重新发起任务。");
+      return;
+    }
+    if (loadingApprovals) return;
+
+    setLoadingApprovals(true);
+    setApprovalStatus(null);
+    setError(null);
+
+    try {
+      const patchRes = await fetch("/api/agent/approvals", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approvalId: approval.id, status: "approved" }),
+      });
+      const patchData = await patchRes.json();
+      if (!patchRes.ok) {
+        throw new Error(patchData.error ?? "批准失败。");
+      }
+      const approved = patchData.approval as ApprovalRecordView;
+      setApprovals((current) => {
+        const next = current.map((item) =>
+          item.id === approval.id ? approved : item,
+        );
+        return sortApprovals(next);
+      });
+
+      const execRes = await fetch("/api/agent/approvals/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approvalId: approval.id }),
+      });
+      const execData = await execRes.json();
+      if (!execRes.ok) {
+        if (execData.approval) {
+          setApprovals((current) => {
+            const next = current.map((item) =>
+              item.id === approval.id ? execData.approval : item,
+            );
+            return sortApprovals(next);
+          });
+        }
+        throw new Error(execData.error ?? "执行失败。");
+      }
+      setApprovals((current) => {
+        const next = current.map((item) =>
+          item.id === approval.id ? execData.approval : item,
+        );
+        return sortApprovals(next);
+      });
+      setApprovalStatus("已批准并已写入代码。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "批准并执行失败。");
+      void loadApprovals();
     } finally {
       setLoadingApprovals(false);
     }
@@ -532,6 +629,7 @@ export function AgentPanel() {
     setEvents([]);
     setError(null);
     setApprovalStatus(null);
+    setTaskSummary(null);
     setCurrentTaskId(null);
     setApprovalFilters({
       pendingOnly: true,
@@ -547,7 +645,7 @@ export function AgentPanel() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             userRequest,
-            maxIterations: 6,
+            maxIterations: 12,
             verify: false,
           }),
         },
@@ -561,6 +659,7 @@ export function AgentPanel() {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let sawApprovalThisRun = false;
 
       while (true) {
         const { value, done } = await reader.read();
@@ -576,17 +675,37 @@ export function AgentPanel() {
             .find((line) => line.startsWith("data: "));
           if (!dataLine) continue;
 
-          const parsed = JSON.parse(dataLine.slice("data: ".length)) as AgentEvent;
+          let parsed: AgentEvent;
+          try {
+            parsed = JSON.parse(dataLine.slice("data: ".length)) as AgentEvent;
+          } catch {
+            continue;
+          }
           if (parsed.type === "task.created") {
             setCurrentTaskId(parsed.taskId);
-            setApprovalFilters({
-              pendingOnly: true,
-              currentTaskOnly: true,
-            });
           }
           if (parsed.type === "approval.required") {
-            setApprovals((current) => upsertApproval(current, parsed.approval));
-            setApprovalStatus("已收到新的审批请求。");
+            sawApprovalThisRun = true;
+            setApprovals((current) =>
+              upsertApproval(current, approvalFromRequiredEvent(parsed)),
+            );
+            setApprovalFilters({
+              pendingOnly: false,
+              currentTaskOnly: false,
+            });
+            setApprovalStatus("已收到新的审批请求，请点「批准并执行」写入代码。");
+          }
+          if (parsed.type === "task.failed") {
+            setError(parsed.error);
+            setTaskSummary(null);
+          }
+          if (parsed.type === "task.completed") {
+            setTaskSummary(parsed.summary);
+            if (!sawApprovalThisRun) {
+              setApprovalStatus(
+                "任务已结束，但未生成审批。请看下方「结果」或错误提示；常见原因是模型未调用改文件工具，或要删的字在页面里不存在。",
+              );
+            }
           }
           setEvents((prev) => [...prev, parsed]);
         }
@@ -606,7 +725,7 @@ export function AgentPanel() {
           开发智能体
         </h2>
         <p className="mt-1 text-xs text-zinc-500">
-          定位文件、准备改动审批；批准后需要再点执行。
+          通用编程循环：理解 → 读盘取证 → 准备改动 → 反思，再决定下一步。改代码需审批后点「批准并执行」。
         </p>
       </div>
 
@@ -704,6 +823,11 @@ export function AgentPanel() {
           {error}
         </p>
       )}
+      {taskSummary && !error && (
+        <p className="rounded-lg bg-zinc-50 px-3 py-2 text-sm text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+          {taskSummary}
+        </p>
+      )}
 
       <section className="space-y-2 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
         <div className="flex items-center justify-between gap-2">
@@ -719,6 +843,9 @@ export function AgentPanel() {
             {loadingApprovals ? "刷新中" : "刷新"}
           </button>
         </div>
+        <p className="text-[11px] leading-relaxed text-zinc-500">
+          审批通过后不会自动写盘：需要再点「执行」，或对待审批项直接点「批准并执行」。
+        </p>
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -834,7 +961,7 @@ export function AgentPanel() {
                     {APPROVAL_STATUS_LABELS[approval.status]}
                   </span>
                   {approval.status === "pending" && (
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap justify-end gap-2">
                       <button
                         type="button"
                         onClick={() =>
@@ -855,6 +982,16 @@ export function AgentPanel() {
                       >
                         批准
                       </button>
+                      {approval.details && (
+                        <button
+                          type="button"
+                          onClick={() => void approveAndExecute(approval)}
+                          disabled={loadingApprovals}
+                          className="rounded-md bg-blue-600 px-2 py-1 text-xs text-white transition hover:bg-blue-500 disabled:opacity-50 dark:bg-blue-500 dark:hover:bg-blue-400"
+                        >
+                          批准并执行
+                        </button>
+                      )}
                     </div>
                   )}
                   {approval.status === "approved" &&
@@ -887,6 +1024,7 @@ export function AgentPanel() {
           </p>
         )}
         <Section title="计划" events={bucket.plans} />
+        <Section title="反思" events={bucket.reflections} />
         <Section title="工具调用" events={bucket.tools} />
         <Section title="审批" events={bucket.approvals} />
         <Section title="验证" events={bucket.verifications} />
