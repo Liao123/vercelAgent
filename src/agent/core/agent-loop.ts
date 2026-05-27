@@ -10,6 +10,7 @@ import {
   type AgentLoopToolContext,
 } from "@/agent/core/agent-loop-tools";
 import { createConfiguredModelProvider, type ModelProvider } from "@/agent/model";
+import { prepareFileMutation, readTextFile } from "@/agent/tools";
 import { createTrace, appendTraceEvent } from "@/agent/trace/trace-store";
 import {
   newId,
@@ -55,6 +56,49 @@ type AgentLoopDecision =
 
 const DEFAULT_MAX_ITERATIONS = 6;
 
+function extractHomepageTextRemoval(request: string): string | null {
+  if (!/(首页|主页|home|page)/i.test(request)) return null;
+  if (!/(去掉|删除|移除|删掉|去除|remove|delete)/i.test(request)) return null;
+
+  const patterns = [
+    /把(?:这个项目)?首页(?:的)?\s*([^，。,.!！?？\s]+)\s*(?:\d+个字)?\s*(?:去掉|删除|移除|删掉|去除)/i,
+    /(?:去掉|删除|移除|删掉|去除)(?:这个项目)?首页(?:的)?\s*([^，。,.!！?？\s]+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = pattern.exec(request);
+    const text = match?.[1]?.trim();
+    if (text) return text.replace(/^["'“”‘’]+|["'“”‘’]+$/g, "");
+  }
+
+  return null;
+}
+
+async function prepareHomepageTextRemoval(input: {
+  workspaceRoot: string;
+  taskId: string;
+  text: string;
+}) {
+  const page = await readTextFile(input.workspaceRoot, "src/app/page.tsx", 500_000);
+  const index = page.content.indexOf(input.text);
+  if (index === -1) {
+    throw new Error(`Text "${input.text}" was not found in src/app/page.tsx.`);
+  }
+  const nextContent = `${page.content.slice(0, index)}${page.content.slice(
+    index + input.text.length,
+  )}`;
+  return prepareFileMutation({
+    rootPath: input.workspaceRoot,
+    taskId: input.taskId,
+    operation: {
+      type: "write",
+      path: page.path,
+      content: nextContent,
+    },
+    createApproval: true,
+  });
+}
+
 function createAgentLoopPlan(input: AgentLoopInput): AgentPlan {
   return {
     goal: input.userRequest,
@@ -81,7 +125,7 @@ function createAgentLoopPlan(input: AgentLoopInput): AgentPlan {
       },
     ],
     risks: [
-      "This loop intentionally does not expose file writes, shell commands, or Git writes yet.",
+      "This loop can prepare file/Git mutation approvals but cannot apply them automatically.",
       "Model output must be valid JSON; invalid responses are converted into a final error summary.",
     ],
     verification: [
@@ -106,7 +150,10 @@ function createSystemPrompt(workspaceRoot: string): string {
     '{"action":"final","summary":"final answer for the user","thought":"short reason"}',
     "Only call tools from the provided list. Do not invent tools.",
     "Prefer using project.index and file.locate before reading specific files.",
-    "Do not ask to write files, run shell commands, install packages, or commit git changes in this loop.",
+    "For user requests that ask to change code, read the relevant file and then call file.replace.prepare or file.mutation.prepare to create an approval.",
+    "For small exact text edits, prefer file.replace.prepare over rewriting an entire file.",
+    "Mutation prepare tools only create approvals. They do not apply changes. The user must approve and execute in the UI.",
+    "Do not run shell commands, install packages, or apply/commit/push changes in this loop.",
     `Workspace root: ${workspaceRoot}`,
     `Tools: ${JSON.stringify(toolList)}`,
   ].join("\n");
@@ -118,11 +165,58 @@ function safeJson(value: unknown, maxChars = 24_000): string {
   return `${json.slice(0, maxChars)}\n...[truncated ${json.length - maxChars} chars]`;
 }
 
-function parseDecision(content: string): AgentLoopDecision {
-  const trimmed = content.trim();
-  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
-  const jsonText = fenced?.[1] ?? trimmed;
-  const parsed = JSON.parse(jsonText) as {
+function extractJsonObjectCandidates(text: string): string[] {
+  const candidates: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (char === "{") {
+      if (depth === 0) start = index;
+      depth += 1;
+      continue;
+    }
+
+    if (char === "}" && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        candidates.push(text.slice(start, index + 1));
+        start = -1;
+      }
+    }
+  }
+
+  return candidates;
+}
+
+function toDecision(value: unknown): AgentLoopDecision | null {
+  if (!value || typeof value !== "object") return null;
+
+  const parsed = value as {
     action?: unknown;
     tool?: unknown;
     args?: unknown;
@@ -151,7 +245,44 @@ function parseDecision(content: string): AgentLoopDecision {
     };
   }
 
-  throw new Error("Model returned an unsupported agent loop decision.");
+  if (
+    typeof parsed.summary === "string" &&
+    typeof parsed.tool !== "string" &&
+    parsed.action !== "tool_call"
+  ) {
+    return {
+      action: "final",
+      summary: parsed.summary,
+      thought: typeof parsed.thought === "string" ? parsed.thought : undefined,
+    };
+  }
+
+  return null;
+}
+
+function parseDecision(content: string): AgentLoopDecision {
+  const trimmed = content.trim();
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
+  const jsonText = fenced?.[1] ?? trimmed;
+
+  try {
+    const direct = toDecision(JSON.parse(jsonText));
+    if (direct) return direct;
+  } catch {
+    // Fall through to candidate extraction below.
+  }
+
+  for (const candidate of extractJsonObjectCandidates(jsonText)) {
+    try {
+      const parsed = JSON.parse(candidate);
+      const decision = toDecision(parsed);
+      if (decision) return decision;
+    } catch {
+      continue;
+    }
+  }
+
+  throw new Error("Model returned an unsupported or invalid agent loop decision.");
 }
 
 function createToolCall(
@@ -243,6 +374,70 @@ export async function runAgentLoop(
   emit({ type: "turn.created", turnId: turn.id, turn });
   emit({ type: "plan.updated", taskId: task.id, plan });
 
+  const homepageTextRemoval = extractHomepageTextRemoval(input.userRequest);
+  if (homepageTextRemoval) {
+    const toolCall = createToolCall(task.id, "file.replace.prepare", {
+      path: "src/app/page.tsx",
+      search: homepageTextRemoval,
+      replace: "",
+    });
+    emit({ type: "tool.started", taskId: task.id, toolCall });
+    try {
+      const result = await prepareHomepageTextRemoval({
+        workspaceRoot: workspace.rootPath,
+        taskId: task.id,
+        text: homepageTextRemoval,
+      });
+      emit({
+        type: "tool.completed",
+        taskId: task.id,
+        toolCall: completeToolCall(toolCall),
+        result,
+      });
+      if (result.approval) {
+        emit({
+          type: "approval.required",
+          taskId: task.id,
+          approval: result.approval,
+        });
+      }
+      const completedTask: Task = {
+        ...task,
+        status: "completed",
+        plan,
+        updatedAt: nowIso(),
+        completedAt: nowIso(),
+      };
+      const completedTurn: Turn = {
+        ...turn,
+        status: "completed",
+        updatedAt: nowIso(),
+        summary: `Prepared an approval to remove "${homepageTextRemoval}" from the homepage.`,
+      };
+      emit({
+        type: "task.completed",
+        taskId: task.id,
+        task: completedTask,
+        summary: completedTurn.summary ?? "",
+      });
+      return {
+        traceId: trace.id,
+        thread,
+        task: completedTask,
+        turn: completedTurn,
+        events,
+        summary: completedTurn.summary ?? "",
+      };
+    } catch (error) {
+      emit({
+        type: "tool.completed",
+        taskId: task.id,
+        toolCall: completeToolCall(toolCall, fallbackSummary(error)),
+        result: { error: fallbackSummary(error) },
+      });
+    }
+  }
+
   const messages: AgentMessage[] = [
     {
       role: "system",
@@ -253,7 +448,7 @@ export async function runAgentLoop(
       content: input.userRequest,
     },
   ];
-  let toolContext: AgentLoopToolContext = { workspace };
+  let toolContext: AgentLoopToolContext = { workspace, taskId: task.id };
   let summary = "Agent loop stopped without a final answer.";
   const maxIterations = Math.min(
     Math.max(input.maxIterations ?? DEFAULT_MAX_ITERATIONS, 1),
@@ -313,6 +508,14 @@ export async function runAgentLoop(
         toolCall: completeToolCall(toolCall),
         result: toolResult.result,
       });
+      const approval = extractApprovalFromToolResult(toolResult.result);
+      if (approval) {
+        emit({
+          type: "approval.required",
+          taskId: task.id,
+          approval,
+        });
+      }
       messages.push(observationMessage(tool.name, toolResult.result));
     } catch (error) {
       const observation = { error: fallbackSummary(error) };
@@ -358,4 +561,13 @@ export async function runAgentLoop(
     events,
     summary,
   };
+}
+
+function extractApprovalFromToolResult(result: unknown) {
+  if (!result || typeof result !== "object") return null;
+  if (!("approval" in result)) return null;
+  const approval = (result as { approval?: unknown }).approval;
+  if (!approval || typeof approval !== "object") return null;
+  if (!("id" in approval) || !("action" in approval)) return null;
+  return approval as Extract<AgentEvent, { type: "approval.required" }>["approval"];
 }

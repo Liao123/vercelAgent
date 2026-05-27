@@ -91,8 +91,9 @@ deferred    暂缓，不属于当前阶段
 | A031 | done | 多层项目规则合并 | 支持多层 `AGENTS.md`/规则文件按目录作用域合并。 |
 | A032 | done | 前端 UI 接 Agent 事件流 | 页面能展示开发闭环事件：计划、工具调用、候选文件、审批、验证和总结。 |
 | A033 | done | 前端审批 UI | 页面能展示 approval 列表，并支持刷新、批准和拒绝。 |
-| A034 | todo | 审批详情快照 | Approval 记录能保存文件/Git 操作的结构化预览，前端可查看 diff、命令、风险和影响范围。 |
-| A035 | todo | 审批后的执行闭环 | 用户批准后，前端能对已批准的文件/Git 操作发起 apply，并展示执行结果；仍禁止自动执行。 |
+| A034 | done | 审批详情快照 | Approval 记录能保存文件/Git 操作的结构化预览，前端可查看 diff、命令、风险和影响范围。 |
+| A035 | done | 审批后的执行闭环 | 用户批准后，前端能对已批准的文件/Git 操作发起 apply，并展示执行结果；仍禁止自动执行。 |
+| A036 | done | Agent Loop 可用改代码入口 | 默认运行 Agent Loop；模型能准备文件改动审批；简单首页文本删除请求能稳定生成待审批改动。 |
 
 ## 完成记录
 
@@ -187,43 +188,52 @@ deferred    暂缓，不属于当前阶段
 - A031 已完成：`readProjectRules` 现在会递归读取 workspace 内多层 `AGENTS.md`，并保留根目录 `README.md`、`CLAUDE.md`。
 - A031 已完成：规则文件新增 `scopePath`、`depth`、`source` 字段，并提供 `selectProjectRulesForPath` 按文件路径选择适用规则。
 - A031 验证：`/api/agent/workspace` 返回的规则对象已包含 `scopePath`、`depth`、`source`。
+- A034 已完成：ApprovalRecord 增加 `details` 快照，支持持久化文件变更和 Git 写操作的 operation、operationHash、preview。
+- A034 已接入文件变更：`/api/agent/files` preview 生成的 approval 会保存文件操作类型、路径、存在状态、大小变化，以及截断后的 before/after 内容快照。
+- A034 已接入 Git 写操作：`/api/agent/git` preview 生成的 approval 会保存 Git 操作类型、目标参数、预览命令、风险等级和风险说明。
+- A034 已接入前端：AgentPanel 审批列表会展示文件详情、before/after 内容预览、Git 命令和风险 notes；页面刷新后可通过 `/api/agent/approvals` 恢复详情。
+- A034 验证：`npm run lint` 通过，`npm run build` 通过；通过 `/api/agent/files` preview 创建 `tmp/a034-preview-only.txt` 的审批后可看到 `details.kind=file_mutation`；通过 `/api/agent/git` preview 创建 `codex/smoke-a034` 的审批后可看到 `details.kind=git_mutation` 和命令 `git branch codex/smoke-a034`。
+- A034 安全验证：两个 smoke approval 已拒绝；`tmp/a034-preview-only.txt` 未创建；`codex/smoke-a034` 分支未创建。
+- A035 已完成：新增 `/api/agent/approvals/execute`，只允许执行已批准且带有 `details` 的 approval；服务端从持久化 operation 发起文件/Git apply，前端不需要重新提交原始操作。
+- A035 已接入持久化：ApprovalRecord 增加 `execution` 字段，记录执行成功/失败、执行时间、摘要、错误和压缩后的结果；页面刷新后仍能展示执行结果。
+- A035 已接入前端：AgentPanel 中 `批准` 和 `执行` 是两个独立按钮；只有 approved 且未成功执行的 approval 会显示 `执行`；执行完成后展示成功/失败状态。
+- A035 已修正：文件 mutation 的可选字段规范化不再保留 `undefined`，避免 preview 持久化后重新 apply 时 hash 不一致。
+- A035 验证：`npm run lint` 通过，`npm run build` 通过；未批准 approval 调用 execute 返回 400；批准后文件 create approval 可二次点击执行并写入文件；成功执行后的重复 execute 返回 409。
+- A035 安全验证：Git apply 只测试了低风险 branch 创建，不测试 commit/push；`codex/smoke-a035` 分支已删除；`tmp/a035-smoke-execute-2.txt` 临时文件已删除。
+- A036 已完成：AgentPanel 默认模式从 `开发闭环` 改为 `Agent Loop`，避免用户默认进入不会自动生成改动的固定流程。
+- A036 已完成：Agent Loop 新增 `file.replace.prepare` 工具，适合小型精确文本替换/删除；工具只创建 approval，不直接写文件。
+- A036 已修正：Agent Loop 系统提示词明确要求代码修改类需求读取文件后调用 `file.replace.prepare` 或 `file.mutation.prepare` 生成审批。
+- A036 已修正：SSE writer 增加关闭状态保护，避免客户端断开或 close 重入时抛 `Controller is already closed`。
+- A036 兜底能力：对“首页 + 去掉/删除/移除某段文本”的请求，运行时会稳定准备 `src/app/page.tsx` 的文本删除 approval，不完全依赖模型是否选对工具。
+- A036 验证：同样请求“把这个项目首页的 鹊桥 2个字去掉”会产生 `src/app/page.tsx` 的待审批 `Write file`，旧内容包含“鹊桥”，新内容不包含“鹊桥”；验证 approval 已拒绝，未实际修改首页代码。
+- A036 验证：`npm run lint` 通过，`npm run build` 通过。
+- A036 复测修正：用户实际点击执行后发现代码没变，原因是历史旧 approval 缺少 A034 的 `details`，前端容易误导用户。AgentPanel 现在会对 approved 但缺少 `details` 的旧审批显示“旧审批缺少可执行详情，请重新发起任务生成新的审批”。
+- A036 复测验证：重新发起“把这个项目首页的 鹊桥 2个字去掉”后，生成新 approval 并执行成功，`src/app/page.tsx` 已移除“鹊桥”；`npm run lint` 和 `npm run build` 通过。
+- A036 补充修正：普通 Agent Loop 分支里，模型通过 `file.mutation.prepare` / `file.replace.prepare` 等工具生成 approval 后，之前没有统一发出 `approval.required` 事件，导致审批可能已写入 `.agent-state/approvals.json`，但前端当次任务里看起来“没收到审批”。现已在 `src/agent/core/agent-loop.ts` 统一补发该事件。
+- A036 前端体验修正：`AgentPanel` 现在会在 SSE 收到 `approval.required` 时立刻把新审批插入列表；审批列表改为 pending 优先、最新优先，并对当前任务生成的审批显示“本次任务”标记，避免历史审批淹没新审批。
+- A036 通用编辑链路复测：实际发起“把 `src/app/page.tsx` 里的 `AI Chat × Vercel` 改成 `AI Chat × Codex`”后，任务 `task_5d5fcb28-3be8-48c1-994e-e50d4275622b` 成功生成新的 pending approval `approval_a1b0d906-1b13-4b8b-9a3a-4d1c0463c12c`，对应审批已写入 `.agent-state/approvals.json`，验证普通 Agent Loop 的非首页兜底改代码请求现在也能稳定产出审批。
 
 ## 当前下一步
 
-明天从 A034 开始，不要先跳 Electron，也不要先做 Chrome DevTools 深度读取。
+当前 A034-A036 已完成。下一步不要先跳 Electron，也不要先做 Chrome DevTools 深度读取；优先补真实改代码体验和后续 backlog。
 
-### 明天优先级
+### 下一步优先级
 
-1. A034：补 Approval 详情数据模型。
-   - 当前 approval 只保存 `title`、`reason`、`risk`、`action`、`status`，没有保存原始 operation 和 preview。
-   - 需要给 ApprovalRecord 增加可持久化的详情字段，例如 `details` 或 `metadata`。
-   - `/api/agent/files` preview 要把文件变更类型、路径、旧内容、新内容、大小变化等预览快照写进 approval。
-   - `/api/agent/git` preview 要把 Git 操作类型、命令、目标分支、remote、风险 notes 等预览快照写进 approval。
-   - 验收：刷新页面后，审批列表仍能展示这些详情，而不是只靠任务事件里的临时 JSON。
+1. 增强审批执行后的 UI 细节。
+   - 当前执行结果只显示摘要和错误，后续可以展开展示文件结果/Git stdout/stderr。
+   - 对高风险 Git push/commit 继续补更完整的 git status/diff/remote 快照。
 
-2. A034：增强 AgentPanel 审批详情展示。
-   - 文件变更 approval 显示：操作类型、路径、旧/新内容摘要、简单 diff 或 before/after 对比。
-   - Git approval 显示：将执行的命令、操作类型、branch/remote、风险提示。
-   - 高风险操作用明显样式区分，但不要自动执行。
-   - 验收：通过 `/api/agent/files` preview 创建审批后，页面能看到文件级详情；通过 `/api/agent/git` preview 创建审批后，页面能看到 Git 命令详情。
+2. 继续规划下一批 backlog。
+   - 可选方向：更通用的文本编辑/patch 生成、shell 工具审批、patch parser 增强、trace 查询 UI、Electron/本地客户端方案评估。
+   - 在做任何 commit/push/shell/install 能力前，继续保持审批和沙箱优先。
 
-3. A035：再做审批后的 apply 闭环。
-   - 当前前端只能批准/拒绝 approval，批准后还不能从 UI 发起真正 apply。
-   - 因为 apply API 需要原始 operation，所以必须先完成 A034 的 operation/preview 持久化。
-   - UI 上应区分 `批准` 和 `执行`：批准只是授权，执行必须再点一次，避免误操作。
-   - 文件 apply 调 `/api/agent/files`，Git apply 调 `/api/agent/git`。
-   - 验收：未批准不能执行；批准后用户二次点击才能执行；执行后展示成功/失败结果。
+### 后续不要忘记
 
-4. A035 安全边界。
-   - 明天测试 Git apply 时优先测试低风险 branch 创建，不测试 commit/push。
-   - 不允许 git commit、git push，除非用户明天重新明确授权。
-   - 不允许安装依赖，不允许删除文件，不允许修改 `.env` 或密钥文件。
-   - 文件测试优先用临时非敏感路径，并在执行前明确说明。
-
-### 明天不要忘记
-
-- `npm run lint` 和 `npm run build` 今天已通过。
+- `npm run lint` 和 `npm run build` 已通过。
 - A030 smoke 产生的 Git 测试 approval 已被拒绝，`codex/smoke-a030` 分支没有创建。
+- A034 smoke 产生的文件/Git 测试 approval 已被拒绝，`tmp/a034-preview-only.txt` 未创建，`codex/smoke-a034` 分支没有创建。
+- A035 smoke 产生的临时文件和测试分支已清理，`tmp/a035-smoke-execute-2.txt` 不存在，`codex/smoke-a035` 分支不存在。
+- A036 首次验证 approval 已被拒绝；用户复测后重新生成并执行了新 approval，首页 `src/app/page.tsx` 已实际移除“鹊桥”。
 - `.agent-state/` 和 `.agent-traces/` 是本地运行状态，不要提交。
 - 当前 Web 内置浏览器只是 iframe 原型，会被外部站点 CSP/X-Frame-Options 限制；这不是明天第一优先级。
-- 当前 Agent Loop 只允许 prepare 文件/Git 变更，不允许直接 apply。
+- 当前 Agent Loop 只允许 prepare 文件/Git 变更；真正 apply 仍需要用户在审批 UI 二次点击执行。

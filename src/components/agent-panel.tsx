@@ -1,7 +1,13 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import type { AgentEvent } from "@/agent/types";
+import type {
+  AgentEvent,
+  ApprovalContentSnapshot,
+  ApprovalDetails,
+  ApprovalFileMutationPreview,
+  ApprovalGitMutationOperation,
+} from "@/agent/types";
 
 type ApprovalRecordView = {
   id: string;
@@ -13,6 +19,14 @@ type ApprovalRecordView = {
   createdAt: string;
   status: "pending" | "approved" | "rejected";
   decidedAt?: string;
+  details?: ApprovalDetails;
+  execution?: {
+    status: "succeeded" | "failed";
+    attemptedAt: string;
+    summary: string;
+    error?: string;
+    result?: unknown;
+  };
 };
 
 type WorkspaceInfoView = {
@@ -32,6 +46,14 @@ type EventBucket = {
 };
 
 type RunMode = "develop" | "loop";
+type ApprovalEventView = Extract<
+  AgentEvent,
+  { type: "approval.required" }
+>["approval"];
+type ApprovalFilterState = {
+  pendingOnly: boolean;
+  currentTaskOnly: boolean;
+};
 
 const APPROVAL_STATUS_LABELS: Record<ApprovalRecordView["status"], string> = {
   pending: "待审批",
@@ -44,6 +66,74 @@ const APPROVAL_RISK_LABELS: Record<ApprovalRecordView["risk"], string> = {
   medium: "中",
   high: "高",
 };
+const APPROVAL_STATUS_ORDER: Record<ApprovalRecordView["status"], number> = {
+  pending: 0,
+  approved: 1,
+  rejected: 2,
+};
+
+function sortApprovals(items: ApprovalRecordView[]): ApprovalRecordView[] {
+  return [...items].sort((left, right) => {
+    const statusDelta =
+      APPROVAL_STATUS_ORDER[left.status] - APPROVAL_STATUS_ORDER[right.status];
+    if (statusDelta !== 0) return statusDelta;
+    return right.createdAt.localeCompare(left.createdAt);
+  });
+}
+
+function normalizeApprovalView(
+  approval: ApprovalRecordView | ApprovalEventView,
+): ApprovalRecordView {
+  const status =
+    "status" in approval &&
+    (approval.status === "pending" ||
+      approval.status === "approved" ||
+      approval.status === "rejected")
+      ? approval.status
+      : "pending";
+  const decidedAt =
+    "decidedAt" in approval && typeof approval.decidedAt === "string"
+      ? approval.decidedAt
+      : undefined;
+  const execution =
+    "execution" in approval &&
+    approval.execution &&
+    typeof approval.execution === "object"
+      ? approval.execution
+      : undefined;
+
+  return {
+    ...approval,
+    status,
+    decidedAt,
+    execution,
+  };
+}
+
+function upsertApproval(
+  current: ApprovalRecordView[],
+  incoming: ApprovalRecordView | ApprovalEventView,
+): ApprovalRecordView[] {
+  const next = normalizeApprovalView(incoming);
+  const filtered = current.filter((approval) => approval.id !== next.id);
+  return sortApprovals([next, ...filtered]);
+}
+
+function filterApprovals(
+  approvals: ApprovalRecordView[],
+  filters: ApprovalFilterState,
+  currentTaskId: string | null,
+): ApprovalRecordView[] {
+  return approvals.filter((approval) => {
+    if (filters.pendingOnly && approval.status !== "pending") {
+      return false;
+    }
+    if (filters.currentTaskOnly && approval.taskId !== currentTaskId) {
+      return false;
+    }
+    return true;
+  });
+}
 
 function bucketEvents(events: AgentEvent[]): EventBucket {
   const bucket: EventBucket = {
@@ -112,20 +202,161 @@ function riskClassName(risk: ApprovalRecordView["risk"]): string {
   return "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300";
 }
 
+function fileOperationLabel(type: ApprovalFileMutationPreview["type"]): string {
+  if (type === "create") return "创建文件";
+  if (type === "write") return "写入文件";
+  if (type === "delete") return "删除文件";
+  return "重命名文件";
+}
+
+function gitOperationTarget(operation: ApprovalGitMutationOperation): string {
+  if (operation.type === "branch") {
+    return operation.checkout === false
+      ? `branch ${operation.branchName}`
+      : `checkout -b ${operation.branchName}`;
+  }
+  if (operation.type === "commit") {
+    if (operation.all) return "commit -am";
+    return operation.paths?.length
+      ? `commit paths: ${operation.paths.join(", ")}`
+      : "commit staged changes";
+  }
+  return `${operation.remote ?? "origin"}${operation.branch ? ` ${operation.branch}` : ""}`;
+}
+
+function sizeText(value?: number): string {
+  return typeof value === "number" ? `${value} bytes` : "-";
+}
+
+function ContentSnapshotBlock({
+  label,
+  snapshot,
+}: {
+  label: string;
+  snapshot?: ApprovalContentSnapshot;
+}) {
+  if (!snapshot) return null;
+
+  return (
+    <div className="min-w-0 space-y-1">
+      <p className="text-[11px] font-medium text-zinc-500">
+        {label} · {snapshot.lineCount} 行 · {snapshot.length} 字符
+        {snapshot.truncated ? " · 已截断" : ""}
+      </p>
+      <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md bg-zinc-950 p-2 text-[11px] leading-relaxed text-zinc-100">
+        {snapshot.text || "(empty)"}
+      </pre>
+    </div>
+  );
+}
+
+function ApprovalDetailsView({ details }: { details?: ApprovalDetails }) {
+  if (!details) return null;
+
+  if (details.kind === "file_mutation") {
+    const preview = details.preview;
+    return (
+      <div className="space-y-2 rounded-md bg-zinc-50 p-2 dark:bg-zinc-900/80">
+        <div className="grid gap-1 text-[11px] text-zinc-600 dark:text-zinc-400">
+          <p>
+            类型：{fileOperationLabel(preview.type)}
+          </p>
+          {preview.path && <p className="break-all">路径：{preview.path}</p>}
+          {preview.fromPath && (
+            <p className="break-all">来源：{preview.fromPath}</p>
+          )}
+          {preview.toPath && (
+            <p className="break-all">目标：{preview.toPath}</p>
+          )}
+          <p>
+            大小：{sizeText(preview.oldSize)} -&gt;{" "}
+            {sizeText(preview.newSize)}
+            {typeof preview.sizeDelta === "number"
+              ? ` (${preview.sizeDelta >= 0 ? "+" : ""}${preview.sizeDelta})`
+              : ""}
+          </p>
+          <p>
+            存在：{preview.existsBefore ? "是" : "否"} -&gt;{" "}
+            {preview.existsAfter ? "是" : "否"}
+          </p>
+        </div>
+        <div className="grid gap-2 md:grid-cols-2">
+          <ContentSnapshotBlock label="Before" snapshot={preview.oldContent} />
+          <ContentSnapshotBlock label="After" snapshot={preview.newContent} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2 rounded-md bg-zinc-50 p-2 text-[11px] text-zinc-600 dark:bg-zinc-900/80 dark:text-zinc-400">
+      <p>类型：Git {details.operation.type}</p>
+      <p className="break-all">目标：{gitOperationTarget(details.operation)}</p>
+      <p className="break-all font-mono text-zinc-800 dark:text-zinc-200">
+        {details.preview.command}
+      </p>
+      {details.preview.notes.length > 0 && (
+        <ul className="list-inside list-disc space-y-1">
+          {details.preview.notes.map((note) => (
+            <li key={note}>{note}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function ExecutionResultView({
+  execution,
+}: {
+  execution?: ApprovalRecordView["execution"];
+}) {
+  if (!execution) return null;
+
+  const isSuccess = execution.status === "succeeded";
+
+  return (
+    <div
+      className={`rounded-md px-2 py-1.5 text-[11px] ${
+        isSuccess
+          ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+          : "bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300"
+      }`}
+    >
+      <p className="font-medium">
+        {isSuccess ? "执行成功" : "执行失败"} · {execution.attemptedAt}
+      </p>
+      <p className="mt-1 break-words">{execution.summary}</p>
+      {execution.error && (
+        <p className="mt-1 break-words font-mono">{execution.error}</p>
+      )}
+    </div>
+  );
+}
+
 export function AgentPanel() {
   const [request, setRequest] = useState("");
-  const [runMode, setRunMode] = useState<RunMode>("develop");
+  const [runMode, setRunMode] = useState<RunMode>("loop");
   const [workspacePath, setWorkspacePath] = useState("");
   const [workspace, setWorkspace] = useState<WorkspaceInfoView | null>(null);
   const [workspaceStatus, setWorkspaceStatus] = useState<string | null>(null);
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [approvals, setApprovals] = useState<ApprovalRecordView[]>([]);
   const [running, setRunning] = useState(false);
+  const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
+  const [approvalFilters, setApprovalFilters] = useState<ApprovalFilterState>({
+    pendingOnly: true,
+    currentTaskOnly: false,
+  });
   const [loadingWorkspace, setLoadingWorkspace] = useState(false);
   const [loadingApprovals, setLoadingApprovals] = useState(false);
   const [approvalStatus, setApprovalStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const bucket = useMemo(() => bucketEvents(events), [events]);
+  const filteredApprovals = useMemo(
+    () => filterApprovals(approvals, approvalFilters, currentTaskId),
+    [approvals, approvalFilters, currentTaskId],
+  );
   const workspaceBusy = running || loadingWorkspace;
 
   useEffect(() => {
@@ -136,7 +367,9 @@ export function AgentPanel() {
         const res = await fetch("/api/agent/approvals");
         const data = await res.json();
         if (!res.ok || cancelled) return;
-        setApprovals(Array.isArray(data.approvals) ? data.approvals : []);
+        setApprovals(
+          sortApprovals(Array.isArray(data.approvals) ? data.approvals : []),
+        );
       } catch {
         // The manual refresh button surfaces approval API failures.
       }
@@ -208,7 +441,9 @@ export function AgentPanel() {
       const res = await fetch("/api/agent/approvals");
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "读取审批失败。");
-      setApprovals(Array.isArray(data.approvals) ? data.approvals : []);
+      setApprovals(
+        sortApprovals(Array.isArray(data.approvals) ? data.approvals : []),
+      );
       setApprovalStatus("审批列表已刷新。");
     } catch (err) {
       setError(err instanceof Error ? err.message : "读取审批失败。");
@@ -235,14 +470,55 @@ export function AgentPanel() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "处理审批失败。");
-      setApprovals((current) =>
-        current.map((approval) =>
+      setApprovals((current) => {
+        const next = current.map((approval) =>
           approval.id === approvalId ? data.approval : approval,
-        ),
-      );
+        );
+        return sortApprovals(next);
+      });
       setApprovalStatus(status === "approved" ? "已批准。" : "已拒绝。");
     } catch (err) {
       setError(err instanceof Error ? err.message : "处理审批失败。");
+    } finally {
+      setLoadingApprovals(false);
+    }
+  }
+
+  async function executeApproval(approval: ApprovalRecordView) {
+    if (loadingApprovals) return;
+
+    setLoadingApprovals(true);
+    setApprovalStatus(null);
+    setError(null);
+
+    try {
+      const res = await fetch("/api/agent/approvals/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approvalId: approval.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        if (data.approval) {
+          setApprovals((current) => {
+            const next = current.map((item) =>
+              item.id === approval.id ? data.approval : item,
+            );
+            return sortApprovals(next);
+          });
+        }
+        throw new Error(data.error ?? "执行审批失败。");
+      }
+      setApprovals((current) => {
+        const next = current.map((item) =>
+          item.id === approval.id ? data.approval : item,
+        );
+        return sortApprovals(next);
+      });
+      setApprovalStatus("执行完成。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "执行审批失败。");
+      void loadApprovals();
     } finally {
       setLoadingApprovals(false);
     }
@@ -255,6 +531,12 @@ export function AgentPanel() {
 
     setEvents([]);
     setError(null);
+    setApprovalStatus(null);
+    setCurrentTaskId(null);
+    setApprovalFilters({
+      pendingOnly: true,
+      currentTaskOnly: false,
+    });
     setRunning(true);
 
     try {
@@ -295,6 +577,17 @@ export function AgentPanel() {
           if (!dataLine) continue;
 
           const parsed = JSON.parse(dataLine.slice("data: ".length)) as AgentEvent;
+          if (parsed.type === "task.created") {
+            setCurrentTaskId(parsed.taskId);
+            setApprovalFilters({
+              pendingOnly: true,
+              currentTaskOnly: true,
+            });
+          }
+          if (parsed.type === "approval.required") {
+            setApprovals((current) => upsertApproval(current, parsed.approval));
+            setApprovalStatus("已收到新的审批请求。");
+          }
           setEvents((prev) => [...prev, parsed]);
         }
       }
@@ -313,7 +606,7 @@ export function AgentPanel() {
           开发智能体
         </h2>
         <p className="mt-1 text-xs text-zinc-500">
-          运行最小开发闭环：定位文件、计划、工具事件、审批和总结。
+          定位文件、准备改动审批；批准后需要再点执行。
         </p>
       </div>
 
@@ -426,6 +719,58 @@ export function AgentPanel() {
             {loadingApprovals ? "刷新中" : "刷新"}
           </button>
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() =>
+              setApprovalFilters((current) => ({
+                ...current,
+                pendingOnly: !current.pendingOnly,
+              }))
+            }
+            className={`rounded-md px-2 py-1 text-xs transition ${
+              approvalFilters.pendingOnly
+                ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950"
+                : "border border-zinc-300 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            }`}
+          >
+            仅待审批
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              setApprovalFilters((current) => ({
+                ...current,
+                currentTaskOnly: !current.currentTaskOnly,
+              }))
+            }
+            disabled={!currentTaskId}
+            className={`rounded-md px-2 py-1 text-xs transition disabled:opacity-50 ${
+              approvalFilters.currentTaskOnly
+                ? "bg-blue-600 text-white dark:bg-blue-500"
+                : "border border-zinc-300 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            }`}
+          >
+            仅本次任务
+          </button>
+          {(approvalFilters.pendingOnly || approvalFilters.currentTaskOnly) && (
+            <button
+              type="button"
+              onClick={() =>
+                setApprovalFilters({
+                  pendingOnly: false,
+                  currentTaskOnly: false,
+                })
+              }
+              className="rounded-md border border-zinc-300 px-2 py-1 text-xs text-zinc-600 transition hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            >
+              显示全部
+            </button>
+          )}
+          <p className="text-xs text-zinc-500">
+            显示 {filteredApprovals.length} / {approvals.length} 条
+          </p>
+        </div>
         {approvalStatus && (
           <p className="text-xs text-emerald-600 dark:text-emerald-400">
             {approvalStatus}
@@ -435,12 +780,20 @@ export function AgentPanel() {
           <p className="rounded-md bg-zinc-50 px-3 py-3 text-xs text-zinc-500 dark:bg-zinc-900">
             暂无审批请求。
           </p>
+        ) : filteredApprovals.length === 0 ? (
+          <p className="rounded-md bg-zinc-50 px-3 py-3 text-xs text-zinc-500 dark:bg-zinc-900">
+            当前筛选条件下没有审批。
+          </p>
         ) : (
           <div className="max-h-56 space-y-2 overflow-auto">
-            {approvals.map((approval) => (
+            {filteredApprovals.map((approval) => (
               <article
                 key={approval.id}
-                className="space-y-2 rounded-md border border-zinc-200 p-2 text-xs dark:border-zinc-800"
+                className={`space-y-2 rounded-md border p-2 text-xs ${
+                  approval.status === "pending"
+                    ? "border-blue-200 bg-blue-50/40 dark:border-blue-900 dark:bg-blue-950/20"
+                    : "border-zinc-200 dark:border-zinc-800"
+                }`}
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
@@ -451,17 +804,31 @@ export function AgentPanel() {
                       {approval.reason}
                     </p>
                   </div>
-                  <span
-                    className={`shrink-0 rounded px-1.5 py-0.5 ${riskClassName(
-                      approval.risk,
-                    )}`}
-                  >
-                    风险 {APPROVAL_RISK_LABELS[approval.risk]}
-                  </span>
+                  <div className="flex shrink-0 flex-wrap gap-1">
+                    {approval.taskId === currentTaskId && (
+                      <span className="rounded bg-blue-50 px-1.5 py-0.5 text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                        本次任务
+                      </span>
+                    )}
+                    <span
+                      className={`rounded px-1.5 py-0.5 ${riskClassName(
+                        approval.risk,
+                      )}`}
+                    >
+                      风险 {APPROVAL_RISK_LABELS[approval.risk]}
+                    </span>
+                  </div>
                 </div>
                 <p className="break-all font-mono text-[11px] text-zinc-500">
                   {approval.action}
                 </p>
+                <ApprovalDetailsView details={approval.details} />
+                {approval.status === "approved" && !approval.details && (
+                  <p className="rounded-md bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700 dark:bg-amber-950 dark:text-amber-300">
+                    旧审批缺少可执行详情，请重新发起任务生成新的审批。
+                  </p>
+                )}
+                <ExecutionResultView execution={approval.execution} />
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-zinc-500">
                     {APPROVAL_STATUS_LABELS[approval.status]}
@@ -490,6 +857,17 @@ export function AgentPanel() {
                       </button>
                     </div>
                   )}
+                  {approval.status === "approved" &&
+                    approval.execution?.status !== "succeeded" && (
+                      <button
+                        type="button"
+                        onClick={() => void executeApproval(approval)}
+                        disabled={loadingApprovals || !approval.details}
+                        className="rounded-md bg-blue-600 px-2 py-1 text-xs text-white transition hover:bg-blue-500 disabled:opacity-50 dark:bg-blue-500 dark:hover:bg-blue-400"
+                      >
+                        执行
+                      </button>
+                    )}
                 </div>
               </article>
             ))}
@@ -505,7 +883,7 @@ export function AgentPanel() {
         )}
         {running && events.length === 0 && (
           <p className="rounded-lg bg-zinc-50 px-3 py-8 text-center text-sm text-zinc-500 dark:bg-zinc-900">
-            正在启动开发闭环...
+            正在启动智能体...
           </p>
         )}
         <Section title="计划" events={bucket.plans} />

@@ -101,6 +101,97 @@ export type Turn = {
 
 export type ApprovalRisk = "low" | "medium" | "high";
 
+export type ApprovalContentSnapshot = {
+  text: string;
+  length: number;
+  lineCount: number;
+  truncated: boolean;
+};
+
+export type ApprovalFileMutationOperation =
+  | {
+      type: "create";
+      path: string;
+      content: string;
+      overwrite?: boolean;
+    }
+  | {
+      type: "write";
+      path: string;
+      content: string;
+    }
+  | {
+      type: "delete";
+      path: string;
+    }
+  | {
+      type: "rename";
+      fromPath: string;
+      toPath: string;
+      overwrite?: boolean;
+    };
+
+export type ApprovalFileMutationPreview = {
+  type: ApprovalFileMutationOperation["type"];
+  path?: string;
+  fromPath?: string;
+  toPath?: string;
+  existsBefore: boolean;
+  existsAfter: boolean;
+  oldSize?: number;
+  newSize?: number;
+  sizeDelta?: number;
+  oldContent?: ApprovalContentSnapshot;
+  newContent?: ApprovalContentSnapshot;
+};
+
+export type ApprovalGitMutationOperation =
+  | {
+      type: "branch";
+      branchName: string;
+      checkout?: boolean;
+    }
+  | {
+      type: "commit";
+      message: string;
+      all?: boolean;
+      paths?: string[];
+    }
+  | {
+      type: "push";
+      remote?: string;
+      branch?: string;
+      setUpstream?: boolean;
+    };
+
+export type ApprovalGitMutationPreview = {
+  command: string;
+  risk: ApprovalRisk;
+  notes: string[];
+};
+
+export type ApprovalDetails =
+  | {
+      kind: "file_mutation";
+      operationHash: string;
+      operation: ApprovalFileMutationOperation;
+      preview: ApprovalFileMutationPreview;
+    }
+  | {
+      kind: "git_mutation";
+      operationHash: string;
+      operation: ApprovalGitMutationOperation;
+      preview: ApprovalGitMutationPreview;
+    };
+
+export type ApprovalExecution = {
+  status: "succeeded" | "failed";
+  attemptedAt: string;
+  summary: string;
+  error?: string;
+  result?: unknown;
+};
+
 export type ApprovalRequest = {
   id: AgentId;
   taskId: AgentId;
@@ -109,6 +200,8 @@ export type ApprovalRequest = {
   risk: ApprovalRisk;
   action: string;
   createdAt: string;
+  details?: ApprovalDetails;
+  execution?: ApprovalExecution;
 };
 
 export type ToolCallRecord = {

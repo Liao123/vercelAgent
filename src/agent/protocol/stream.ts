@@ -16,6 +16,7 @@ export type AgentEventWriter = {
 export function createAgentEventStream(): AgentEventWriter {
   const encoder = new TextEncoder();
   let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
+  let closed = false;
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -32,15 +33,24 @@ export function createAgentEventStream(): AgentEventWriter {
       },
     }),
     emit(event) {
-      controllerRef?.enqueue(
-        encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`),
-      );
+      if (closed || !controllerRef) return;
+      try {
+        controllerRef.enqueue(
+          encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`),
+        );
+      } catch {
+        closed = true;
+      }
     },
     close() {
-      controllerRef?.close();
+      if (closed || !controllerRef) return;
+      closed = true;
+      controllerRef.close();
     },
     error(error) {
-      controllerRef?.error(error);
+      if (closed || !controllerRef) return;
+      closed = true;
+      controllerRef.error(error);
     },
   };
 }

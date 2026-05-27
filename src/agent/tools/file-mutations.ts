@@ -8,6 +8,10 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createApprovalRequest, requireApprovedApproval } from "@/agent/approval";
+import type {
+  ApprovalContentSnapshot,
+  ApprovalFileMutationPreview,
+} from "@/agent/types";
 import {
   resolveInsideWorkspace,
   toWorkspaceRelative,
@@ -43,18 +47,20 @@ export type PreparedFileMutation = {
   operationHash: string;
   requiredApprovalAction: string;
   approval?: ReturnType<typeof createApprovalRequest>;
-  preview: {
-    type: FileMutationOperation["type"];
-    path?: string;
-    fromPath?: string;
-    toPath?: string;
-    existsBefore: boolean;
-    existsAfter: boolean;
-    oldContent?: string;
-    newContent?: string;
-    oldSize?: number;
-    newSize?: number;
-  };
+  preview: FileMutationPreview;
+};
+
+export type FileMutationPreview = {
+  type: FileMutationOperation["type"];
+  path?: string;
+  fromPath?: string;
+  toPath?: string;
+  existsBefore: boolean;
+  existsAfter: boolean;
+  oldContent?: string;
+  newContent?: string;
+  oldSize?: number;
+  newSize?: number;
 };
 
 export type AppliedFileMutation = PreparedFileMutation & {
@@ -131,16 +137,101 @@ function normalizeOperation(
   operation: FileMutationOperation,
 ): FileMutationOperation {
   if (operation.type === "rename") {
-    return {
-      ...operation,
+    const normalized: FileMutationOperation = {
+      type: "rename",
       fromPath: validateRelativePath("fromPath", operation.fromPath),
       toPath: validateRelativePath("toPath", operation.toPath),
     };
+    if (typeof operation.overwrite === "boolean") {
+      normalized.overwrite = operation.overwrite;
+    }
+    return normalized;
+  }
+  if (operation.type === "create") {
+    const normalized: FileMutationOperation = {
+      type: "create",
+      path: validateRelativePath("path", operation.path),
+      content: operation.content,
+    };
+    if (typeof operation.overwrite === "boolean") {
+      normalized.overwrite = operation.overwrite;
+    }
+    return normalized;
+  }
+  if (operation.type === "write") {
+    return {
+      type: "write",
+      path: validateRelativePath("path", operation.path),
+      content: operation.content,
+    };
   }
   return {
-    ...operation,
+    type: "delete",
     path: validateRelativePath("path", operation.path),
   };
+}
+
+const CONTENT_SNAPSHOT_LIMIT = 12_000;
+
+function contentSnapshot(content: string): ApprovalContentSnapshot {
+  const truncated = content.length > CONTENT_SNAPSHOT_LIMIT;
+  const text = truncated ? content.slice(0, CONTENT_SNAPSHOT_LIMIT) : content;
+  return {
+    text,
+    length: content.length,
+    lineCount: content.length === 0 ? 0 : content.split(/\r\n|\r|\n/).length,
+    truncated,
+  };
+}
+
+function approvalPreview(preview: FileMutationPreview): ApprovalFileMutationPreview {
+  return {
+    type: preview.type,
+    path: preview.path,
+    fromPath: preview.fromPath,
+    toPath: preview.toPath,
+    existsBefore: preview.existsBefore,
+    existsAfter: preview.existsAfter,
+    oldSize: preview.oldSize,
+    newSize: preview.newSize,
+    sizeDelta:
+      typeof preview.oldSize === "number" && typeof preview.newSize === "number"
+        ? preview.newSize - preview.oldSize
+        : undefined,
+    oldContent:
+      typeof preview.oldContent === "string"
+        ? contentSnapshot(preview.oldContent)
+        : undefined,
+    newContent:
+      typeof preview.newContent === "string"
+        ? contentSnapshot(preview.newContent)
+        : undefined,
+  };
+}
+
+function createFileMutationApproval(input: {
+  taskId: string;
+  title: string;
+  reason: string;
+  risk: "low" | "medium" | "high";
+  action: string;
+  operationHash: string;
+  operation: FileMutationOperation;
+  preview: FileMutationPreview;
+}): ReturnType<typeof createApprovalRequest> {
+  return createApprovalRequest({
+    taskId: input.taskId,
+    title: input.title,
+    reason: input.reason,
+    risk: input.risk,
+    action: input.action,
+    details: {
+      kind: "file_mutation",
+      operationHash: input.operationHash,
+      operation: input.operation,
+      preview: approvalPreview(input.preview),
+    },
+  });
 }
 
 export async function prepareFileMutation(input: {
@@ -164,31 +255,35 @@ export async function prepareFileMutation(input: {
     if (toFile && !operation.overwrite) {
       throw new Error(`Target already exists: ${operation.toPath}`);
     }
+    const preview: FileMutationPreview = {
+      type: "rename",
+      fromPath: toWorkspaceRelative(input.rootPath, fromAbsolute),
+      toPath: toWorkspaceRelative(input.rootPath, toAbsolute),
+      existsBefore: true,
+      existsAfter: true,
+      oldContent: fromFile.content,
+      newContent: fromFile.content,
+      oldSize: fromFile.size,
+      newSize: fromFile.size,
+    };
 
     return {
       operation,
       operationHash,
       requiredApprovalAction,
       approval: input.createApproval
-        ? createApprovalRequest({
+        ? createFileMutationApproval({
             taskId: input.taskId,
             title: "Rename file",
             reason: `Rename ${operation.fromPath} to ${operation.toPath}.`,
             risk: toFile ? "high" : "medium",
             action: requiredApprovalAction,
+            operationHash,
+            operation,
+            preview,
           })
         : undefined,
-      preview: {
-        type: "rename",
-        fromPath: toWorkspaceRelative(input.rootPath, fromAbsolute),
-        toPath: toWorkspaceRelative(input.rootPath, toAbsolute),
-        existsBefore: true,
-        existsAfter: true,
-        oldContent: fromFile.content,
-        newContent: fromFile.content,
-        oldSize: fromFile.size,
-        newSize: fromFile.size,
-      },
+      preview,
     };
   }
 
@@ -199,29 +294,33 @@ export async function prepareFileMutation(input: {
     if (existing && !operation.overwrite) {
       throw new Error(`File already exists: ${operation.path}`);
     }
+    const preview: FileMutationPreview = {
+      type: "create",
+      path: toWorkspaceRelative(input.rootPath, absolutePath),
+      existsBefore: Boolean(existing),
+      existsAfter: true,
+      oldContent: existing?.content,
+      newContent: operation.content,
+      oldSize: existing?.size,
+      newSize: Buffer.byteLength(operation.content, "utf8"),
+    };
     return {
       operation,
       operationHash,
       requiredApprovalAction,
       approval: input.createApproval
-        ? createApprovalRequest({
+        ? createFileMutationApproval({
             taskId: input.taskId,
             title: existing ? "Overwrite file" : "Create file",
             reason: `${existing ? "Overwrite" : "Create"} ${operation.path}.`,
             risk: existing ? "high" : "medium",
             action: requiredApprovalAction,
+            operationHash,
+            operation,
+            preview,
           })
         : undefined,
-      preview: {
-        type: "create",
-        path: toWorkspaceRelative(input.rootPath, absolutePath),
-        existsBefore: Boolean(existing),
-        existsAfter: true,
-        oldContent: existing?.content,
-        newContent: operation.content,
-        oldSize: existing?.size,
-        newSize: Buffer.byteLength(operation.content, "utf8"),
-      },
+      preview,
     };
   }
 
@@ -229,29 +328,33 @@ export async function prepareFileMutation(input: {
     if (!existing) {
       throw new Error(`File does not exist: ${operation.path}`);
     }
+    const preview: FileMutationPreview = {
+      type: "write",
+      path: toWorkspaceRelative(input.rootPath, absolutePath),
+      existsBefore: true,
+      existsAfter: true,
+      oldContent: existing.content,
+      newContent: operation.content,
+      oldSize: existing.size,
+      newSize: Buffer.byteLength(operation.content, "utf8"),
+    };
     return {
       operation,
       operationHash,
       requiredApprovalAction,
       approval: input.createApproval
-        ? createApprovalRequest({
+        ? createFileMutationApproval({
             taskId: input.taskId,
             title: "Write file",
             reason: `Replace contents of ${operation.path}.`,
             risk: "medium",
             action: requiredApprovalAction,
+            operationHash,
+            operation,
+            preview,
           })
         : undefined,
-      preview: {
-        type: "write",
-        path: toWorkspaceRelative(input.rootPath, absolutePath),
-        existsBefore: true,
-        existsAfter: true,
-        oldContent: existing.content,
-        newContent: operation.content,
-        oldSize: existing.size,
-        newSize: Buffer.byteLength(operation.content, "utf8"),
-      },
+      preview,
     };
   }
 
@@ -259,27 +362,32 @@ export async function prepareFileMutation(input: {
     throw new Error(`File does not exist: ${operation.path}`);
   }
 
+  const preview: FileMutationPreview = {
+    type: "delete",
+    path: toWorkspaceRelative(input.rootPath, absolutePath),
+    existsBefore: true,
+    existsAfter: false,
+    oldContent: existing.content,
+    oldSize: existing.size,
+  };
+
   return {
     operation,
     operationHash,
     requiredApprovalAction,
     approval: input.createApproval
-      ? createApprovalRequest({
+      ? createFileMutationApproval({
           taskId: input.taskId,
           title: "Delete file",
           reason: `Delete ${operation.path}.`,
           risk: "high",
           action: requiredApprovalAction,
+          operationHash,
+          operation,
+          preview,
         })
       : undefined,
-    preview: {
-      type: "delete",
-      path: toWorkspaceRelative(input.rootPath, absolutePath),
-      existsBefore: true,
-      existsAfter: false,
-      oldContent: existing.content,
-      oldSize: existing.size,
-    },
+    preview,
   };
 }
 

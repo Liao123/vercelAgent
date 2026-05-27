@@ -33,6 +33,7 @@ export type AgentLoopToolName =
   | "git.status"
   | "git.diff"
   | "browser.open"
+  | "file.replace.prepare"
   | "file.mutation.prepare"
   | "git.mutation.prepare";
 
@@ -44,6 +45,7 @@ export type AgentLoopToolSpec = {
 
 export type AgentLoopToolContext = {
   workspace: WorkspaceInfo;
+  taskId: string;
   projectIndex?: ProjectIndex;
 };
 
@@ -145,6 +147,46 @@ function parseMutationOperation(args: Record<string, unknown>): FileMutationOper
     };
   }
   throw new Error("Unsupported file mutation type.");
+}
+
+async function prepareExactTextReplacement(
+  args: Record<string, unknown>,
+  context: AgentLoopToolContext,
+) {
+  const filePath = stringArg(args, "path");
+  const search = stringArg(args, "search");
+  const replace = stringArg(args, "replace");
+  const replaceAll = args.all === true;
+
+  if (!filePath) throw new Error("path is required.");
+  if (!search) throw new Error("search is required.");
+
+  const current = await readTextFile(context.workspace.rootPath, filePath, 500_000);
+  const firstIndex = current.content.indexOf(search);
+  if (firstIndex === -1) {
+    throw new Error(`Search text was not found in ${filePath}.`);
+  }
+
+  const nextContent = replaceAll
+    ? current.content.split(search).join(replace)
+    : `${current.content.slice(0, firstIndex)}${replace}${current.content.slice(
+        firstIndex + search.length,
+      )}`;
+
+  if (nextContent === current.content) {
+    throw new Error("Replacement would not change the file.");
+  }
+
+  return prepareFileMutation({
+    rootPath: context.workspace.rootPath,
+    taskId: context.taskId,
+    operation: {
+      type: "write",
+      path: current.path,
+      content: nextContent,
+    },
+    createApproval: true,
+  });
 }
 
 function parseGitMutationOperation(
@@ -347,10 +389,26 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
       return {
         result: await prepareFileMutation({
           rootPath: context.workspace.rootPath,
-          taskId: "agent_loop",
+          taskId: context.taskId,
           operation,
           createApproval: true,
         }),
+      };
+    },
+  },
+  {
+    name: "file.replace.prepare",
+    description:
+      "Prepare an exact text replacement in one file and create an approval request. Best for small edits like removing or renaming visible text. Does not apply changes.",
+    args: {
+      path: "Workspace-relative file path.",
+      search: "Exact text to find.",
+      replace: "Replacement text. Use empty string to remove text.",
+      all: "Optional boolean. Replace all occurrences when true; otherwise replace the first occurrence.",
+    },
+    async execute(args, context) {
+      return {
+        result: await prepareExactTextReplacement(args, context),
       };
     },
   },
@@ -369,11 +427,11 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
       branch: "Branch for push.",
       setUpstream: "Optional boolean for git push -u.",
     },
-    async execute(args) {
+    async execute(args, context) {
       const operation = parseGitMutationOperation(args);
       return {
         result: prepareGitMutation({
-          taskId: "agent_loop",
+          taskId: context.taskId,
           operation,
           createApproval: true,
         }),

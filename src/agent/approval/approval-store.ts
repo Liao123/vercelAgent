@@ -6,7 +6,14 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { newId, nowIso, type ApprovalRequest, type ApprovalRisk } from "@/agent/types";
+import {
+  newId,
+  nowIso,
+  type ApprovalDetails,
+  type ApprovalExecution,
+  type ApprovalRequest,
+  type ApprovalRisk,
+} from "@/agent/types";
 
 export type ApprovalStatus = "pending" | "approved" | "rejected";
 
@@ -51,6 +58,7 @@ export function createApprovalRequest(input: {
   reason: string;
   risk: ApprovalRisk;
   action: string;
+  details?: ApprovalDetails;
 }): ApprovalRecord {
   loadApprovalsFromDisk();
   const approval: ApprovalRecord = {
@@ -61,6 +69,7 @@ export function createApprovalRequest(input: {
     risk: input.risk,
     action: input.action,
     createdAt: nowIso(),
+    details: input.details,
     status: "pending",
   };
   approvals.set(approval.id, approval);
@@ -101,6 +110,28 @@ export function requireApprovedApproval(approvalId: string): ApprovalRecord {
     throw new Error(`Approval is not approved: ${approvalId}`);
   }
   return approval;
+}
+
+export function recordApprovalExecution(
+  approvalId: string,
+  execution: Omit<ApprovalExecution, "attemptedAt">,
+): ApprovalRecord {
+  loadApprovalsFromDisk();
+  const approval = approvals.get(approvalId);
+  if (!approval) {
+    throw new Error(`Approval not found: ${approvalId}`);
+  }
+
+  const updated: ApprovalRecord = {
+    ...approval,
+    execution: {
+      ...execution,
+      attemptedAt: nowIso(),
+    },
+  };
+  approvals.set(approvalId, updated);
+  persistApprovalsToDisk();
+  return updated;
 }
 
 export function listApprovals(): ApprovalRecord[] {

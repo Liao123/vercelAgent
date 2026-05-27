@@ -8,6 +8,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { createApprovalRequest, requireApprovedApproval } from "@/agent/approval";
+import type { ApprovalGitMutationPreview } from "@/agent/types";
 
 const execFileAsync = promisify(execFile);
 
@@ -41,11 +42,7 @@ export type PreparedGitMutation = {
   operationHash: string;
   requiredApprovalAction: string;
   approval?: ReturnType<typeof createApprovalRequest>;
-  preview: {
-    command: string;
-    risk: "medium" | "high";
-    notes: string[];
-  };
+  preview: ApprovalGitMutationPreview;
 };
 
 export type AppliedGitMutation = PreparedGitMutation & {
@@ -208,6 +205,11 @@ export function prepareGitMutation(input: {
   if (operation.type === "push") {
     notes.push("Push sends local commits to a remote repository.");
   }
+  const preview: ApprovalGitMutationPreview = {
+    command: commandText(args),
+    risk,
+    notes,
+  };
 
   return {
     operation,
@@ -220,13 +222,15 @@ export function prepareGitMutation(input: {
           reason: `Run ${commandText(args)}.`,
           risk,
           action: requiredApprovalAction,
+          details: {
+            kind: "git_mutation",
+            operationHash,
+            operation,
+            preview,
+          },
         })
       : undefined,
-    preview: {
-      command: commandText(args),
-      risk,
-      notes,
-    },
+    preview,
   };
 }
 

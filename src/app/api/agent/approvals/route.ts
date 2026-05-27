@@ -8,6 +8,7 @@ import {
   listApprovals,
   resolveApproval,
 } from "@/agent/approval";
+import type { ApprovalDetails } from "@/agent/types";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +23,7 @@ export async function POST(request: Request) {
     reason?: string;
     risk?: "low" | "medium" | "high";
     action?: string;
+    details?: ApprovalDetails;
   };
   try {
     body = await request.json();
@@ -42,6 +44,7 @@ export async function POST(request: Request) {
     reason: body.reason,
     risk: body.risk,
     action: body.action,
+    details: body.details,
   });
 
   return Response.json({ approval }, { status: 201 });

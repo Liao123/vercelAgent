@@ -14,7 +14,7 @@
 
 ## 项目事实
 
-- 当前项目路径：`D:\workspace\vercelAgent`
+- 当前项目路径：`D:\案例\vec-next`
 - 当前项目是 Next.js + React + TypeScript 应用。
 - 当前 Next.js 版本：16.2.6。
 - 当前 React 版本：19.2.4。
@@ -118,9 +118,9 @@ Codex CLI 是 Apache-2.0 开源项目，有成熟架构价值。但它主要是 
 - 当前 patch 工具支持 unified diff 预览和应用，但应用必须使用与 patch hash 匹配的已批准 approval。
 - 当前 patch 工具暂不支持新建、删除、重命名、二进制文件和复杂 git patch。
 - 当前已有结构化文件变更工具：`src/agent/tools/file-mutations.ts` 和 `/api/agent/files`。
-- 结构化文件变更支持 `create`、`write`、`delete`、`rename`；preview 会生成 approval，apply 必须携带匹配且已批准的 `approvalId`。
+- 结构化文件变更支持 `create`、`write`、`delete`、`rename`；preview 会生成 approval，apply 必须携带匹配且已批准的 `approvalId`。A035 后，前端可以通过审批执行接口从持久化 approval.details 发起 apply。
 - 当前已有受控 Git 写操作工具：`src/agent/tools/git-tools.ts` 和 `/api/agent/git`。
-- Git 写操作支持 `branch`、`commit`、`push`；preview 会生成 `git.mutate:<hash>` approval，apply 必须携带匹配且已批准的 `approvalId`。
+- Git 写操作支持 `branch`、`commit`、`push`；preview 会生成 `git.mutate:<hash>` approval，apply 必须携带匹配且已批准的 `approvalId`。A035 后，前端可以通过审批执行接口从持久化 approval.details 发起 apply。
 - Agent Loop 当前新增 `git.mutation.prepare`，只允许模型准备 Git 写操作和审批请求，不允许直接执行 branch/commit/push。
 - 不要让模型绕过 `/api/agent/git` 直接执行 Git 写操作；branch/commit/push 后续即使进入更强 loop，也必须走审批和 trace。
 - Approval Store 当前会写入 `.agent-state/approvals.json`；不要只依赖内存 Map，Next route/runtime 实例之间内存不可靠。
@@ -140,11 +140,14 @@ Codex CLI 是 Apache-2.0 开源项目，有成熟架构价值。但它主要是 
 - 当前开发闭环还不会让模型自动生成 patch；修改文件需要调用方显式传入 patch，且 apply 时必须提供匹配 approval。
 - 当前已有模型驱动 Agent Loop：`src/agent/core/agent-loop.ts`、`src/agent/core/agent-loop-tools.ts` 和 `/api/agent/loop`。
 - Agent Loop 协议：模型每轮必须返回 JSON，形如 `{"action":"tool_call","tool":"...","args":{}}` 或 `{"action":"final","summary":"..."}`。
-- 当前 Agent Loop 开放工具：workspace.inspect、project.index、file.locate、file.list、file.read、file.search、git.status、git.diff、browser.open、file.mutation.prepare、git.mutation.prepare。
-- 当前 Agent Loop 不开放直接写文件、shell、Git 写操作、安装依赖；文件和 Git 的 prepare 工具只创建 approval，不执行 apply。
-- AgentPanel 当前有 `开发闭环` / `Agent Loop` 模式切换；开发闭环是固定流程，Agent Loop 是模型驱动工具循环。
+- 当前 Agent Loop 开放工具：workspace.inspect、project.index、file.locate、file.list、file.read、file.search、git.status、git.diff、browser.open、file.replace.prepare、file.mutation.prepare、git.mutation.prepare。
+- 当前 Agent Loop 不开放直接写文件、shell、Git 写操作、安装依赖；文件和 Git 的 prepare 工具只创建 approval，不执行 apply。真正 apply 仍需要用户在审批 UI 中先批准、再点击执行。
+- AgentPanel 当前有 `开发闭环` / `Agent Loop` 模式切换；默认是 `Agent Loop`，因为固定开发闭环不会自动生成改动。开发闭环保留作调试/定位流程。
 - AgentPanel 当前已有审批 UI：自动读取 `/api/agent/approvals`，展示 approval 列表，并支持批准/拒绝 pending approval。
-- 当前审批 UI 还没有结构化 diff/文件内容对比；只展示 title、reason、risk、action、status。后续做 Git 写操作前可以继续增强审批详情。
+- 当前审批 UI 已能展示 A034 的结构化审批详情：文件变更会显示操作类型、路径、大小变化和截断 before/after；Git 写操作会显示操作类型、目标参数、预览命令和风险 notes。
+- 当前审批 UI 已接入 A035 执行闭环：`批准` 和 `执行` 是两个动作，approved 且未成功执行的 approval 才显示 `执行`，执行结果会持久化并在刷新后继续展示。
+- A036 已修复一个真实可用性问题：用户在页面说“把首页鹊桥去掉”时，旧默认开发闭环只定位/总结，不会真正生成改动。现在默认走 Agent Loop，并新增 `file.replace.prepare` 精确文本替换工具。
+- A036 兜底能力：对“首页 + 去掉/删除/移除某段文本”的请求，运行时会稳定准备 `src/app/page.tsx` 写入 approval；这只生成审批，不自动写文件。
 - 当前前端 UI 已接入开发闭环事件流，首页右侧有 `AgentPanel`，可调用 `/api/agent/develop` 并展示事件 JSON。
 - 当前已有 Web 阶段内置浏览器占位：`src/agent/browser`、`/api/agent/browser` 和 `BrowserPanel`。它能记录/打开 URL，并用 iframe 在首页预览。
 - 当前浏览器目标状态会落到 `.agent-state/browser.json`，不要只依赖模块级内存；Next.js 不同 route/runtime 实例之间的内存状态不可靠。
@@ -164,15 +167,24 @@ Codex CLI 是 Apache-2.0 开源项目，有成熟架构价值。但它主要是 
 - AgentPanel 的 Workspace 区域需要保留明确的读取/设置反馈；如果用户说“设置按钮点不动”，优先检查路径输入、接口返回和 UI 状态提示。
 - 产品方向上应预留桌面端。浏览器环境无法像 Codex 桌面端那样可靠弹出系统目录选择器并把本机路径交给服务端；Electron/本地客户端更适合承载项目选择、本地文件读写、命令执行、Chrome DevTools 连接和权限沙箱。
 - 迁移策略不是立刻重写成 Electron，而是继续保持 Agent Runtime 与 UI 解耦，先把 `src/agent` 能力做稳，再让 Web UI 和 Electron UI 共享同一套本地 runtime/API。
-- 当前优先级建议：下一步增强审批详情展示，尤其是文件 diff 和 Git status/diff/remote/目标分支；然后再评估 shell 工具审批或 Electron/本地客户端方案。
-- 明天接续入口：先做 A034 审批详情快照，再做 A035 审批后的执行闭环。
-- A034 的关键原因：当前 approval 只保存授权动作和状态，没有持久化 operation/preview；页面刷新后无法只靠 approval 列表还原文件 diff 或 Git 命令详情。
-- A034 推荐做法：给 ApprovalRecord 增加可 JSON 持久化的详情字段，例如 `details` 或 `metadata`，由 `/api/agent/files` 和 `/api/agent/git` 的 preview 写入。
-- A034 文件详情应包含：operation type、path/fromPath/toPath、existsBefore/existsAfter、oldSize/newSize、oldContent/newContent 的安全摘要或截断版本。
-- A034 Git 详情应包含：operation type、preview command、branchName/branch/remote/setUpstream、risk notes。后续可补 git status/diff 快照。
-- A035 的关键原因：当前前端可以批准/拒绝 approval，但批准后没有 UI apply 闭环；apply API 仍需要原始 operation。
-- A035 安全设计：`批准` 和 `执行` 必须是两个动作。批准只改变 approval 状态，执行必须由用户再次点击触发，不能由模型或 UI 自动 apply。
-- A035 测试边界：如需测试 Git apply，优先只测 branch；不要测试 commit/push，除非用户重新明确授权。不要安装依赖、不要删除文件、不要改 `.env` 或密钥文件。
+- 当前优先级建议：A034/A035/A036 已完成；下一步可增强更通用的代码编辑能力、审批执行结果 UI、Git status/diff/remote 快照、shell 工具审批，或评估 Electron/本地客户端方案。
+- 接续入口：不要重复做 A034/A035/A036。后续如果继续编辑能力，优先做更通用的文本编辑/patch 生成，而不是只补首页兜底。
+- A034 已完成：ApprovalRecord 增加可 JSON 持久化的 `details` 字段，`/api/agent/files` 和 `/api/agent/git` 的 preview 会写入 operation、operationHash 和 preview。
+- A034 文件详情已包含：operation type、path/fromPath/toPath、existsBefore/existsAfter、oldSize/newSize、sizeDelta、oldContent/newContent 的截断快照。
+- A034 Git 详情已包含：operation type、preview command、branchName/branch/remote/setUpstream、risk notes。后续可继续补 git status/diff 快照，但这不阻塞 A035。
+- A034 验证：`npm run lint`、`npm run build` 通过；文件/Git preview smoke 的 approval 已生成并带 details；两个 smoke approval 已拒绝，未创建 `tmp/a034-preview-only.txt`，未创建 `codex/smoke-a034` 分支。
+- A035 已完成：新增 `/api/agent/approvals/execute`，服务端从已批准 approval.details 读取 operation 并调用文件/Git apply；前端只传 approvalId。
+- A035 安全设计已落地：`批准` 和 `执行` 是两个动作。批准只改变 approval 状态，执行必须由用户再次点击触发，不能由模型或 UI 自动 apply。
+- A035 验证：未批准 execute 返回 400；文件 create approval 批准后二次点击可执行，重复执行成功 approval 返回 409；Git apply 只测试了低风险 branch 创建，测试分支已删除。
+- A036 验证：请求“把这个项目首页的 鹊桥 2个字去掉”会生成 `src/app/page.tsx` 的待审批 `Write file`，旧内容有“鹊桥”，新内容没有“鹊桥”；验证 approval 已拒绝，未实际改首页。
+- A036 技术注意：PowerShell `Invoke-WebRequest` 读取 SSE 时可能抛客户端空引用，验证 SSE 事件流优先用浏览器或 Node `fetch`。
+- A036 复测发现：旧 approval 没有 `details` 时即使是 approved，也不能通过新的 execute API 执行。AgentPanel 已增加旧审批提示，后续不要让用户误点旧审批。
+- A036 复测结果：重新生成并执行“去掉首页鹊桥”的新 approval 后，`src/app/page.tsx` 已实际移除“鹊桥”，并通过 `npm run lint` / `npm run build`。
+- A036 后续补坑：普通 Agent Loop 的通用工具分支原先只发 `tool.completed`，没有在工具结果带 `approval` 时统一发 `approval.required`。这会导致审批其实已落到 `.agent-state/approvals.json`，但前端在当次任务里不一定立刻显示。现已在 `src/agent/core/agent-loop.ts` 统一补发。
+- AgentPanel 现在会在接收到 `approval.required` SSE 事件时立刻把新审批插入列表，而不是只等任务结束后重新请求 `/api/agent/approvals`。
+- 当前审批列表排序策略：`pending` 优先于 `approved/rejected`，同状态下按 `createdAt` 倒序；当前任务新产生的审批会显示“本次任务”标记，方便从历史审批堆里快速识别。
+- 2026-05-27 实测：通用改代码请求“把 `src/app/page.tsx` 里的 `AI Chat × Vercel` 改成 `AI Chat × Codex`”会在普通 Agent Loop 中读取目标文件、生成新的 pending approval，并写入 `.agent-state/approvals.json`；不再只对首页“去掉某段文本”的兜底请求有效。
+- 后续测试边界：不要测试 commit/push，除非用户重新明确授权。不要安装依赖、不要删除真实文件、不要改 `.env` 或密钥文件。
 - 暂时不引入 LangChain。当前项目更需要 Codex-like 的轻量 Agent Runtime、审批、trace、patch 和上下文控制；LangChain 可能增加抽象复杂度，等后续确实需要现成 retriever/graph 编排时再评估。
 - 暂时不引入 LangGraph。当前还没有复杂多节点状态机和多 agent graph 需求，先把自研 Agent Runtime 主链路跑通；等需要可恢复 graph、分支执行或多 agent 编排时再评估。
 
