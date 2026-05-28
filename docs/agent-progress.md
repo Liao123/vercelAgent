@@ -1,6 +1,6 @@
 # 开发智能体项目进度
 
-更新时间：2026-05-27（今日收工）
+更新时间：2026-05-28
 
 本文档用于记录开发智能体项目的工作项、当前状态、验收标准和执行记录。后续每完成一个工作项，都必须更新本文档。
 
@@ -114,8 +114,27 @@ deferred    暂缓，不属于当前阶段
 | A054 | done | 会话侧栏 + 记忆摘要索引 | `/api/agent/threads`；左栏会话列表（摘要/轮次）+ 按会话筛选任务；压缩同步 `summaryPreview` 到 thread-memory 与 trace.thread。 |
 | A055 | done | 会话管理操作 | PATCH 重命名、`thread-meta.json`、DELETE 删滚动记忆、侧栏「继续/命名/删记忆」、预填上次需求。 |
 | A056 | done | 体验与说明 | 内联重命名、记忆导出 Markdown、记忆面板复制/导出、Loop vs 闭环模式说明组件。 |
+| A057 | done | 活动流 → 审批锚点 | 活动流中 `tool.completed`（含审批）可点「查看审批」或点行定位；新 `approval.required` 自动滚到审查区；三栏右侧恢复「变更审查」面板。 |
+| A058 | done | 长任务压缩验证与修复 | 动态 head 保留 thread 记忆 + 当前用户需求；thread pinned 合并；`npm run validate:compaction`；活动流「上下文已压缩」→ 记忆面板锚点。 |
+| A059 | done | 压缩调优与 Thread 验证 | 语义 compact 提示词强化；`AGENT_LOOP_*` 环境变量；`validate:thread-memory` + `validate:agent`；压缩 SSE 自动滚到记忆面板。 |
+| A060 | done | E2E 体验修复 | 大文件小改动审批 diff 围绕变更行截取；启动自动读取 Workspace；中栏隐藏历史「已批准待执行」；内联审批区分历史/本次；活动流空态提示恢复 Trace。 |
+| A061 | done | 左侧栏按项目分组会话 | `GET /api/agent/threads?grouped=projects`；项目（Workspace 文件夹名）下展示最近 5 条会话 + 相对时间；点击会话恢复该会话最近一次 Trace；移除独立「任务」列表；路径区标题改为「工作区」。 |
 
 ## 完成记录
+
+### 2026-05-28
+
+- A061 已完成：`buildAgentProjectSidebar` + `listAllThreadMemories`/`listAllThreadMetas`；侧栏改为「项目 → 会话」树形（每项目最多 5 条、可展开）；点击会话自动恢复最近任务活动流；顶栏路径区与侧栏标题区分（工作区 / 项目）。短话术 E2E 与「拒绝审批」已在浏览器/API 验证通过。
+- 产品文案：`agent-panel` 底栏 placeholder 已改为「描述编程任务，可附图…」。
+- 验证：`npm run lint`、`npm run build` 通过。
+- A060 已完成：`contentSnapshotPair` 围绕 diff 行截取审批快照，修复大文件 placeholder 类改动 diff 为空；页面加载自动 GET workspace；中栏内联审批仅展示当前任务「已批准待执行」、历史 pending 带「历史」标记；三栏活动流空态提示点击左侧任务恢复。
+- 验证：`npm run lint`、`npm run build` 通过。
+- A059 已完成：`loop-compaction-config`（tail/middle 阈值、`AGENT_LOOP_SEMANTIC_COMPACT`）；语义 compact 提示词强调保留 `approval_*`；`scripts/validate-thread-continuation.ts`；`npm run validate:agent`；收到 `context.compacted` 时 UI 自动定位记忆面板。
+- 验证：`npm run validate:agent`、`npm run lint`、`npm run build` 通过。
+- A058 已完成：修复延续会话时当前 user 任务被压进 middle 的 bug；压缩时合并 thread 记忆里的 pinned approval；`git/shell.command.prepare` 观测瘦身；新增 `scripts/validate-loop-compaction.ts` + `npm run validate:compaction`；活动流「上下文已压缩」可点「查看记忆」定位面板。
+- 验证：`npm run validate:compaction`、`npm run lint`、`npm run build` 通过。
+- A057 已完成：活动流工具行与审批事件可滚动定位到内联/审查区审批卡片（`approval-anchor` + 高亮环）；收到 `approval.required` 时自动 `focusApproval`；三栏布局右侧下半为完整「变更审查」+ diff。
+- 验证：`npm run lint`、`npm run build` 通过。
 
 ### 2026-05-27
 
@@ -288,10 +307,9 @@ deferred    暂缓，不属于当前阶段
 
 ## 明天建议接续（优先级）
 
-1. **实机长任务验证压缩**：多轮 `file.read` + `prepare` 审批，确认活动流出现「上下文已压缩」、右栏/导出记忆内容合理、延续会话后模型仍记得审批 ID。
-2. **活动流 → 审批锚点**：点击 `approval.required` 或工具行，右侧/内联审批区滚动定位对应卡片（A037 遗留）。
-3. **压缩质量调优**（可选）：pinned 抽取规则、语义 compact 提示词、tail 条数（当前 12）。
-4. **暂缓**：开发闭环增强、左栏文件树、内嵌编辑器、Electron、Chrome DevTools 深度读取。
+1. **浏览器实机复测**：`npm run dev` 跑长 Loop，对照 `npm run validate:agent` 结果，目视压缩事件、记忆 Pinned、延续会话第二条任务。
+2. **对比实验**（可选）：`.env.local` 设 `AGENT_LOOP_SEMANTIC_COMPACT=false` 与默认各跑一轮，导出记忆 md 对比质量。
+3. **暂缓**：开发闭环增强、左栏文件树、内嵌编辑器、Electron、Chrome DevTools 深度读取。
 
 用户已明确：**暂不做**文件树与编辑器；**不必再投入**开发闭环（`/api/agent/develop` 可保留不动）。
 

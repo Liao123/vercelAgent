@@ -4,6 +4,7 @@ import { useState } from "react";
 import { DiffView } from "@/components/diff-view";
 import { PatchFilesDiffView } from "@/components/patch-files-diff";
 import type { ApprovalDetails } from "@/agent/types";
+import { approvalAnchorId } from "@/lib/approval-anchor";
 import { formatPatchPreviewSummary } from "@/lib/patch-summary";
 
 export type InlineApprovalView = {
@@ -27,8 +28,10 @@ export type InlineApprovalView = {
 
 type AgentInlineApprovalsProps = {
   approvals: InlineApprovalView[];
+  currentTaskId?: string | null;
   loading: boolean;
   pushConfirmId: string | null;
+  focusedApprovalId?: string | null;
   onReject: (id: string) => void;
   onApprove: (id: string) => void;
   onApproveAndExecute: (approval: InlineApprovalView) => void;
@@ -56,8 +59,10 @@ function approvalOneLiner(details?: ApprovalDetails): string | null {
 
 function CompactApprovalCard({
   approval,
+  currentTaskId,
   loading,
   pushConfirmId,
+  highlighted,
   onReject,
   onApprove,
   onApproveAndExecute,
@@ -65,8 +70,10 @@ function CompactApprovalCard({
   needsPushSecondConfirm,
 }: {
   approval: InlineApprovalView;
+  currentTaskId?: string | null;
   loading: boolean;
   pushConfirmId: string | null;
+  highlighted: boolean;
   onReject: (id: string) => void;
   onApprove: (id: string) => void;
   onApproveAndExecute: (approval: InlineApprovalView) => void;
@@ -75,12 +82,21 @@ function CompactApprovalCard({
 }) {
   const [showDiff, setShowDiff] = useState(false);
   const line = approvalOneLiner(approval.details);
+  const isHistorical =
+    Boolean(currentTaskId) && approval.taskId !== currentTaskId;
+  const highlightClass = highlighted
+    ? "ring-2 ring-blue-500 ring-offset-2 ring-offset-white dark:ring-offset-zinc-950"
+    : "";
 
   if (approval.status === "rejected") {
     return (
-      <div className="rounded-lg border border-zinc-200/80 bg-zinc-50 px-2.5 py-2 text-[11px] dark:border-zinc-800 dark:bg-zinc-900/40">
+      <div
+        id={approvalAnchorId(approval.id)}
+        className={`rounded-lg border border-zinc-200/80 bg-zinc-50 px-2.5 py-2 text-[11px] dark:border-zinc-800 dark:bg-zinc-900/40 ${highlightClass}`}
+      >
         <span className="text-zinc-600 dark:text-zinc-400">
-          {approval.title} · 已拒绝
+          {approval.title}
+          {isHistorical ? " · 历史" : ""} · 已拒绝
         </span>
       </div>
     );
@@ -88,9 +104,13 @@ function CompactApprovalCard({
 
   if (approval.status === "approved" && approval.execution?.status !== "succeeded") {
     return (
-      <div className="rounded-lg border border-blue-200/80 bg-blue-50/40 px-2.5 py-2 dark:border-blue-900 dark:bg-blue-950/20">
+      <div
+        id={approvalAnchorId(approval.id)}
+        className={`rounded-lg border border-blue-200/80 bg-blue-50/40 px-2.5 py-2 dark:border-blue-900 dark:bg-blue-950/20 ${highlightClass}`}
+      >
         <p className="text-[11px] font-medium text-zinc-900 dark:text-zinc-100">
-          {approval.title} · 已批准
+          {approval.title}
+          {isHistorical ? " · 历史" : ""} · 已批准
         </p>
         {line && (
           <p className="mt-0.5 truncate font-mono text-[10px] text-zinc-600">
@@ -112,11 +132,19 @@ function CompactApprovalCard({
   }
 
   return (
-    <div className="rounded-lg border border-amber-300/80 bg-amber-50/50 px-2.5 py-2 dark:border-amber-900/60 dark:bg-amber-950/20">
+    <div
+      id={approvalAnchorId(approval.id)}
+      className={`rounded-lg border border-amber-300/80 bg-amber-50/50 px-2.5 py-2 dark:border-amber-900/60 dark:bg-amber-950/20 ${highlightClass}`}
+    >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="text-[11px] font-medium text-zinc-900 dark:text-zinc-100">
             {approval.title}
+            {isHistorical && (
+              <span className="ml-1.5 rounded bg-zinc-200 px-1 py-0.5 text-[9px] font-normal text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
+                历史
+              </span>
+            )}
           </p>
           {line && (
             <p className="mt-0.5 truncate font-mono text-[10px] text-zinc-600 dark:text-zinc-400">
@@ -189,7 +217,11 @@ function CompactApprovalCard({
   );
 }
 
-export function AgentInlineApprovals(props: AgentInlineApprovalsProps) {
+export function AgentInlineApprovals({
+  focusedApprovalId = null,
+  currentTaskId = null,
+  ...props
+}: AgentInlineApprovalsProps) {
   const actionable = props.approvals.filter(
     (a) =>
       a.status === "pending" ||
@@ -197,13 +229,32 @@ export function AgentInlineApprovals(props: AgentInlineApprovalsProps) {
   );
   if (actionable.length === 0) return null;
 
+  const historicalCount = actionable.filter(
+    (a) => currentTaskId && a.taskId !== currentTaskId,
+  ).length;
+  const sectionLabel =
+    historicalCount === actionable.length && historicalCount > 0
+      ? `历史待授权 (${actionable.length})`
+      : `待你授权 (${actionable.length})`;
+
   return (
     <div className="mt-3 space-y-2 border-t border-zinc-200/80 pt-3 dark:border-zinc-800">
       <p className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-        待你授权 ({actionable.length})
+        {sectionLabel}
       </p>
+      {historicalCount > 0 && historicalCount < actionable.length && (
+        <p className="text-[10px] text-zinc-500">
+          含 {historicalCount} 条历史任务审批；右侧「变更审查」可筛选「仅本次任务」。
+        </p>
+      )}
       {actionable.map((approval) => (
-        <CompactApprovalCard key={approval.id} approval={approval} {...props} />
+        <CompactApprovalCard
+          key={approval.id}
+          approval={approval}
+          currentTaskId={currentTaskId}
+          highlighted={focusedApprovalId === approval.id}
+          {...props}
+        />
       ))}
     </div>
   );

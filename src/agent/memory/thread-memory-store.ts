@@ -84,6 +84,12 @@ export function listThreadMemoriesForWorkspace(
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
+export function listAllThreadMemories(): ThreadMemoryRecord[] {
+  return [...memoryByThread.values()].sort((a, b) =>
+    b.updatedAt.localeCompare(a.updatedAt),
+  );
+}
+
 export function deleteThreadMemory(threadId: string): boolean {
   const deleted = memoryByThread.delete(threadId);
   if (deleted) persistToDisk();

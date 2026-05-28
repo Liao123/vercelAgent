@@ -26,6 +26,10 @@ import {
   collectTouchedFiles,
   resolveThreadIdFromEvents,
 } from "@/lib/agent-feed";
+import {
+  AGENT_COMPACTED_MEMORY_PANEL_ID,
+  approvalAnchorId,
+} from "@/lib/approval-anchor";
 import type {
   AgentEvent,
   ApprovalContentSnapshot,
@@ -551,6 +555,51 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
   const [continueThreadMemory, setContinueThreadMemory] = useState(true);
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0);
   const referenceFileRef = useRef<HTMLInputElement>(null);
+  const focusApprovalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const [focusedApprovalId, setFocusedApprovalId] = useState<string | null>(
+    null,
+  );
+  const [memoryPanelHighlighted, setMemoryPanelHighlighted] = useState(false);
+
+  const focusApproval = useCallback((approvalId: string) => {
+    if (focusApprovalTimerRef.current) {
+      clearTimeout(focusApprovalTimerRef.current);
+    }
+    setFocusedApprovalId(approvalId);
+    requestAnimationFrame(() => {
+      document
+        .getElementById(approvalAnchorId(approvalId))
+        ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+    focusApprovalTimerRef.current = setTimeout(() => {
+      setFocusedApprovalId(null);
+    }, 2800);
+  }, []);
+
+  const focusCompactedMemory = useCallback(() => {
+    if (focusApprovalTimerRef.current) {
+      clearTimeout(focusApprovalTimerRef.current);
+    }
+    setMemoryPanelHighlighted(true);
+    requestAnimationFrame(() => {
+      document
+        .getElementById(AGENT_COMPACTED_MEMORY_PANEL_ID)
+        ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+    focusApprovalTimerRef.current = setTimeout(() => {
+      setMemoryPanelHighlighted(false);
+    }, 2800);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (focusApprovalTimerRef.current) {
+        clearTimeout(focusApprovalTimerRef.current);
+      }
+    };
+  }, []);
   const bucket = useMemo(() => bucketEvents(events), [events]);
   const touchedFiles = useMemo(() => collectTouchedFiles(events), [events]);
   const filteredApprovals = useMemo(
@@ -584,10 +633,36 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
   }, []);
 
   useEffect(() => {
-    if (layout !== "workspace" || !bridge) return;
+    if (!bridge) return;
     bridge.registerPanel({ restoreFromTrace });
     return () => bridge.registerPanel(null);
-  }, [bridge, layout, restoreFromTrace]);
+  }, [bridge, restoreFromTrace]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadInitialWorkspace() {
+      setLoadingWorkspace(true);
+      try {
+        const res = await fetch("/api/agent/workspace");
+        const data = await res.json();
+        if (!res.ok || cancelled) return;
+        setWorkspace(data.workspace);
+        setWorkspacePath(data.workspace.rootPath);
+        setWorkspaceStatus("已自动读取 Workspace。");
+      } catch {
+        // 手动「读取」按钮会展示失败原因。
+      } finally {
+        if (!cancelled) setLoadingWorkspace(false);
+      }
+    }
+
+    void loadInitialWorkspace();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -952,14 +1027,20 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
           }
           if (parsed.type === "approval.required") {
             sawApprovalThisRun = true;
-            setApprovals((current) =>
-              upsertApproval(current, approvalFromRequiredEvent(parsed)),
-            );
+            const nextApproval = approvalFromRequiredEvent(parsed);
+            setApprovals((current) => upsertApproval(current, nextApproval));
             setApprovalFilters({
               pendingOnly: false,
               currentTaskOnly: false,
             });
             setApprovalStatus("已收到新的审批请求，请点「批准并执行」写入代码。");
+            queueMicrotask(() => focusApproval(nextApproval.id));
+          }
+          if (parsed.type === "context.compacted") {
+            setApprovalStatus(
+              `上下文已压缩（第 ${parsed.round ?? "?"} 轮，${parsed.method ?? "compact"}）· 可在「滚动任务记忆」查看 Pinned 审批 ID`,
+            );
+            queueMicrotask(() => focusCompactedMemory());
           }
           if (parsed.type === "task.failed") {
             setError(parsed.error);
@@ -1111,10 +1192,15 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
           filteredApprovals.map((approval) => (
             <article
               key={approval.id}
-              className={`space-y-2 rounded-md border bg-white p-2 text-xs dark:bg-zinc-950 ${
+              id={approvalAnchorId(approval.id)}
+              className={`space-y-2 rounded-md border bg-white p-2 text-xs transition dark:bg-zinc-950 ${
                 approval.status === "pending"
                   ? "border-blue-300 shadow-sm dark:border-blue-800"
                   : "border-zinc-200 dark:border-zinc-800"
+              } ${
+                focusedApprovalId === approval.id
+                  ? "ring-2 ring-blue-500 ring-offset-2 ring-offset-white dark:ring-offset-zinc-950"
+                  : ""
               }`}
             >
               <div className="flex items-start justify-between gap-2">
@@ -1223,7 +1309,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
   const workspaceSidebar = (
     <div className="flex shrink-0 flex-col gap-2 border-b border-zinc-200 p-2 dark:border-zinc-800">
       <p className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-        项目
+        工作区
       </p>
       <form onSubmit={handleWorkspaceSubmit} className="space-y-1.5">
         <input
@@ -1292,11 +1378,13 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
         approvals,
         { pendingOnly: false, currentTaskOnly: Boolean(currentTaskId) },
         currentTaskId,
-      ).filter(
-        (a) =>
-          a.status === "pending" ||
-          (a.status === "approved" && a.execution?.status !== "succeeded"),
-      ),
+      ).filter((a) => {
+        if (a.status === "pending") return true;
+        if (a.status === "approved" && a.execution?.status !== "succeeded") {
+          return Boolean(currentTaskId && a.taskId === currentTaskId);
+        }
+        return false;
+      }),
     [approvals, currentTaskId],
   );
 
@@ -1335,17 +1423,26 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
               </p>
             )}
             <AgentTouchedFiles files={touchedFiles} />
-            <AgentCompactedMemoryPanel events={events} compact />
+            <AgentCompactedMemoryPanel
+              events={events}
+              compact
+              highlighted={memoryPanelHighlighted}
+            />
             <AgentEventTimeline
               events={events}
               running={running}
               density="compact"
+              showRestoreHint
               excludeEventTypes={["plan.updated", "approval.required"]}
+              onFocusApproval={focusApproval}
+              onFocusCompactedMemory={focusCompactedMemory}
             />
             <AgentInlineApprovals
               approvals={centerApprovals}
+              currentTaskId={currentTaskId}
               loading={loadingApprovals}
               pushConfirmId={pushConfirmId}
+              focusedApprovalId={focusedApprovalId}
               onReject={(id) => void resolveApproval(id, "rejected")}
               onApprove={(id) => void resolveApproval(id, "approved")}
               onApproveAndExecute={(a) => void approveAndExecute(a)}
@@ -1430,7 +1527,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
               <input
                 value={request}
                 onChange={(e) => setRequest(e.target.value)}
-                placeholder="描述任务，可附图…"
+                placeholder="描述编程任务，可附图…"
                 disabled={running}
                 className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950"
               />
@@ -1456,14 +1553,21 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
           </footer>
         </main>
 
-        <AgentRightRail
-          events={events}
-          running={running}
-          taskSummary={taskSummary}
-          error={error}
-          browserOpen={browserOpen}
-          onToggleBrowser={() => setBrowserOpen((v) => !v)}
-        />
+        <aside className="flex w-[min(22rem,36vw)] shrink-0 flex-col border-l border-zinc-200 bg-zinc-50/50 dark:border-zinc-800 dark:bg-zinc-900/40">
+          <div className="min-h-0 shrink-0">
+            <AgentRightRail
+              events={events}
+              running={running}
+              taskSummary={taskSummary}
+              error={error}
+              browserOpen={browserOpen}
+              onToggleBrowser={() => setBrowserOpen((v) => !v)}
+            />
+          </div>
+          <div className="flex min-h-[12rem] flex-1 flex-col border-t border-zinc-200 dark:border-zinc-800">
+            {approvalsPanel}
+          </div>
+        </aside>
       </div>
     );
   }
@@ -1597,7 +1701,12 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
 
       {layout === "workspace" ? (
         <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(300px,380px)]">
-          <AgentEventTimeline events={events} running={running} />
+          <AgentEventTimeline
+            events={events}
+            running={running}
+            onFocusApproval={focusApproval}
+            onFocusCompactedMemory={focusCompactedMemory}
+          />
           <aside className="flex min-h-[280px] min-w-0 flex-col lg:min-h-0">
             {approvalsPanel}
           </aside>
@@ -1606,7 +1715,12 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
         <>
           {approvalsPanel}
           <div className="min-h-0 flex-1 space-y-4 overflow-auto">
-            <AgentEventTimeline events={events} running={running} />
+            <AgentEventTimeline
+              events={events}
+              running={running}
+              onFocusApproval={focusApproval}
+              onFocusCompactedMemory={focusCompactedMemory}
+            />
             <Section title="计划" events={bucket.plans} />
             <Section title="反思" events={bucket.reflections} />
             <Section title="工具调用" events={bucket.tools} />

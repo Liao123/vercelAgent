@@ -6,6 +6,7 @@ import {
   formatPatchPreviewSummary,
   formatPatchToolResultSummary,
 } from "@/lib/patch-summary";
+import { extractApprovalIdFromUnknown } from "@/lib/approval-anchor";
 
 type EventFilter =
   | "all"
@@ -117,6 +118,27 @@ function formatToolDetail(result: unknown): string | null {
   return null;
 }
 
+function RowFocusButton({
+  label,
+  onActivate,
+}: {
+  label: string;
+  onActivate: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        onActivate();
+      }}
+      className="shrink-0 rounded border border-blue-300 bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-800 transition hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200 dark:hover:bg-blue-900"
+    >
+      {label}
+    </button>
+  );
+}
+
 function CollapsibleEventRow({
   tone,
   title,
@@ -127,6 +149,9 @@ function CollapsibleEventRow({
   showDebug,
   defaultOpen = false,
   compact = false,
+  focusApprovalId,
+  onFocusApproval,
+  focusActionLabel = "查看审批",
 }: {
   tone: "neutral" | "info" | "success" | "warn" | "error";
   title: string;
@@ -137,6 +162,9 @@ function CollapsibleEventRow({
   showDebug: boolean;
   defaultOpen?: boolean;
   compact?: boolean;
+  focusApprovalId?: string | null;
+  onFocusApproval?: (approvalId: string) => void;
+  focusActionLabel?: string;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const hasExpandable = Boolean(detail) || (showDebug && debugJson !== undefined);
@@ -152,9 +180,30 @@ function CollapsibleEventRow({
             ? "border-blue-200 bg-blue-50/60 dark:border-blue-900 dark:bg-blue-950/30"
             : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950";
 
+  const canFocusApproval = Boolean(focusApprovalId && onFocusApproval);
+
   return (
     <article
-      className={`rounded-md border text-xs ${compact ? "px-2 py-1.5" : "rounded-lg px-3 py-2"} ${toneClass}`}
+      className={`rounded-md border text-xs ${compact ? "px-2 py-1.5" : "rounded-lg px-3 py-2"} ${toneClass}${
+        canFocusApproval ? " cursor-pointer ring-0 transition hover:ring-1 hover:ring-blue-300/80 dark:hover:ring-blue-700/80" : ""
+      }`}
+      role={canFocusApproval ? "button" : undefined}
+      tabIndex={canFocusApproval ? 0 : undefined}
+      onClick={
+        canFocusApproval
+          ? () => onFocusApproval!(focusApprovalId!)
+          : undefined
+      }
+      onKeyDown={
+        canFocusApproval
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onFocusApproval!(focusApprovalId!);
+              }
+            }
+          : undefined
+      }
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
@@ -168,15 +217,26 @@ function CollapsibleEventRow({
             </p>
           )}
         </div>
-        {hasExpandable && (
-          <button
-            type="button"
-            onClick={() => setOpen((v) => !v)}
-            className="shrink-0 rounded border border-zinc-300 px-2 py-0.5 text-[10px] text-zinc-600 dark:border-zinc-600 dark:text-zinc-400"
-          >
-            {open ? "收起" : "展开"}
-          </button>
-        )}
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          {canFocusApproval && (
+            <RowFocusButton
+              label={focusActionLabel}
+              onActivate={() => onFocusApproval!(focusApprovalId!)}
+            />
+          )}
+          {hasExpandable && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpen((v) => !v);
+              }}
+              className="rounded border border-zinc-300 px-2 py-0.5 text-[10px] text-zinc-600 dark:border-zinc-600 dark:text-zinc-400"
+            >
+              {open ? "收起" : "展开"}
+            </button>
+          )}
+        </div>
       </div>
       {open && detail && (
         <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-zinc-950 p-2 text-[10px] text-zinc-300">
@@ -200,6 +260,8 @@ function EventRow({
   debugJson,
   showDebug,
   compact = false,
+  focusApprovalId,
+  onFocusApproval,
 }: {
   tone: "neutral" | "info" | "success" | "warn" | "error";
   title: string;
@@ -208,6 +270,8 @@ function EventRow({
   debugJson?: unknown;
   showDebug: boolean;
   compact?: boolean;
+  focusApprovalId?: string | null;
+  onFocusApproval?: (approvalId: string) => void;
 }) {
   return (
     <CollapsibleEventRow
@@ -219,6 +283,8 @@ function EventRow({
       showDebug={showDebug}
       defaultOpen={tone === "error"}
       compact={compact}
+      focusApprovalId={focusApprovalId}
+      onFocusApproval={onFocusApproval}
     />
   );
 }
@@ -228,6 +294,8 @@ function renderEvent(
   index: number,
   showDebug: boolean,
   compact: boolean,
+  onFocusApproval?: (approvalId: string) => void,
+  onFocusCompactedMemory?: () => void,
 ) {
   switch (event.type) {
     case "task.created":
@@ -288,6 +356,13 @@ function renderEvent(
           showDebug={showDebug}
           debugJson={event}
           compact={compact}
+          focusApprovalId={onFocusCompactedMemory ? "__memory__" : null}
+          onFocusApproval={
+            onFocusCompactedMemory
+              ? () => onFocusCompactedMemory()
+              : undefined
+          }
+          focusActionLabel="查看记忆"
         />
       );
     }
@@ -325,6 +400,7 @@ function renderEvent(
     case "tool.completed": {
       const hint = summarizeToolResult(event.result);
       const detail = formatToolDetail(event.result);
+      const linkedApprovalId = extractApprovalIdFromUnknown(event.result);
       return (
         <CollapsibleEventRow
           key={`${event.type}-${index}`}
@@ -336,6 +412,8 @@ function renderEvent(
           debugJson={event}
           defaultOpen={Boolean(event.toolCall.error)}
           compact={compact}
+          focusApprovalId={linkedApprovalId}
+          onFocusApproval={onFocusApproval}
         />
       );
     }
@@ -355,6 +433,8 @@ function renderEvent(
           showDebug={showDebug}
           debugJson={event}
           compact={compact}
+          focusApprovalId={event.approval.id}
+          onFocusApproval={onFocusApproval}
         />
       );
     }
@@ -443,6 +523,12 @@ type AgentEventTimelineProps = {
   density?: "comfortable" | "compact";
   /** 不在中栏展示的事件类型（如 plan 放右侧栏） */
   excludeEventTypes?: AgentEvent["type"][];
+  /** 活动流为空时提示可从左侧任务历史恢复 */
+  showRestoreHint?: boolean;
+  /** 点击带审批的活动行时，滚动定位到审查/内联审批卡片 */
+  onFocusApproval?: (approvalId: string) => void;
+  /** 点击「上下文已压缩」时，滚动到滚动任务记忆面板 */
+  onFocusCompactedMemory?: () => void;
 };
 
 export function AgentEventTimeline({
@@ -450,6 +536,9 @@ export function AgentEventTimeline({
   running,
   density = "comfortable",
   excludeEventTypes = [],
+  showRestoreHint = false,
+  onFocusApproval,
+  onFocusCompactedMemory,
 }: AgentEventTimelineProps) {
   const compact = density === "compact";
   const excludeSet = useMemo(
@@ -539,9 +628,18 @@ export function AgentEventTimeline({
       <div
         className={`min-h-0 flex-1 overflow-auto pr-1 ${compact ? "space-y-1" : "space-y-2"}`}
       >
-        {visible.length === 0 && !running && (
+        {visible.length === 0 && !running && events.length === 0 && (
           <p className="rounded-lg border border-dashed border-zinc-300 px-3 py-8 text-center text-sm text-zinc-500 dark:border-zinc-700">
-            描述你的编程任务，Agent 会在这里展示计划、工具调用与审批。
+            {showRestoreHint ? (
+              <>
+                活动流为空。在左侧「任务」列表点击某条记录，可恢复该任务的活动流与审批。
+                <span className="mt-2 block text-xs text-zinc-400">
+                  或在下方输入新任务并点击「运行」。
+                </span>
+              </>
+            ) : (
+              "描述你的编程任务，Agent 会在这里展示计划、工具调用与审批。"
+            )}
           </p>
         )}
         {running && visible.length === 0 && (
@@ -555,7 +653,14 @@ export function AgentEventTimeline({
           </p>
         )}
         {visible.map((event, index) =>
-          renderEvent(event, index, showDebug, compact),
+          renderEvent(
+            event,
+            index,
+            showDebug,
+            compact,
+            onFocusApproval,
+            onFocusCompactedMemory,
+          ),
         )}
       </div>
     </section>

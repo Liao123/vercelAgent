@@ -20,6 +20,8 @@ import type {
 const IGNORED_DIRS = new Set([
   ".git",
   ".next",
+  ".agent-state",
+  ".agent-traces",
   "node_modules",
   "dist",
   "build",

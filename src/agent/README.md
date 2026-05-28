@@ -16,6 +16,15 @@
 - `workspace/`：工作区识别，读取 Git、包管理器、框架和项目规则。
 - `types.ts`：跨模块共享的核心类型。
 
+## Local validation
+
+```bash
+npm run validate:agent
+```
+
+- `validate:compaction` — 长任务 head/tail 压缩与 pinned approval
+- `validate:thread-memory` — Thread 跨 Task 记忆注入与二次压缩
+
 ## Current Boundary
 
 当前已经允许：

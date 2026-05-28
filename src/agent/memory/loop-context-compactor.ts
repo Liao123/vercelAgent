@@ -22,14 +22,18 @@ import {
   DEFAULT_TOKEN_BUDGET,
   getMaxContextTokens,
 } from "@/agent/memory/token-budget";
+import {
+  LOOP_COMPACTION_CONFIG,
+} from "@/agent/memory/loop-compaction-config";
 import type { ModelProvider } from "@/agent/model/types";
 import type { AgentMessage } from "@/agent/types";
 import { newId, nowIso } from "@/agent/types";
 
-const PINNED_HEAD_COUNT = 2;
-const TAIL_KEEP_COUNT = 12;
-const MIDDLE_TRIGGER_TOKENS = 4_000;
-const MIDDLE_MESSAGE_TRIGGER = 8;
+/** 无 thread 记忆时至少保留 system + 当前用户任务。 */
+const MIN_PINNED_HEAD_COUNT = 2;
+const TAIL_KEEP_COUNT = LOOP_COMPACTION_CONFIG.tailKeepCount;
+const MIDDLE_TRIGGER_TOKENS = LOOP_COMPACTION_CONFIG.middleTokenTrigger;
+const MIDDLE_MESSAGE_TRIGGER = LOOP_COMPACTION_CONFIG.middleMessageTrigger;
 const OBSERVATION_JSON_MAX = 8_000;
 const FILE_READ_CONTENT_MAX = 12_000;
 const SUMMARY_MERGE_MAX_CHARS = 10_000;
@@ -80,9 +84,17 @@ function safeJson(value: unknown, maxChars: number): string {
   try {
     const json = JSON.stringify(value, null, 2);
     if (json.length <= maxChars) return json;
-    return `${json.slice(0, maxChars)}\n...[truncated ${json.length - maxChars} chars]`;
+    return JSON.stringify({
+      truncated: true,
+      originalLength: json.length,
+      preview: json.slice(0, Math.max(0, maxChars - 280)),
+      note: "Full tool result omitted; re-call the tool if you need details.",
+    });
   } catch {
-    return String(value).slice(0, maxChars);
+    return JSON.stringify({
+      truncated: true,
+      preview: String(value).slice(0, Math.max(0, maxChars - 120)),
+    });
   }
 }
 
@@ -178,6 +190,30 @@ export function shapeToolResultForObservation(
     };
   }
 
+  if (
+    toolName === "git.mutation.prepare" ||
+    toolName === "shell.command.prepare"
+  ) {
+    const approval = record.approval;
+    if (approval && typeof approval === "object") {
+      const approvalRecord = approval as Record<string, unknown>;
+      return {
+        prepared: true,
+        approvalId: approvalRecord.id,
+        title: approvalRecord.title,
+        operation:
+          typeof record.operation === "object" &&
+          record.operation &&
+          "type" in (record.operation as object)
+            ? (record.operation as { type: string }).type
+            : undefined,
+        command:
+          typeof record.command === "string" ? record.command : undefined,
+        note: "Full preview in approval UI; re-prepare if needed.",
+      };
+    }
+  }
+
   return JSON.parse(safeJson(result, OBSERVATION_JSON_MAX));
 }
 
@@ -194,6 +230,80 @@ export function buildToolObservationMessage(
 
 function isCompactedMemoryMessage(message: AgentMessage): boolean {
   return messageText(message).startsWith(COMPACTED_MEMORY_PREFIX);
+}
+
+/** Thread 级记忆注入（跨 Task），与本轮 [COMPACTED_MEMORY] 不同。 */
+export function isThreadMemoryInjectionMessage(message: AgentMessage): boolean {
+  const text = messageText(message);
+  return (
+    message.role === "user" &&
+    text.includes("Rolling thread memory from earlier tasks in this thread")
+  );
+}
+
+export function isLoopEphemeralUserMessage(message: AgentMessage): boolean {
+  const text = messageText(message);
+  return (
+    text.startsWith("Observation from") ||
+    text.includes("Reflection (") ||
+    isCompactedMemoryMessage(message)
+  );
+}
+
+/** 当前 Task 的用户需求原文（必须留在 head，不可被压进 middle）。 */
+export function isPrimaryTaskUserMessage(message: AgentMessage): boolean {
+  return (
+    message.role === "user" &&
+    !isThreadMemoryInjectionMessage(message) &&
+    !isLoopEphemeralUserMessage(message)
+  );
+}
+
+/**
+ * 计算 Loop 压缩时要钉在头部的消息数：system →（可选）thread 记忆 → 当前用户任务。
+ */
+export function resolveLoopPinnedHeadCount(
+  messages: AgentMessage[],
+  tailStartIndex: number,
+): number {
+  if (tailStartIndex <= 0) return 0;
+
+  let count = 0;
+  if (messages[0]?.role === "system") {
+    count = 1;
+  } else {
+    return Math.min(MIN_PINNED_HEAD_COUNT, tailStartIndex);
+  }
+
+  if (
+    count < tailStartIndex &&
+    isThreadMemoryInjectionMessage(messages[count])
+  ) {
+    count += 1;
+  }
+
+  if (
+    count < tailStartIndex &&
+    isPrimaryTaskUserMessage(messages[count])
+  ) {
+    count += 1;
+  }
+
+  return Math.max(count, Math.min(MIN_PINNED_HEAD_COUNT, tailStartIndex));
+}
+
+export function splitLoopMessagesForCompaction(messages: AgentMessage[]): {
+  head: AgentMessage[];
+  middle: AgentMessage[];
+  tail: AgentMessage[];
+} {
+  const tailStart = Math.max(0, messages.length - TAIL_KEEP_COUNT);
+  const headCount = resolveLoopPinnedHeadCount(messages, tailStart);
+  return {
+    head: messages.slice(0, headCount),
+    middle: messages.slice(headCount, tailStart),
+    tail: messages.slice(tailStart),
+  };
 }
 
 export function parseCompactedMemory(content: string): ParsedCompactedMemory | null {
@@ -359,8 +469,9 @@ async function runSemanticCompact(input: {
         role: "system",
         content: [
           "Merge prior memory with new agent steps into compact memory.",
-          "Use sections ## Summary and ## Changed files in your output.",
-          "Preserve approval IDs, paths, errors from pinned facts.",
+          "Output sections ## Summary and ## Changed files only.",
+          "Copy every approval_* id from Pinned facts into Summary verbatim.",
+          "Do not invent facts. Collapse duplicate file reads.",
         ].join("\n"),
       },
       {
@@ -402,13 +513,14 @@ export async function compactAgentLoopMessages(input: {
   const estimatedTokensBefore = estimateMessagesTokens(messages);
   const maxContext = getMaxContextTokens(DEFAULT_TOKEN_BUDGET);
 
-  if (messages.length <= PINNED_HEAD_COUNT + TAIL_KEEP_COUNT + 1) {
+  const { head, middle: initialMiddle, tail } =
+    splitLoopMessagesForCompaction(messages);
+  const middle = [...initialMiddle];
+
+  const headCount = head.length;
+  if (messages.length <= headCount + TAIL_KEEP_COUNT + 1) {
     return emptyResult(messages, estimatedTokensBefore);
   }
-
-  const head = messages.slice(0, PINNED_HEAD_COUNT);
-  const tail = messages.slice(-TAIL_KEEP_COUNT);
-  const middle = messages.slice(PINNED_HEAD_COUNT, messages.length - TAIL_KEEP_COUNT);
 
   let priorMemory: ParsedCompactedMemory | null = null;
   const existingMemoryIndex = middle.findIndex(isCompactedMemoryMessage);
@@ -443,10 +555,17 @@ export async function compactAgentLoopMessages(input: {
     middleMessageToSection(message, index),
   );
 
+  const headPinned = extractPinnedFactsFromMessages(
+    head.filter(
+      (message) =>
+        isThreadMemoryInjectionMessage(message) ||
+        isCompactedMemoryMessage(message),
+    ),
+  );
   const evictedPinned = extractPinnedFactsFromMessages(middle);
   const pinnedFacts = mergePinnedFacts(
     priorMemory?.pinnedFacts ?? emptyPinnedFacts(),
-    evictedPinned,
+    mergePinnedFacts(headPinned, evictedPinned),
   );
 
   let method: LoopContextCompactMethod = "deterministic";
@@ -525,7 +644,7 @@ export async function compactAgentLoopMessages(input: {
     content: memoryContent,
   };
 
-  const nextMessages = [...head.slice(0, PINNED_HEAD_COUNT), memoryMessage, ...tail];
+  const nextMessages = [...head, memoryMessage, ...tail];
   const estimatedTokensAfter = estimateMessagesTokens(nextMessages);
 
   return {

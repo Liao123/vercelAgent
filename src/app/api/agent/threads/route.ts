@@ -1,15 +1,20 @@
 /**
  * Agent Thread（会话）API：列表、重命名、删除滚动记忆。
  */
-import { buildAgentThreadList } from "@/agent/memory/agent-thread-index";
+import {
+  buildAgentProjectSidebar,
+  buildAgentThreadList,
+} from "@/agent/memory/agent-thread-index";
 import {
   deleteThreadMemory,
   getThreadMemory,
+  listAllThreadMemories,
   listThreadMemoriesForWorkspace,
   updateThreadMemoryTitle,
 } from "@/agent/memory/thread-memory-store";
 import {
   getThreadMeta,
+  listAllThreadMetas,
   listThreadMetasForWorkspace,
   setThreadCustomTitle,
 } from "@/agent/memory/thread-meta-store";
@@ -30,9 +35,25 @@ async function listThreadsForWorkspace(workspaceId: string) {
   });
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const workspace = await getCurrentWorkspace();
+    const grouped =
+      new URL(request.url).searchParams.get("grouped") === "projects";
+
+    if (grouped) {
+      const traces = await listTraces();
+      const projects = buildAgentProjectSidebar({
+        traces,
+        memories: listAllThreadMemories(),
+        metas: listAllThreadMetas(),
+      });
+      return Response.json({
+        currentWorkspaceId: workspace.id,
+        projects,
+      });
+    }
+
     const threads = await listThreadsForWorkspace(workspace.id);
     return Response.json({ workspaceId: workspace.id, threads });
   } catch (error) {

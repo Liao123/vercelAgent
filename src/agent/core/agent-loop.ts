@@ -41,6 +41,7 @@ import {
   type ToolCallRecord,
   type Turn,
 } from "@/agent/types";
+import { isSemanticCompactEnabled } from "@/agent/memory/loop-compaction-config";
 import {
   buildToolObservationMessage,
   compactAgentLoopMessages,
@@ -549,7 +550,7 @@ export async function runAgentLoop(
       messages,
       userRequest: input.userRequest,
       provider,
-      enableSemanticCompact: process.env.AGENT_LOOP_SEMANTIC_COMPACT !== "false",
+      enableSemanticCompact: isSemanticCompactEnabled(),
       compactRound: contextCompactRound + 1,
     });
     if (compactResult.method !== "none") {

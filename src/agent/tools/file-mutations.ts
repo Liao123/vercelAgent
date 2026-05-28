@@ -7,7 +7,10 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { contentSnapshot } from "@/agent/approval/content-snapshot";
+import {
+  contentSnapshot,
+  contentSnapshotPair,
+} from "@/agent/approval/content-snapshot";
 import { createApprovalRequest, requireApprovedApproval } from "@/agent/approval";
 import type { ApprovalFileMutationPreview } from "@/agent/types";
 import {
@@ -170,6 +173,12 @@ function normalizeOperation(
 }
 
 function approvalPreview(preview: FileMutationPreview): ApprovalFileMutationPreview {
+  const pair =
+    typeof preview.oldContent === "string" &&
+    typeof preview.newContent === "string"
+      ? contentSnapshotPair(preview.oldContent, preview.newContent)
+      : null;
+
   return {
     type: preview.type,
     path: preview.path,
@@ -185,11 +194,11 @@ function approvalPreview(preview: FileMutationPreview): ApprovalFileMutationPrev
         : undefined,
     oldContent:
       typeof preview.oldContent === "string"
-        ? contentSnapshot(preview.oldContent)
+        ? (pair?.old ?? contentSnapshot(preview.oldContent))
         : undefined,
     newContent:
       typeof preview.newContent === "string"
-        ? contentSnapshot(preview.newContent)
+        ? (pair?.new ?? contentSnapshot(preview.newContent))
         : undefined,
   };
 }

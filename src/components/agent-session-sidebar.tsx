@@ -4,11 +4,6 @@ import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { useAgentWorkspaceBridge } from "@/components/agent-workspace-bridge";
 import type { AgentEvent } from "@/agent/types";
 import { resolveThreadIdFromEvents } from "@/lib/agent-feed";
-import {
-  buildThreadMemoryMarkdown,
-  downloadTextFile,
-} from "@/lib/export-thread-memory";
-
 type AgentThreadListItem = {
   threadId: string;
   title: string;
@@ -19,6 +14,14 @@ type AgentThreadListItem = {
   traceCount: number;
   hasMemory: boolean;
   lastUserRequest: string | null;
+};
+
+type AgentProjectSidebarItem = {
+  workspaceId: string;
+  name: string;
+  updatedAt: string;
+  threadCount: number;
+  threads: AgentThreadListItem[];
 };
 
 export type ContinueThreadPayload = {
@@ -36,6 +39,7 @@ type TraceListItem = {
     id: string;
     userRequest?: string;
     status?: string;
+    workspaceId?: string;
   };
 };
 
@@ -46,19 +50,23 @@ type TraceDetail = {
   thread?: TraceListItem["thread"];
 };
 
-function formatTime(iso: string): string {
+function formatRelativeTime(iso: string): string {
   try {
+    const diffMs = Date.now() - new Date(iso).getTime();
+    if (diffMs < 60_000) return "刚刚";
+    const minutes = Math.floor(diffMs / 60_000);
+    if (minutes < 60) return `${minutes}分钟前`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}小时前`;
+    const days = Math.floor(hours / 24);
+    if (days < 7) return `${days}天前`;
+    const weeks = Math.floor(days / 7);
+    if (weeks < 5) return `${weeks}周前`;
     const date = new Date(iso);
-    return `${date.getMonth() + 1}/${date.getDate()} ${date.getHours().toString().padStart(2, "0")}:${date.getMinutes().toString().padStart(2, "0")}`;
+    return `${date.getMonth() + 1}/${date.getDate()}`;
   } catch {
     return iso;
   }
-}
-
-function traceLabel(item: TraceListItem): string {
-  const request = item.task?.userRequest?.trim();
-  if (!request) return item.id.slice(0, 14);
-  return request.length > 44 ? `${request.slice(0, 44)}…` : request;
 }
 
 function resolveTaskSummary(events: AgentEvent[]): string | null {
@@ -79,8 +87,7 @@ function resolveTaskId(detail: TraceDetail): string {
 }
 
 function resolveThreadIdFromTraceItem(item: TraceListItem): string | null {
-  if (item.thread?.id) return item.thread.id;
-  return null;
+  return item.thread?.id ?? null;
 }
 
 type AgentSessionSidebarProps = {
@@ -101,34 +108,52 @@ export function AgentSessionSidebar({
   onSessionsChanged,
 }: AgentSessionSidebarProps) {
   const bridge = useAgentWorkspaceBridge();
-  const [threads, setThreads] = useState<AgentThreadListItem[]>([]);
+  const [projects, setProjects] = useState<AgentProjectSidebarItem[]>([]);
+  const [currentWorkspaceId, setCurrentWorkspaceId] = useState<string | null>(
+    null,
+  );
   const [traces, setTraces] = useState<TraceListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [restoringId, setRestoringId] = useState<string | null>(null);
-  const [filterThreadId, setFilterThreadId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyThreadId, setBusyThreadId] = useState<string | null>(null);
   const [renamingThreadId, setRenamingThreadId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
-  const activeFilterThreadId = filterThreadId ?? currentThreadId;
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(
+    () => new Set(),
+  );
 
   async function reloadLists() {
     setLoading(true);
     try {
-      const [threadsRes, tracesRes] = await Promise.all([
-        fetch("/api/agent/threads"),
+      const [projectsRes, tracesRes] = await Promise.all([
+        fetch("/api/agent/threads?grouped=projects"),
         fetch("/api/agent/traces"),
       ]);
-      const threadsData = await threadsRes.json();
+      const projectsData = await projectsRes.json();
       const tracesData = await tracesRes.json();
-      setThreads(
-        threadsRes.ok && Array.isArray(threadsData.threads)
-          ? threadsData.threads
-          : [],
+      const nextProjects =
+        projectsRes.ok && Array.isArray(projectsData.projects)
+          ? (projectsData.projects as AgentProjectSidebarItem[])
+          : [];
+      setProjects(nextProjects);
+      setCurrentWorkspaceId(
+        typeof projectsData.currentWorkspaceId === "string"
+          ? projectsData.currentWorkspaceId
+          : null,
       );
       setTraces(
         tracesRes.ok && Array.isArray(tracesData.traces) ? tracesData.traces : [],
       );
+      setExpandedProjects((prev) => {
+        const next = new Set(prev);
+        const wsId = projectsData.currentWorkspaceId as string | undefined;
+        if (wsId) next.add(wsId);
+        if (next.size === 0 && nextProjects[0]) {
+          next.add(nextProjects[0].workspaceId);
+        }
+        return next;
+      });
       onSessionsChanged?.();
     } finally {
       setLoading(false);
@@ -141,23 +166,35 @@ export function AgentSessionSidebar({
     (async () => {
       setLoading(true);
       try {
-        const [threadsRes, tracesRes] = await Promise.all([
-          fetch("/api/agent/threads"),
+        const [projectsRes, tracesRes] = await Promise.all([
+          fetch("/api/agent/threads?grouped=projects"),
           fetch("/api/agent/traces"),
         ]);
-        const threadsData = await threadsRes.json();
+        const projectsData = await projectsRes.json();
         const tracesData = await tracesRes.json();
         if (cancelled) return;
-        setThreads(
-          threadsRes.ok && Array.isArray(threadsData.threads)
-            ? threadsData.threads
-            : [],
+        const nextProjects =
+          projectsRes.ok && Array.isArray(projectsData.projects)
+            ? (projectsData.projects as AgentProjectSidebarItem[])
+            : [];
+        setProjects(nextProjects);
+        setCurrentWorkspaceId(
+          typeof projectsData.currentWorkspaceId === "string"
+            ? projectsData.currentWorkspaceId
+            : null,
         );
         setTraces(
           tracesRes.ok && Array.isArray(tracesData.traces)
             ? tracesData.traces
             : [],
         );
+        const wsId = projectsData.currentWorkspaceId as string | undefined;
+        setExpandedProjects(() => {
+          const next = new Set<string>();
+          if (wsId) next.add(wsId);
+          else if (nextProjects[0]) next.add(nextProjects[0].workspaceId);
+          return next;
+        });
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -168,23 +205,20 @@ export function AgentSessionSidebar({
     };
   }, [refreshKey]);
 
-  const focusResolvedTraceId = useMemo(() => {
-    const focus = bridge?.historyFocus;
-    if (!focus || traces.length === 0) return null;
-    if (focus.traceId) return focus.traceId;
-    if (focus.taskId) {
-      return traces.find((item) => item.task?.id === focus.taskId)?.id ?? null;
-    }
-    return null;
-  }, [bridge?.historyFocus, traces]);
-
-  const filteredTraces = useMemo(() => {
-    if (!activeFilterThreadId) return traces;
-    return traces.filter((item) => {
+  const tracesByThread = useMemo(() => {
+    const map = new Map<string, TraceListItem[]>();
+    for (const item of traces) {
       const threadId = resolveThreadIdFromTraceItem(item);
-      return threadId === activeFilterThreadId;
-    });
-  }, [activeFilterThreadId, traces]);
+      if (!threadId) continue;
+      const list = map.get(threadId) ?? [];
+      list.push(item);
+      map.set(threadId, list);
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    }
+    return map;
+  }, [traces]);
 
   async function restoreTrace(traceId: string) {
     if (!bridge) return;
@@ -215,15 +249,37 @@ export function AgentSessionSidebar({
     }
   }
 
-  function handleSelectThread(threadId: string) {
-    setFilterThreadId(threadId);
-    onSelectThread(threadId);
+  function toggleProject(workspaceId: string) {
+    setExpandedProjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(workspaceId)) next.delete(workspaceId);
+      else next.add(workspaceId);
+      return next;
+    });
   }
 
-  function handleContinueThread(thread: AgentThreadListItem, e: MouseEvent) {
+  function handleSelectSession(
+    project: AgentProjectSidebarItem,
+    thread: AgentThreadListItem,
+  ) {
+    setActionError(null);
+    onSelectThread(thread.threadId);
+    const threadTraces = (tracesByThread.get(thread.threadId) ?? []).filter(
+      (item) => item.task?.workspaceId === project.workspaceId,
+    );
+    const latest = threadTraces[0];
+    if (latest) {
+      void restoreTrace(latest.id);
+    }
+  }
+
+  function handleContinueThread(
+    thread: AgentThreadListItem,
+    e: MouseEvent,
+  ) {
     e.stopPropagation();
     setActionError(null);
-    handleSelectThread(thread.threadId);
+    onSelectThread(thread.threadId);
     onContinueThread?.({
       threadId: thread.threadId,
       title: thread.title,
@@ -263,71 +319,11 @@ export function AgentSessionSidebar({
     }
   }
 
-  async function handleExportMemory(
-    thread: AgentThreadListItem,
-    e: MouseEvent,
-  ) {
-    e.stopPropagation();
-    if (!thread.hasMemory) return;
-
-    setBusyThreadId(thread.threadId);
-    setActionError(null);
-    try {
-      const res = await fetch(
-        `/api/agent/thread-memory?threadId=${encodeURIComponent(thread.threadId)}`,
-      );
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "读取记忆失败");
-      const content = data.memory?.memoryContent as string | undefined;
-      if (!content) throw new Error("该会话没有可导出的记忆。");
-      const md = buildThreadMemoryMarkdown(thread.title, content, {
-        threadId: thread.threadId,
-        round: thread.round ?? undefined,
-        method: thread.method ?? undefined,
-      });
-      downloadTextFile(`agent-thread-${thread.threadId.slice(0, 8)}.md`, md);
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : "导出失败");
-    } finally {
-      setBusyThreadId(null);
-    }
-  }
-
-  async function handleDeleteMemory(
-    thread: AgentThreadListItem,
-    e: MouseEvent,
-  ) {
-    e.stopPropagation();
-    if (
-      !window.confirm(
-        `删除会话「${thread.title}」的滚动记忆？\n\nTrace 历史保留；下次运行将不再自动带上压缩摘要（除非再次压缩生成）。`,
-      )
-    ) {
-      return;
-    }
-
-    setBusyThreadId(thread.threadId);
-    setActionError(null);
-    try {
-      const res = await fetch(
-        `/api/agent/threads?threadId=${encodeURIComponent(thread.threadId)}`,
-        { method: "DELETE" },
-      );
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "删除失败");
-      await reloadLists();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : "删除失败");
-    } finally {
-      setBusyThreadId(null);
-    }
-  }
-
   return (
     <div className="flex min-h-0 flex-1 flex-col border-t border-zinc-200 dark:border-zinc-800">
       <div className="flex items-center justify-between px-2 py-1.5">
         <p className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-          会话
+          项目
         </p>
         <button
           type="button"
@@ -338,199 +334,182 @@ export function AgentSessionSidebar({
         </button>
       </div>
 
-      <div className="max-h-[38%] min-h-0 shrink-0 overflow-auto px-1 pb-1">
+      <div className="min-h-0 flex-1 overflow-auto px-1 pb-2">
         {actionError && (
           <p className="mb-1 rounded px-2 py-1 text-[10px] text-red-600 dark:text-red-400">
             {actionError}
           </p>
         )}
-        {loading && threads.length === 0 && (
-          <p className="px-2 py-2 text-center text-[11px] text-zinc-500">加载中…</p>
-        )}
-        {!loading && threads.length === 0 && (
+        {loading && projects.length === 0 && (
           <p className="px-2 py-2 text-center text-[11px] text-zinc-500">
-            运行后会话出现在这里
+            加载中…
           </p>
         )}
-        <button
-          type="button"
-          onClick={() => {
-            setFilterThreadId(null);
-            onSelectThread(null);
-          }}
-          className={`mb-0.5 w-full rounded-md px-2 py-1 text-left text-[11px] ${
-            !activeFilterThreadId
-              ? "bg-zinc-200/80 dark:bg-zinc-800"
-              : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800/80"
-          }`}
-        >
-          全部会话
-        </button>
-        {threads.map((thread) => {
-          const isActive = activeFilterThreadId === thread.threadId;
-          const isBusy = busyThreadId === thread.threadId;
+        {!loading && projects.length === 0 && (
+          <p className="px-2 py-4 text-center text-[11px] leading-relaxed text-zinc-500">
+            运行任务后，会按项目显示最近会话
+          </p>
+        )}
+
+        {projects.map((project) => {
+          const isExpanded = expandedProjects.has(project.workspaceId);
+          const isCurrentWorkspace =
+            currentWorkspaceId === project.workspaceId;
+          const hiddenCount = Math.max(
+            0,
+            project.threadCount - project.threads.length,
+          );
+
           return (
-            <div
-              key={thread.threadId}
-              className={`group relative mb-0.5 rounded-md transition ${
-                isActive
-                  ? "bg-blue-100 dark:bg-blue-950/50"
-                  : "hover:bg-zinc-100 dark:hover:bg-zinc-800/80"
-              }`}
-            >
-              {renamingThreadId === thread.threadId ? (
-                <form
-                  className="px-2 py-1.5 pr-1"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void submitRenameThread(thread.threadId);
-                  }}
+            <div key={project.workspaceId} className="mb-1">
+              <button
+                type="button"
+                onClick={() => toggleProject(project.workspaceId)}
+                className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition ${
+                  isCurrentWorkspace
+                    ? "bg-zinc-100 dark:bg-zinc-800/80"
+                    : "hover:bg-zinc-100 dark:hover:bg-zinc-800/80"
+                }`}
+              >
+                <span
+                  className={`shrink-0 text-[10px] text-zinc-400 transition ${
+                    isExpanded ? "rotate-90" : ""
+                  }`}
+                  aria-hidden
                 >
-                  <input
-                    autoFocus
-                    value={renameDraft}
-                    onChange={(e) => setRenameDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Escape") {
-                        setRenamingThreadId(null);
-                      }
-                    }}
-                    className="w-full rounded border border-blue-400 bg-white px-1.5 py-0.5 text-[11px] dark:border-blue-600 dark:bg-zinc-950"
-                  />
-                  <div className="mt-1 flex gap-1">
-                    <button
-                      type="submit"
-                      className="rounded bg-blue-600 px-1.5 py-0.5 text-[9px] text-white"
-                    >
-                      保存
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setRenamingThreadId(null)}
-                      className="rounded bg-zinc-200 px-1.5 py-0.5 text-[9px] dark:bg-zinc-700"
-                    >
-                      取消
-                    </button>
-                  </div>
-                </form>
-              ) : (
-                <button
-                  type="button"
-                  disabled={isBusy}
-                  onClick={() => handleSelectThread(thread.threadId)}
-                  className="w-full px-2 py-1.5 pr-16 text-left"
-                >
-                  <p className="line-clamp-1 text-[11px] font-medium text-zinc-800 dark:text-zinc-200">
-                    {thread.title}
-                  </p>
-                  {thread.summaryPreview && (
-                    <p className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-zinc-500">
-                      {thread.summaryPreview}
+                  ▶
+                </span>
+                <span className="text-[11px]" aria-hidden>
+                  📁
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-zinc-800 dark:text-zinc-200">
+                  {project.name}
+                </span>
+                {isCurrentWorkspace && (
+                  <span className="shrink-0 rounded bg-blue-100 px-1 py-0.5 text-[9px] text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                    当前
+                  </span>
+                )}
+              </button>
+
+              {isExpanded && (
+                <div className="ml-3 border-l border-zinc-200 pl-1 dark:border-zinc-700">
+                  {project.threads.length === 0 && (
+                    <p className="px-2 py-1.5 text-[10px] text-zinc-500">
+                      暂无会话
                     </p>
                   )}
-                  <p className="mt-0.5 text-[10px] text-zinc-500">
-                    {thread.traceCount} 任务
-                    {thread.round != null ? ` · 记忆 R${thread.round}` : ""}
-                    {thread.hasMemory ? " · 有记忆" : ""}
-                    {" · "}
-                    {formatTime(thread.updatedAt)}
-                  </p>
-                </button>
+                  {project.threads.map((thread) => {
+                    const isActive = currentThreadId === thread.threadId;
+                    const isBusy = busyThreadId === thread.threadId;
+                    const latestTrace = tracesByThread.get(thread.threadId)?.[0];
+                    const isCurrentTask =
+                      latestTrace?.task?.id != null &&
+                      latestTrace.task.id === currentTaskId;
+
+                    return (
+                      <div
+                        key={thread.threadId}
+                        className={`group relative mb-0.5 rounded-md ${
+                          isActive
+                            ? "bg-blue-100/80 dark:bg-blue-950/40"
+                            : "hover:bg-zinc-100 dark:hover:bg-zinc-800/80"
+                        }`}
+                      >
+                        {renamingThreadId === thread.threadId ? (
+                          <form
+                            className="px-2 py-1.5"
+                            onSubmit={(e) => {
+                              e.preventDefault();
+                              void submitRenameThread(thread.threadId);
+                            }}
+                          >
+                            <input
+                              autoFocus
+                              value={renameDraft}
+                              onChange={(e) => setRenameDraft(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Escape") {
+                                  setRenamingThreadId(null);
+                                }
+                              }}
+                              className="w-full rounded border border-blue-400 bg-white px-1.5 py-0.5 text-[11px] dark:border-blue-600 dark:bg-zinc-950"
+                            />
+                            <div className="mt-1 flex gap-1">
+                              <button
+                                type="submit"
+                                className="rounded bg-blue-600 px-1.5 py-0.5 text-[9px] text-white"
+                              >
+                                保存
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setRenamingThreadId(null)}
+                                className="rounded bg-zinc-200 px-1.5 py-0.5 text-[9px] dark:bg-zinc-700"
+                              >
+                                取消
+                              </button>
+                            </div>
+                          </form>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={isBusy || restoringId != null}
+                            onClick={() => handleSelectSession(project, thread)}
+                            className="flex w-full items-start justify-between gap-2 px-2 py-1.5 pr-1 text-left"
+                          >
+                            <span className="min-w-0 flex-1">
+                              <span className="line-clamp-2 text-[11px] text-zinc-800 dark:text-zinc-200">
+                                {thread.title}
+                              </span>
+                            </span>
+                            <span className="shrink-0 text-[10px] text-zinc-500">
+                              {formatRelativeTime(thread.updatedAt)}
+                            </span>
+                          </button>
+                        )}
+
+                        {renamingThreadId !== thread.threadId && (
+                          <div className="absolute right-0 top-0.5 hidden flex-col gap-0.5 group-hover:flex">
+                            <button
+                              type="button"
+                              title="在此会话继续"
+                              disabled={isBusy}
+                              onClick={(e) => handleContinueThread(thread, e)}
+                              className="rounded bg-blue-600 px-1 py-0.5 text-[9px] text-white"
+                            >
+                              继续
+                            </button>
+                            <button
+                              type="button"
+                              title="重命名"
+                              disabled={isBusy}
+                              onClick={(e) => startRenameThread(thread, e)}
+                              className="rounded bg-zinc-200 px-1 py-0.5 text-[9px] dark:bg-zinc-700"
+                            >
+                              命名
+                            </button>
+                          </div>
+                        )}
+
+                        {isCurrentTask && (
+                          <p className="px-2 pb-1 text-[9px] text-emerald-600 dark:text-emerald-400">
+                            当前任务
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {hiddenCount > 0 && (
+                    <p className="px-2 py-1 text-[10px] text-zinc-400">
+                      另有 {hiddenCount} 个会话未显示
+                    </p>
+                  )}
+                </div>
               )}
-              <div className="absolute right-1 top-1 flex flex-col gap-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100">
-                <button
-                  type="button"
-                  title="在此会话继续"
-                  disabled={isBusy}
-                  onClick={(e) => handleContinueThread(thread, e)}
-                  className="rounded bg-blue-600 px-1 py-0.5 text-[9px] font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-                >
-                  继续
-                </button>
-                <button
-                  type="button"
-                  title="重命名"
-                  disabled={isBusy || renamingThreadId === thread.threadId}
-                  onClick={(e) => startRenameThread(thread, e)}
-                  className="rounded bg-zinc-200 px-1 py-0.5 text-[9px] text-zinc-700 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200"
-                >
-                  命名
-                </button>
-                {thread.hasMemory && (
-                  <button
-                    type="button"
-                    title="导出记忆 Markdown"
-                    disabled={isBusy}
-                    onClick={(e) => void handleExportMemory(thread, e)}
-                    className="rounded bg-zinc-200 px-1 py-0.5 text-[9px] text-zinc-700 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200"
-                  >
-                    导出
-                  </button>
-                )}
-                {thread.hasMemory && (
-                  <button
-                    type="button"
-                    title="删除滚动记忆"
-                    disabled={isBusy}
-                    onClick={(e) => void handleDeleteMemory(thread, e)}
-                    className="rounded bg-red-100 px-1 py-0.5 text-[9px] text-red-700 hover:bg-red-200 dark:bg-red-950 dark:text-red-300"
-                  >
-                    删记忆
-                  </button>
-                )}
-              </div>
             </div>
           );
         })}
-      </div>
-
-      <div className="flex min-h-0 flex-1 flex-col border-t border-zinc-200 dark:border-zinc-800">
-        <div className="flex items-center justify-between px-2 py-1.5">
-          <p className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-            任务
-            {activeFilterThreadId ? "（已筛选）" : ""}
-          </p>
-        </div>
-        <div className="min-h-0 flex-1 overflow-auto px-1 pb-2">
-          {filteredTraces.length === 0 && !loading && (
-            <p className="px-2 py-4 text-center text-[11px] text-zinc-500">
-              {activeFilterThreadId ? "该会话下暂无任务" : "运行任务后会出现在这里"}
-            </p>
-          )}
-          {filteredTraces.map((item) => {
-            const isCurrent =
-              currentTaskId != null && item.task?.id === currentTaskId;
-            const isFocused = focusResolvedTraceId === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                disabled={restoringId === item.id}
-                onClick={() => void restoreTrace(item.id)}
-                className={`mb-0.5 w-full rounded-md px-2 py-1.5 text-left transition ${
-                  isFocused
-                    ? "bg-blue-100 dark:bg-blue-950/50"
-                    : isCurrent
-                      ? "bg-emerald-50 dark:bg-emerald-950/30"
-                      : "hover:bg-zinc-100 dark:hover:bg-zinc-800/80"
-                }`}
-              >
-                <p className="line-clamp-2 text-[11px] font-medium text-zinc-800 dark:text-zinc-200">
-                  {traceLabel(item)}
-                </p>
-                {item.thread?.contextSummary && (
-                  <p className="mt-0.5 line-clamp-1 text-[10px] text-zinc-500">
-                    {item.thread.contextSummary}
-                  </p>
-                )}
-                <p className="mt-0.5 text-[10px] text-zinc-500">
-                  {item.eventCount} 事件 · {formatTime(item.updatedAt)}
-                  {isCurrent ? " · 当前" : ""}
-                </p>
-              </button>
-            );
-          })}
-        </div>
       </div>
     </div>
   );

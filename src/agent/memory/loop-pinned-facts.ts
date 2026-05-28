@@ -13,6 +13,7 @@ export type LoopPinnedFacts = {
 };
 
 const APPROVAL_ID = /\b(approval_[a-z0-9-]+)\b/gi;
+const APPROVAL_ID_JSON = /"approvalId":\s*"(approval_[a-z0-9-]+)"/gi;
 const FILE_PATH =
   /(?:^|[\s"'`(])([\w./\\-]+\.(?:ts|tsx|js|jsx|json|md|css|scss|mjs|mts|yml|yaml))\b/gi;
 const GIT_BRANCH_CMD = /git branch\s+([\w./-]+)/gi;
@@ -63,6 +64,9 @@ export function extractPinnedFactsFromText(text: string): LoopPinnedFacts {
   const toolHighlights: string[] = [];
 
   for (const match of text.matchAll(APPROVAL_ID)) {
+    approvalIds.push(match[1]);
+  }
+  for (const match of text.matchAll(APPROVAL_ID_JSON)) {
     approvalIds.push(match[1]);
   }
 

@@ -8,18 +8,21 @@ import {
   copyTextToClipboard,
   downloadTextFile,
 } from "@/lib/export-thread-memory";
+import { AGENT_COMPACTED_MEMORY_PANEL_ID } from "@/lib/approval-anchor";
 
 type AgentCompactedMemoryPanelProps = {
   events: AgentEvent[];
   /** 直接传入完整记忆（Trace API / thread-memory API） */
   memoryContent?: string | null;
   compact?: boolean;
+  highlighted?: boolean;
 };
 
 export function AgentCompactedMemoryPanel({
   events,
   memoryContent: memoryContentProp,
   compact = false,
+  highlighted = false,
 }: AgentCompactedMemoryPanelProps) {
   const [expanded, setExpanded] = useState(!compact);
   const [exportHint, setExportHint] = useState<string | null>(null);
@@ -34,8 +37,13 @@ export function AgentCompactedMemoryPanel({
 
   return (
     <section
+      id={AGENT_COMPACTED_MEMORY_PANEL_ID}
       className={`shrink-0 rounded-lg border border-blue-200/90 bg-blue-50/50 dark:border-blue-900/60 dark:bg-blue-950/25 ${
         compact ? "px-2 py-1.5" : "px-3 py-2"
+      } ${
+        highlighted
+          ? "ring-2 ring-blue-500 ring-offset-2 ring-offset-white dark:ring-offset-zinc-950"
+          : ""
       }`}
     >
       <div className="flex items-start justify-between gap-2">

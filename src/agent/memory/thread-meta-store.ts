@@ -58,6 +58,10 @@ export function listThreadMetasForWorkspace(
   );
 }
 
+export function listAllThreadMetas(): ThreadMetaRecord[] {
+  return [...metaByThread.values()];
+}
+
 export function setThreadCustomTitle(
   threadId: string,
   workspaceId: string,

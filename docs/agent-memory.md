@@ -1,6 +1,6 @@
 # 开发智能体本地记忆
 
-更新时间：2026-05-27（今日收工）
+更新时间：2026-05-28
 
 本文档用于记录项目长期事实、架构决策、用户偏好和后续开发注意事项。它不是聊天记录，也不是密钥存储。
 
@@ -256,17 +256,47 @@ Codex CLI 是 Apache-2.0 开源项目，有成熟架构价值。但它主要是 
 - A047 已完成：patch 审批用 `PatchFilesDiffView` 多文件 Tab；`DiffView` split 模式带变更前/后行号对齐。
 - A048 已完成：活动流/审批展示 patch 多文件摘要；Patch 原文默认折叠；`patch.prepare` 会 `createPatchApproval` 并返回 `approval`。
 
+### D021：压缩调优与本地验证脚本（A059）
+
+决策：
+
+- 压缩阈值可通过 `AGENT_LOOP_TAIL_KEEP`、`AGENT_LOOP_MIDDLE_MSG_TRIGGER`、`AGENT_LOOP_MIDDLE_TOKEN_TRIGGER` 调整；语义层用 `AGENT_LOOP_SEMANTIC_COMPACT=false` 关闭。
+- 本地回归：`npm run validate:agent`（compaction + thread 延续，无需 LLM）。
+- UI 收到 `context.compacted` 时自动滚到「滚动任务记忆」并提示查看 Pinned 审批 ID。
+
+### D020：Loop 压缩 head 与 thread pinned（A058）
+
+决策：
+
+- 压缩 head 动态为：`system` →（可选）thread 滚动记忆 → **当前 Task 用户需求**；禁止把当前需求留在 middle 被压掉。
+- 压缩合并 pinned 时，从 thread 记忆注入消息与 middle 一并抽取，确保跨 Task 的 `approval_*` 进入 `[COMPACTED_MEMORY]`。
+- 本地验证：`npm run validate:compaction`（无需 LLM）。
+
+### D019：活动流审批锚点（A057）
+
+决策：
+
+- 活动流中带审批的工具结果行可点击「查看审批」，滚动并高亮 `approval-anchor-{id}` 卡片。
+- 收到 `approval.required` SSE 时自动滚到对应审查卡片。
+- 三栏布局右侧下半恢复完整「变更审查」面板（含 diff）；中栏仍保留紧凑内联待授权区。
+
 ### D012：三栏工作区（A049，2026-05 落地）
 
 决策：
 
 A049 将首页改为 Cursor/Codex 向三栏：左（项目 + Trace 任务历史）、中（输入 + 紧凑活动流）、右（变更审查）；聊天/浏览器通过最左图标栏展开次级侧栏，不再用底部抽屉。
 
+### D022：左侧栏按项目分组会话（A061）
+
+- `GET /api/agent/threads?grouped=projects` 返回跨 Workspace 的项目列表；项目名为路径最后一级（如 `vec-next`）。
+- 每个项目下默认展示最近 **5** 条会话（Thread），带相对时间；超出时提示「另有 N 个会话未显示」。
+- 点击会话：选中 threadId，并自动恢复该会话下**最近一次** Trace 到主区活动流（不再单独列出「任务」列表）。
+- 左栏上部路径区标题为 **工作区**，其下树形区标题为 **项目**，避免重复用词。
+
 仍缺、后续再做：
 
 - 左栏 **文件树**（目前只有任务历史，没有 repo 文件浏览）
 - 中栏 **内嵌编辑器**（目前中栏仍是活动流，不是代码编辑区）
-- 活动流 → 右侧审批 **锚点滚动**
 - **何时做桌面端（Electron）**：在 Web 版已跑通「Loop → 审批 → 执行」且你本人能接受粘贴 workspace 路径的前提下，**不必急着做桌面端**。建议在出现以下 2～3 项时再立项：① 需要系统目录选择器（非技术用户不能粘贴路径）；② 需要可靠 Chrome DevTools / WebView（iframe 被 CSP 挡住你的主流程）；③ 需要本地 shell 命令审批且沙箱要强隔离；④ 需要离线或内网单机部署。在此之前继续用 Web + `src/agent` 与 UI 解耦，桌面壳以后可复用同一套 API。
 - 当前 Trace Store 会同时写入内存和 `.agent-traces/` 本地 JSON 文件，并可通过 `/api/agent/traces` 查询。
 - `.agent-traces/` 已加入 `.gitignore`，不要提交运行 trace。

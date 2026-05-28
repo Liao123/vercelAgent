@@ -185,3 +185,75 @@ export function filterTracesByThreadId(
   if (!threadId) return traces;
   return traces.filter((trace) => resolveThreadIdFromTrace(trace) === threadId);
 }
+
+export type AgentProjectSidebarItem = {
+  workspaceId: string;
+  name: string;
+  updatedAt: string;
+  threadCount: number;
+  threads: AgentThreadListItem[];
+};
+
+const DEFAULT_RECENT_THREADS_PER_PROJECT = 5;
+
+function workspaceDisplayName(workspaceId: string): string {
+  const normalized = workspaceId.replace(/\\/g, "/").replace(/\/+$/, "");
+  const base = normalized.split("/").pop();
+  return base && base.length > 0 ? base : workspaceId;
+}
+
+function collectWorkspaceIds(input: {
+  traces: TraceRecord[];
+  memories: ThreadMemoryRecord[];
+  metas: ThreadMetaRecord[];
+}): string[] {
+  const ids = new Set<string>();
+  for (const memory of input.memories) {
+    ids.add(memory.workspaceId);
+  }
+  for (const meta of input.metas) {
+    ids.add(meta.workspaceId);
+  }
+  for (const trace of input.traces) {
+    const workspaceId = trace.task?.workspaceId;
+    if (workspaceId) ids.add(workspaceId);
+  }
+  return [...ids];
+}
+
+export function buildAgentProjectSidebar(input: {
+  traces: TraceRecord[];
+  memories: ThreadMemoryRecord[];
+  metas: ThreadMetaRecord[];
+  recentThreadsPerProject?: number;
+}): AgentProjectSidebarItem[] {
+  const limit = input.recentThreadsPerProject ?? DEFAULT_RECENT_THREADS_PER_PROJECT;
+  const workspaceIds = collectWorkspaceIds(input);
+
+  const projects = workspaceIds.map((workspaceId) => {
+    const traces = input.traces.filter(
+      (trace) => trace.task?.workspaceId === workspaceId,
+    );
+    const threads = buildAgentThreadList({
+      workspaceId,
+      traces,
+      memories: input.memories,
+      metas: input.metas,
+    });
+    const recentThreads = threads.slice(0, limit);
+    const updatedAt =
+      threads[0]?.updatedAt ??
+      traces[0]?.updatedAt ??
+      new Date(0).toISOString();
+
+    return {
+      workspaceId,
+      name: workspaceDisplayName(workspaceId),
+      updatedAt,
+      threadCount: threads.length,
+      threads: recentThreads,
+    };
+  });
+
+  return projects.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
