@@ -523,7 +523,7 @@ type AgentEventTimelineProps = {
   density?: "comfortable" | "compact";
   /** 不在中栏展示的事件类型（如 plan 放右侧栏） */
   excludeEventTypes?: AgentEvent["type"][];
-  /** 活动流为空时提示可从左侧任务历史恢复 */
+  /** 活动流为空时提示可从左侧会话历史恢复 */
   showRestoreHint?: boolean;
   /** 点击带审批的活动行时，滚动定位到审查/内联审批卡片 */
   onFocusApproval?: (approvalId: string) => void;
@@ -632,7 +632,7 @@ export function AgentEventTimeline({
           <p className="rounded-lg border border-dashed border-zinc-300 px-3 py-8 text-center text-sm text-zinc-500 dark:border-zinc-700">
             {showRestoreHint ? (
               <>
-                活动流为空。在左侧「任务」列表点击某条记录，可恢复该任务的活动流与审批。
+                活动流为空。在左侧「项目 → 会话」中点击某条会话，可恢复该任务的活动流与审批。
                 <span className="mt-2 block text-xs text-zinc-400">
                   或在下方输入新任务并点击「运行」。
                 </span>

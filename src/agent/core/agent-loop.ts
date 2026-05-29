@@ -12,6 +12,7 @@ import { tryRecoverEditApproval } from "@/agent/core/edit-recovery";
 import {
   buildRuntimeCheckpoint,
   createAgentLoopRunState,
+  isExplicitReadOnlyRequest,
   recordToolCall,
   type AgentLoopRunState,
 } from "@/agent/core/agent-loop-state";
@@ -434,6 +435,7 @@ async function attemptEditRecovery(
 
 function shouldInjectRuntimeReflection(state: AgentLoopRunState): boolean {
   if (state.reflectionRounds >= MAX_REFLECTION_ROUNDS) return false;
+  if (isExplicitReadOnlyRequest(state.userRequest)) return false;
   if (state.lastToolError || state.lastPrepareError) return true;
   if (state.likelyEditRequest && !state.approvalPrepared && state.toolsCalled.length >= 2) {
     return true;
@@ -666,6 +668,7 @@ export async function runAgentLoop(
     if (
       decision.action === "final" &&
       runState.likelyEditRequest &&
+      !isExplicitReadOnlyRequest(runState.userRequest) &&
       !runState.approvalPrepared &&
       runState.reflectionRounds < MAX_REFLECTION_ROUNDS &&
       iteration < maxIterations
@@ -789,7 +792,11 @@ export async function runAgentLoop(
     summary = runState.approvalPrepared
       ? recoverySummary
       : `${summary}\n${recoverySummary}`;
-  } else if (runState.likelyEditRequest && !runState.approvalPrepared) {
+  } else if (
+    runState.likelyEditRequest &&
+    !isExplicitReadOnlyRequest(runState.userRequest) &&
+    !runState.approvalPrepared
+  ) {
     summary = `${summary}\n未能为本次改代码需求生成审批。请查看事件流中的反思步骤，或补充更具体的目标文件/要改的确切文字后重试。`;
   } else if (modelUnavailable && !runState.approvalPrepared) {
     summary = `${summary}\n模型不可用且磁盘恢复未生成审批。请检查 API 配额或 .env.local 配置后重试。`;

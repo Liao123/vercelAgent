@@ -9,7 +9,8 @@
     "lint": "eslint",
     "validate:compaction": "npx --yes tsx scripts/validate-loop-compaction.ts",
     "validate:thread-memory": "npx --yes tsx scripts/validate-thread-continuation.ts",
-    "validate:agent": "npm run validate:compaction && npm run validate:thread-memory"
+    "validate:loop-state": "npx --yes tsx scripts/validate-loop-state.ts",
+    "validate:agent": "npm run validate:compaction && npm run validate:thread-memory && npm run validate:loop-state"
   },
   "dependencies": {
     "next": "16.2.6",

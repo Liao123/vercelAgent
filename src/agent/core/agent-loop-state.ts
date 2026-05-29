@@ -23,8 +23,32 @@ export function createAgentLoopRunState(userRequest: string): AgentLoopRunState 
   };
 }
 
+/** 用户明确要求只读、不写盘、不执行时，不应走改代码审批链路。 */
+export function isExplicitReadOnlyRequest(input: string): boolean {
+  const readOnlyPatterns = [
+    /只读/,
+    /read[-\s]?only/i,
+    /不要\s*修改/,
+    /不要\s*写(?:入|盘|文件)?/,
+    /不要\s*执行/,
+    /不修改任何/,
+    /不执行写盘/,
+    /只准备[、,，]?\s*不执行/,
+    /do\s+not\s+modif/i,
+    /without\s+modif/i,
+  ];
+  return readOnlyPatterns.some((pattern) => pattern.test(input));
+}
+
 export function isLikelyCodeEditRequest(input: string): boolean {
+  if (isExplicitReadOnlyRequest(input)) return false;
+
   const normalized = input.toLowerCase();
+  const stripped = normalized
+    .replace(/不要\s*修改[^。；\n]*/g, " ")
+    .replace(/不要\s*改[^变][^。；\n]*/g, " ")
+    .replace(/不修改[^。；\n]*/g, " ");
+
   const editKeywords = [
     "修改",
     "改成",
@@ -43,7 +67,7 @@ export function isLikelyCodeEditRequest(input: string): boolean {
     "change",
     "update",
   ];
-  return editKeywords.some((keyword) => normalized.includes(keyword));
+  return editKeywords.some((keyword) => stripped.includes(keyword));
 }
 
 export function recordToolCall(
@@ -112,7 +136,12 @@ export function buildRuntimeCheckpoint(state: AgentLoopRunState): string {
     );
   }
 
-  if (state.likelyEditRequest && !state.approvalPrepared) {
+  if (isExplicitReadOnlyRequest(state.userRequest)) {
+    lines.push(
+      "This is a read-only task: use inspect/read/search/git status tools only; do not prepare file or patch approvals.",
+      "You may action=final once you have enough evidence.",
+    );
+  } else if (state.likelyEditRequest && !state.approvalPrepared) {
     lines.push(
       "Required for this task: produce exactly one approval via file.replace.prepare, file.mutation.prepare, or patch.prepare.",
       "Do not action=final until approval exists or you have exhausted reasonable tool strategies.",
