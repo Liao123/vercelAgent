@@ -143,8 +143,9 @@ export function buildAgentThreadList(input: {
     }
   }
 
-  const items: AgentThreadListItem[] = [...byThread.entries()].map(
-    ([threadId, row]) => {
+  const items: AgentThreadListItem[] = [...byThread.entries()]
+    .filter(([threadId]) => !metaById.get(threadId)?.hidden)
+    .map(([threadId, row]) => {
       const memory = row.memory;
       const summaryPreview =
         memory?.summaryPreview ??
@@ -226,9 +227,13 @@ export function buildAgentProjectSidebar(input: {
   memories: ThreadMemoryRecord[];
   metas: ThreadMetaRecord[];
   recentThreadsPerProject?: number;
+  hiddenWorkspaceIds?: string[];
 }): AgentProjectSidebarItem[] {
   const limit = input.recentThreadsPerProject ?? DEFAULT_RECENT_THREADS_PER_PROJECT;
-  const workspaceIds = collectWorkspaceIds(input);
+  const hidden = new Set(input.hiddenWorkspaceIds ?? []);
+  const workspaceIds = collectWorkspaceIds(input).filter(
+    (workspaceId) => !hidden.has(workspaceId),
+  );
 
   const projects = workspaceIds.map((workspaceId) => {
     const traces = input.traces.filter(

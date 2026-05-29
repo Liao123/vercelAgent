@@ -14,11 +14,14 @@ import {
 } from "@/agent/memory/thread-memory-store";
 import {
   getThreadMeta,
+  hideThreadInSidebar,
   listAllThreadMetas,
   listThreadMetasForWorkspace,
   setThreadCustomTitle,
 } from "@/agent/memory/thread-meta-store";
 import { listTraces, updateTraceThread } from "@/agent/trace/trace-store";
+import { resolveThreadIdFromTrace } from "@/agent/memory/agent-thread-index";
+import { listHiddenWorkspaceIds } from "@/agent/workspace/workspace-sidebar-store";
 import { getCurrentWorkspace } from "@/agent/workspace";
 
 export const dynamic = "force-dynamic";
@@ -47,6 +50,7 @@ export async function GET(request: Request) {
         traces,
         memories: listAllThreadMemories(),
         metas: listAllThreadMetas(),
+        hiddenWorkspaceIds: listHiddenWorkspaceIds(),
       });
       return Response.json({
         currentWorkspaceId: workspace.id,
@@ -119,24 +123,35 @@ export async function PATCH(request: Request) {
 }
 
 export async function DELETE(request: Request) {
-  const threadId = new URL(request.url).searchParams.get("threadId")?.trim();
+  const url = new URL(request.url);
+  const threadId = url.searchParams.get("threadId")?.trim();
+  const workspaceIdParam = url.searchParams.get("workspaceId")?.trim();
   if (!threadId) {
     return Response.json({ error: "threadId is required." }, { status: 400 });
   }
 
   try {
-    const workspace = await getCurrentWorkspace();
     const memory = getThreadMemory(threadId);
     const meta = getThreadMeta(threadId);
+    let threadWorkspaceId =
+      workspaceIdParam ?? memory?.workspaceId ?? meta?.workspaceId;
 
-    if (memory && memory.workspaceId !== workspace.id) {
-      return Response.json({ error: "Thread not in workspace." }, { status: 403 });
+    if (!threadWorkspaceId) {
+      for (const trace of await listTraces()) {
+        if (resolveThreadIdFromTrace(trace) !== threadId) continue;
+        if (trace.task?.workspaceId) {
+          threadWorkspaceId = trace.task.workspaceId;
+          break;
+        }
+      }
     }
-    if (meta && meta.workspaceId !== workspace.id) {
-      return Response.json({ error: "Thread not in workspace." }, { status: 403 });
+
+    if (!threadWorkspaceId) {
+      return Response.json({ error: "Thread workspace not found." }, { status: 404 });
     }
 
     const memoryDeleted = deleteThreadMemory(threadId);
+    hideThreadInSidebar(threadId, threadWorkspaceId);
 
     for (const trace of await listTraces()) {
       if (trace.thread?.id === threadId) {
@@ -147,7 +162,8 @@ export async function DELETE(request: Request) {
     return Response.json({
       ok: true,
       memoryDeleted,
-      note: "Custom title preserved. Traces unchanged.",
+      workspaceId: threadWorkspaceId,
+      note: "Session hidden from sidebar. Rolling memory cleared. Trace files unchanged.",
     });
   } catch (error) {
     return Response.json(

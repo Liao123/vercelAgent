@@ -151,6 +151,37 @@ function upsertApproval(
   return sortApprovals([next, ...filtered]);
 }
 
+function approvalProgressRank(approval: ApprovalRecordView): number {
+  if (approval.execution?.status === "succeeded") return 40;
+  if (approval.execution?.status === "failed") return 35;
+  if (approval.status === "approved") return 30;
+  if (approval.status === "rejected") return 20;
+  return 10;
+}
+
+function mergeApprovalRecord(
+  existing: ApprovalRecordView,
+  incoming: ApprovalRecordView,
+): ApprovalRecordView {
+  const existingRank = approvalProgressRank(existing);
+  const incomingRank = approvalProgressRank(incoming);
+  const primary =
+    incomingRank > existingRank
+      ? incoming
+      : existingRank > incomingRank
+        ? existing
+        : incoming;
+  const secondary = primary === incoming ? existing : incoming;
+  return normalizeApprovalView({
+    ...secondary,
+    ...primary,
+    details: primary.details ?? secondary.details,
+    execution: primary.execution ?? secondary.execution,
+    status: primary.status,
+    decidedAt: primary.decidedAt ?? secondary.decidedAt,
+  });
+}
+
 function mergeApprovalLists(
   ...lists: Array<ApprovalRecordView[] | ApprovalEventView[]>
 ): ApprovalRecordView[] {
@@ -158,7 +189,11 @@ function mergeApprovalLists(
   for (const list of lists) {
     for (const item of list) {
       const next = normalizeApprovalView(item);
-      merged.set(next.id, next);
+      const existing = merged.get(next.id);
+      merged.set(
+        next.id,
+        existing ? mergeApprovalRecord(existing, next) : next,
+      );
     }
   }
   return sortApprovals([...merged.values()]);
@@ -612,7 +647,6 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     setEvents(payload.events);
     setCurrentTaskId(payload.taskId);
     setRunning(false);
-    setRequest(payload.userRequest ?? "");
     setTaskSummary(payload.taskSummary ?? null);
     setCurrentThreadId(resolveThreadIdFromEvents(payload.events));
     setError(null);
@@ -626,11 +660,42 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
           event.type === "approval.required",
       )
       .map((event) => approvalFromRequiredEvent(event));
-    setApprovals((current) =>
-      sortApprovals(mergeApprovalLists(current, traceApprovals)),
-    );
+
+    void (async () => {
+      try {
+        const res = await fetch("/api/agent/approvals");
+        const data = await res.json();
+        const serverApprovals = Array.isArray(data.approvals)
+          ? (data.approvals as ApprovalRecordView[])
+          : [];
+        setApprovals(
+          sortApprovals(mergeApprovalLists(traceApprovals, serverApprovals)),
+        );
+      } catch {
+        setApprovals((current) =>
+          sortApprovals(mergeApprovalLists(current, traceApprovals)),
+        );
+      }
+    })();
+
     setApprovalStatus("已从历史 Trace 恢复活动流；右侧已筛选「仅本次任务」审批。");
   }, []);
+
+  const startNewSession = useCallback(() => {
+    if (running) return;
+    setCurrentThreadId(null);
+    setContinueThreadMemory(false);
+    setEvents([]);
+    setCurrentTaskId(null);
+    setTaskSummary(null);
+    setRequest("");
+    setError(null);
+    setApprovalStatus("已开始新会话，输入任务后点击运行。");
+    setApprovalFilters({
+      pendingOnly: true,
+      currentTaskOnly: false,
+    });
+  }, [running]);
 
   useEffect(() => {
     if (!bridge) return;
@@ -1409,6 +1474,10 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
               }
               setApprovalStatus("已载入会话记忆，可修改需求后点击运行。");
             }}
+            onNewSession={startNewSession}
+            onThreadDeleted={() => {
+              startNewSession();
+            }}
             onSessionsChanged={() =>
               setSidebarRefreshKey((key) => key + 1)
             }
@@ -1469,16 +1538,14 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
                     thread:{currentThreadId.slice(0, 12)}…
                   </span>
                 )}
-                {currentThreadId && (
-                  <button
-                    type="button"
-                    disabled={running}
-                    onClick={() => setCurrentThreadId(null)}
-                    className="text-blue-600 hover:underline dark:text-blue-400"
-                  >
-                    新会话
-                  </button>
-                )}
+                <button
+                  type="button"
+                  disabled={running}
+                  onClick={startNewSession}
+                  className="text-blue-600 hover:underline disabled:opacity-50 dark:text-blue-400"
+                >
+                  新会话
+                </button>
               </div>
             )}
             {referenceImages.length > 0 && (

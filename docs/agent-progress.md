@@ -1,6 +1,6 @@
 # 开发智能体项目进度
 
-更新时间：2026-05-28
+更新时间：2026-05-29
 
 本文档用于记录开发智能体项目的工作项、当前状态、验收标准和执行记录。后续每完成一个工作项，都必须更新本文档。
 
@@ -119,8 +119,22 @@ deferred    暂缓，不属于当前阶段
 | A059 | done | 压缩调优与 Thread 验证 | 语义 compact 提示词强化；`AGENT_LOOP_*` 环境变量；`validate:thread-memory` + `validate:agent`；压缩 SSE 自动滚到记忆面板。 |
 | A060 | done | E2E 体验修复 | 大文件小改动审批 diff 围绕变更行截取；启动自动读取 Workspace；中栏隐藏历史「已批准待执行」；内联审批区分历史/本次；活动流空态提示恢复 Trace。 |
 | A061 | done | 左侧栏按项目分组会话 | `GET /api/agent/threads?grouped=projects`；项目（Workspace 文件夹名）下展示最近 5 条会话 + 相对时间；点击会话恢复该会话最近一次 Trace；移除独立「任务」列表；路径区标题改为「工作区」。 |
+| A062 | done | 只读 Loop 反思修复 | `isExplicitReadOnlyRequest` 排除「不要修改」等；`scripts/validate-loop-state.ts` + `npm run validate:loop-state`；活动流空态改为「项目 → 会话」。 |
+| A063 | done | 侧栏会话与项目管理 | 左栏「新会话」；会话悬停「继续/命名/删除」；`thread-meta.hidden` + `DELETE /api/agent/threads`；项目悬停「移除」+ `workspace-sidebar.json` + `DELETE/PATCH /api/agent/workspace`。 |
+| A064 | done | 黄金路径试用脚本 | `scripts/golden-path-trial.mjs`：设 workspace → Loop → 批准 → execute → 校验磁盘；已在 `D:\案例\aiproject` 验证通过。 |
+| A065 | done | 恢复 Trace 体验修复 | 恢复会话时 `mergeApprovalLists` 优先已批准/已执行状态并拉取 `/api/agent/approvals`；点击会话不再预填底栏输入（仅「继续」预填）；「新会话」清空输入框。 |
 
 ## 完成记录
+
+### 2026-05-29
+
+- **验证**：`npm run validate:agent`（compaction + thread-memory + loop-state）通过；浏览器实机验证工作区、内置浏览器、会话恢复、只读 Loop；`golden-path-trial` 在 `D:\案例\aiproject` 改 `index.html` 标题全流程通过。
+- A062 已完成：只读任务不再误触发「缺少审批」多轮反思；`validate:loop-state` 接入 `validate:agent`。
+- A063 已完成：补 A055 遗漏的侧栏「删除」；项目可从左栏移除（不删磁盘），底部可「恢复已隐藏项目」；跨 workspace 删会话带 `workspaceId` 参数。
+- A064 已完成：`scripts/golden-path-trial.mjs`；试用项目在 `D:\案例\aiproject`（用户自建目录，非 vec-next 仓库内）。
+- A065 已完成：修复「点进历史会话后审批又变待授权」；修复「点进会话底栏需求被反复填充」。
+- 验证：`npm run lint` 通过。
+- **用户偏好（再次确认）**：暂不做左栏文件树、内嵌编辑器；不必再投入开发闭环；日常只用 Agent Loop。
 
 ### 2026-05-28
 
@@ -288,6 +302,30 @@ deferred    暂缓，不属于当前阶段
 - A056 已完成：内联重命名、记忆导出 `.md`、中栏记忆复制/导出；`AgentRunModeHint`（Loop vs 闭环说明，闭环后续不投入）。
 - 验证：A054–A056 均 `npm run lint`、`npm run build` 通过。
 
+## 接续收工（2026-05-29）
+
+**阶段结论**：主链路已在真实外部 workspace（`aiproject`）跑通 **Loop → 审批 → 执行**；侧栏会话/项目管理与恢复 Trace 的体验 bug 已修。
+
+**本批交付摘要**：
+
+| 范围 | 内容 |
+| --- | --- |
+| Loop | 只读任务不误报缺审批；`validate:loop-state` |
+| 侧栏 | 新会话、删会话、移除/恢复项目 |
+| 恢复 Trace | 审批状态跟 `.agent-state/approvals.json`；输入框仅「继续」预填 |
+| 试用 | `npm run validate:agent`；`node scripts/golden-path-trial.mjs "D:\案例\aiproject"` |
+
+**本地状态目录（勿提交 git）**：`.agent-state/`（含 `workspace-sidebar.json`、`thread-meta.json` 的 `hidden`）、`.agent-traces/`。
+
+**启动续作**：`npm run dev` → 设 workspace → 默认 Loop；删/藏侧栏项只改 UI 偏好，不动项目磁盘。
+
+## 下一步建议（优先级）
+
+1. **P1**：`git.status` 工具返回结构化 `{ dirty, files[] }`，减少模型口头误报。
+2. **P2**：大文件小改动审批 diff 再打磨（`agent-panel.tsx` 类场景）。
+3. **P3**：长任务 + 延续会话第二轮压缩，对照 `validate:agent` + 浏览器目视。
+4. **暂缓**：文件树、编辑器、Electron、Chrome DevTools 深度读取、开发闭环增强。
+
 ## 今日收工（2026-05-27）
 
 **阶段结论**：主链路已是 **Agent Loop + 审批执行 + Trace**；今日重点把 **Codex/Cursor 式上下文压缩与会话记忆**（A051–A056）接到 Loop 并可在 UI 使用。
@@ -307,9 +345,11 @@ deferred    暂缓，不属于当前阶段
 
 ## 明天建议接续（优先级）
 
-1. **浏览器实机复测**：`npm run dev` 跑长 Loop，对照 `npm run validate:agent` 结果，目视压缩事件、记忆 Pinned、延续会话第二条任务。
+1. ~~浏览器实机复测~~（2026-05-29 已做一轮，见 A064/A065）。
 2. **对比实验**（可选）：`.env.local` 设 `AGENT_LOOP_SEMANTIC_COMPACT=false` 与默认各跑一轮，导出记忆 md 对比质量。
 3. **暂缓**：开发闭环增强、左栏文件树、内嵌编辑器、Electron、Chrome DevTools 深度读取。
+
+（以上条目已被上方「接续收工 2026-05-29」中的下一步建议取代，保留仅供对照。）
 
 用户已明确：**暂不做**文件树与编辑器；**不必再投入**开发闭环（`/api/agent/develop` 可保留不动）。
 

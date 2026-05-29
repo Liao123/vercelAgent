@@ -1,6 +1,6 @@
 # 开发智能体本地记忆
 
-更新时间：2026-05-28
+更新时间：2026-05-29
 
 本文档用于记录项目长期事实、架构决策、用户偏好和后续开发注意事项。它不是聊天记录，也不是密钥存储。
 
@@ -140,7 +140,7 @@
 
 **环境变量**：`AGENT_LOOP_SEMANTIC_COMPACT=false` 可关闭语义压缩（仅确定性）。
 
-**明天优先验证**：长任务压缩 + 侧栏「继续」+ 审批 ID 是否在 `[COMPACTED_MEMORY]` 的 Pinned 段保留。
+**2026-05-29 已验证**：`npm run validate:agent`；`golden-path-trial` @ `D:\案例\aiproject`；恢复 Trace 审批/输入框见 D025。
 
 ### D016：会话侧栏与记忆摘要索引（A054）
 
@@ -154,21 +154,18 @@
 
 用户需要像 Cursor 一样选历史会话继续，而不是只在任务粒度翻 Trace。
 
-### D017：会话重命名 / 删记忆 / 一键继续（A055）
+### D017：会话重命名 / 删记忆 / 一键继续（A055，侧栏 UI A063 补全）
 
 决策：
 
 - 自定义标题存 `thread-meta.json`，列表优先展示 `customTitle`。
-- `DELETE /api/agent/threads?threadId=` 只删 `thread-memory` 条目，Trace 保留。
-- 侧栏「继续」= 选中 threadId + 延续记忆 + 输入框预填 `lastUserRequest`。
+- `DELETE /api/agent/threads?threadId=&workspaceId=` 清滚动记忆 + `thread-meta.hidden`；Trace 保留。
+- 侧栏悬停：**继续**（预填 `lastUserRequest`）、**命名**、**删除**。
+- **点击会话行**只恢复活动流，不预填输入（见 D025）。
 
 原因：
 
-对齐 Cursor 会话管理：可改名、可清记忆重来、可一键接着聊。
-
-原因：
-
-开发智能体会产生大量对话、工具调用、代码片段、浏览器快照和日志。不能把所有历史无脑塞给模型。
+对齐 Cursor 会话管理：可改名、可从侧栏移除会话、可一键接着聊。
 
 ### D005：可以参考 openai/codex，但不照搬
 
@@ -290,8 +287,32 @@ A049 将首页改为 Cursor/Codex 向三栏：左（项目 + Trace 任务历史�
 
 - `GET /api/agent/threads?grouped=projects` 返回跨 Workspace 的项目列表；项目名为路径最后一级（如 `vec-next`）。
 - 每个项目下默认展示最近 **5** 条会话（Thread），带相对时间；超出时提示「另有 N 个会话未显示」。
-- 点击会话：选中 threadId，并自动恢复该会话下**最近一次** Trace 到主区活动流（不再单独列出「任务」列表）。
+- 点击会话：选中 threadId，并自动恢复该会话下**最近一次** Trace 到主区活动流（**不**预填底栏输入，见 D025）。
 - 左栏上部路径区标题为 **工作区**，其下树形区标题为 **项目**，避免重复用词。
+
+### D023：只读 Loop 与「改代码」意图分离（A062）
+
+- `isExplicitReadOnlyRequest`：含「只读」「不要修改」「不要执行」「只准备、不执行」等时，不算 `likelyEditRequest`。
+- 避免「不要修改任何文件」里的「修改」触发缺审批反思；回归见 `npm run validate:loop-state`。
+
+### D024：侧栏删除 ≠ 删磁盘（A063）
+
+- **删会话**：`DELETE /api/agent/threads?threadId=&workspaceId=` → 清滚动记忆 + `thread-meta.hidden`；Trace JSON 保留。
+- **移除项目**：`DELETE /api/agent/workspace?workspaceId=` → 写入 `.agent-state/workspace-sidebar.json` 的 `hiddenWorkspaceIds`；不删文件夹。
+- **恢复项目**：`PATCH /api/agent/workspace` body `{ workspaceId, action: "show" }`。
+- 左栏「新会话」与底栏「新会话」共用 `startNewSession`（清 thread、活动流、输入框）。
+
+### D025：恢复 Trace 时的审批与输入框（A065）
+
+- 恢复活动流时 **必须** 再拉 `/api/agent/approvals`，`mergeApprovalLists` 按进度优先：已执行 > 已批准 > 已拒绝 > 待审批。
+- Trace 内 `approval.required` 事件是历史快照（多为 pending），不能覆盖持久化审批状态。
+- **点击会话**：只看历史，不 `setRequest`。
+- **悬停点「继续」**：才预填 `lastUserRequest`（A055 原意）。
+
+### D026：黄金路径外部试用（A064）
+
+- 试用脚本：`node scripts/golden-path-trial.mjs "<workspacePath>"`（默认 `D:\案例\aiproject`）。
+- 用户外部试玩目录 `D:\案例\aiproject` 与 vec-next 仓库分离；改动的 `index.html` 在用户目录，不随 vec-next 提交。
 
 仍缺、后续再做：
 
@@ -310,8 +331,8 @@ A049 将首页改为 Cursor/Codex 向三栏：左（项目 + Trace 任务历史�
 - AgentPanel 的 Workspace 区域需要保留明确的读取/设置反馈；如果用户说“设置按钮点不动”，优先检查路径输入、接口返回和 UI 状态提示。
 - 产品方向上应预留桌面端。浏览器环境无法像 Codex 桌面端那样可靠弹出系统目录选择器并把本机路径交给服务端；Electron/本地客户端更适合承载项目选择、本地文件读写、命令执行、Chrome DevTools 连接和权限沙箱。
 - 迁移策略不是立刻重写成 Electron，而是继续保持 Agent Runtime 与 UI 解耦，先把 `src/agent` 能力做稳，再让 Web UI 和 Electron UI 共享同一套本地 runtime/API。
-- 当前优先级建议：A034-A049 已完成；下一步可左栏文件树、中栏编辑器占位、审批锚点，或评估 Electron。
-- 接续入口：不要重复做 A034-A049。旧 approval 无 `details` 不可执行，需重新发起任务。
+- 当前优先级建议：A062–A065 已完成；下一步 **git.status 结构化**、大文件 diff、长任务压缩复测。
+- 接续入口：恢复 Trace 后审批/输入框行为见 D025；外部 workspace 试用见 D026。
 - A034 已完成：ApprovalRecord 增加可 JSON 持久化的 `details` 字段，`/api/agent/files` 和 `/api/agent/git` 的 preview 会写入 operation、operationHash 和 preview。
 - A034 文件详情已包含：operation type、path/fromPath/toPath、existsBefore/existsAfter、oldSize/newSize、sizeDelta、oldContent/newContent 的截断快照。
 - A034 Git 详情已包含：operation type、preview command、branchName/branch/remote/setUpstream、risk notes。后续可继续补 git status/diff 快照，但这不阻塞 A035。

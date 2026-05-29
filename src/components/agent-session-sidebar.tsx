@@ -96,6 +96,8 @@ type AgentSessionSidebarProps = {
   refreshKey?: number;
   onSelectThread: (threadId: string | null) => void;
   onContinueThread?: (payload: ContinueThreadPayload) => void;
+  onNewSession?: () => void;
+  onThreadDeleted?: (threadId: string) => void;
   onSessionsChanged?: () => void;
 };
 
@@ -105,6 +107,8 @@ export function AgentSessionSidebar({
   refreshKey = 0,
   onSelectThread,
   onContinueThread,
+  onNewSession,
+  onThreadDeleted,
   onSessionsChanged,
 }: AgentSessionSidebarProps) {
   const bridge = useAgentWorkspaceBridge();
@@ -122,16 +126,20 @@ export function AgentSessionSidebar({
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(
     () => new Set(),
   );
+  const [hiddenWorkspaceIds, setHiddenWorkspaceIds] = useState<string[]>([]);
+  const [showHiddenProjects, setShowHiddenProjects] = useState(false);
 
   async function reloadLists() {
     setLoading(true);
     try {
-      const [projectsRes, tracesRes] = await Promise.all([
+      const [projectsRes, tracesRes, hiddenRes] = await Promise.all([
         fetch("/api/agent/threads?grouped=projects"),
         fetch("/api/agent/traces"),
+        fetch("/api/agent/workspace?sidebar=hidden"),
       ]);
       const projectsData = await projectsRes.json();
       const tracesData = await tracesRes.json();
+      const hiddenData = await hiddenRes.json();
       const nextProjects =
         projectsRes.ok && Array.isArray(projectsData.projects)
           ? (projectsData.projects as AgentProjectSidebarItem[])
@@ -144,6 +152,11 @@ export function AgentSessionSidebar({
       );
       setTraces(
         tracesRes.ok && Array.isArray(tracesData.traces) ? tracesData.traces : [],
+      );
+      setHiddenWorkspaceIds(
+        hiddenRes.ok && Array.isArray(hiddenData.hiddenWorkspaceIds)
+          ? hiddenData.hiddenWorkspaceIds
+          : [],
       );
       setExpandedProjects((prev) => {
         const next = new Set(prev);
@@ -166,12 +179,14 @@ export function AgentSessionSidebar({
     (async () => {
       setLoading(true);
       try {
-        const [projectsRes, tracesRes] = await Promise.all([
+        const [projectsRes, tracesRes, hiddenRes] = await Promise.all([
           fetch("/api/agent/threads?grouped=projects"),
           fetch("/api/agent/traces"),
+          fetch("/api/agent/workspace?sidebar=hidden"),
         ]);
         const projectsData = await projectsRes.json();
         const tracesData = await tracesRes.json();
+        const hiddenData = await hiddenRes.json();
         if (cancelled) return;
         const nextProjects =
           projectsRes.ok && Array.isArray(projectsData.projects)
@@ -186,6 +201,11 @@ export function AgentSessionSidebar({
         setTraces(
           tracesRes.ok && Array.isArray(tracesData.traces)
             ? tracesData.traces
+            : [],
+        );
+        setHiddenWorkspaceIds(
+          hiddenRes.ok && Array.isArray(hiddenData.hiddenWorkspaceIds)
+            ? hiddenData.hiddenWorkspaceIds
             : [],
         );
         const wsId = projectsData.currentWorkspaceId as string | undefined;
@@ -319,19 +339,111 @@ export function AgentSessionSidebar({
     }
   }
 
+  async function deleteThread(
+    project: AgentProjectSidebarItem,
+    thread: AgentThreadListItem,
+    e: MouseEvent,
+  ) {
+    e.stopPropagation();
+    const confirmed = window.confirm(
+      `从侧栏删除会话「${thread.title}」？\n\n将清除该会话的滚动记忆，并从左侧列表隐藏。历史 Trace 文件仍保留在本地。`,
+    );
+    if (!confirmed) return;
+
+    setBusyThreadId(thread.threadId);
+    setActionError(null);
+    try {
+      const params = new URLSearchParams({
+        threadId: thread.threadId,
+        workspaceId: project.workspaceId,
+      });
+      const res = await fetch(`/api/agent/threads?${params}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "删除失败");
+      if (currentThreadId === thread.threadId) {
+        onThreadDeleted?.(thread.threadId);
+      }
+      await reloadLists();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "删除失败");
+    } finally {
+      setBusyThreadId(null);
+    }
+  }
+
+  function workspaceDisplayName(workspaceId: string): string {
+    const normalized = workspaceId.replace(/\\/g, "/").replace(/\/+$/, "");
+    const base = normalized.split("/").pop();
+    return base && base.length > 0 ? base : workspaceId;
+  }
+
+  async function removeProject(
+    project: AgentProjectSidebarItem,
+    e: MouseEvent,
+  ) {
+    e.stopPropagation();
+    const confirmed = window.confirm(
+      `从左侧移除项目「${project.name}」？\n\n不会删除磁盘上的文件夹，也不会删除 Trace；之后仍可在上方「工作区」输入路径打开该项目。`,
+    );
+    if (!confirmed) return;
+
+    setActionError(null);
+    try {
+      const params = new URLSearchParams({ workspaceId: project.workspaceId });
+      const res = await fetch(`/api/agent/workspace?${params}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "移除失败");
+      await reloadLists();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "移除失败");
+    }
+  }
+
+  async function restoreHiddenProject(workspaceId: string) {
+    setActionError(null);
+    try {
+      const res = await fetch("/api/agent/workspace", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId, action: "show" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "恢复失败");
+      await reloadLists();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "恢复失败");
+    }
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col border-t border-zinc-200 dark:border-zinc-800">
-      <div className="flex items-center justify-between px-2 py-1.5">
+      <div className="flex items-center justify-between gap-1 px-2 py-1.5">
         <p className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
           项目
         </p>
-        <button
-          type="button"
-          onClick={() => void reloadLists()}
-          className="text-[10px] text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300"
-        >
-          刷新
-        </button>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {onNewSession && (
+            <button
+              type="button"
+              onClick={onNewSession}
+              className="rounded bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-blue-700"
+              title="开始新会话（不延续当前会话记忆）"
+            >
+              新会话
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void reloadLists()}
+            className="text-[10px] text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300"
+          >
+            刷新
+          </button>
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto px-1 pb-2">
@@ -361,11 +473,11 @@ export function AgentSessionSidebar({
           );
 
           return (
-            <div key={project.workspaceId} className="mb-1">
+            <div key={project.workspaceId} className="group/project relative mb-1">
               <button
                 type="button"
                 onClick={() => toggleProject(project.workspaceId)}
-                className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition ${
+                className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 pr-10 text-left transition ${
                   isCurrentWorkspace
                     ? "bg-zinc-100 dark:bg-zinc-800/80"
                     : "hover:bg-zinc-100 dark:hover:bg-zinc-800/80"
@@ -390,6 +502,14 @@ export function AgentSessionSidebar({
                     当前
                   </span>
                 )}
+              </button>
+              <button
+                type="button"
+                title="从左侧项目列表移除"
+                onClick={(e) => void removeProject(project, e)}
+                className="absolute right-1 top-1 hidden rounded bg-red-600 px-1.5 py-0.5 text-[9px] text-white hover:bg-red-700 group-hover/project:inline-flex"
+              >
+                移除
               </button>
 
               {isExpanded && (
@@ -489,6 +609,15 @@ export function AgentSessionSidebar({
                             >
                               命名
                             </button>
+                            <button
+                              type="button"
+                              title="从侧栏删除会话（清除滚动记忆）"
+                              disabled={isBusy}
+                              onClick={(e) => void deleteThread(project, thread, e)}
+                              className="rounded bg-red-600 px-1 py-0.5 text-[9px] text-white hover:bg-red-700"
+                            >
+                              删除
+                            </button>
                           </div>
                         )}
 
@@ -510,6 +639,39 @@ export function AgentSessionSidebar({
             </div>
           );
         })}
+        {hiddenWorkspaceIds.length > 0 && (
+          <div className="mt-2 border-t border-zinc-200 px-2 pt-2 dark:border-zinc-800">
+            <button
+              type="button"
+              onClick={() => setShowHiddenProjects((value) => !value)}
+              className="text-[10px] text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300"
+            >
+              {showHiddenProjects ? "收起" : "显示"}已隐藏项目（
+              {hiddenWorkspaceIds.length}）
+            </button>
+            {showHiddenProjects && (
+              <ul className="mt-1 space-y-1">
+                {hiddenWorkspaceIds.map((workspaceId) => (
+                  <li
+                    key={workspaceId}
+                    className="flex items-center justify-between gap-2 rounded bg-zinc-100 px-2 py-1 dark:bg-zinc-800/80"
+                  >
+                    <span className="min-w-0 truncate text-[10px] text-zinc-600 dark:text-zinc-400">
+                      {workspaceDisplayName(workspaceId)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void restoreHiddenProject(workspaceId)}
+                      className="shrink-0 text-[10px] text-blue-600 hover:underline dark:text-blue-400"
+                    >
+                      恢复
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

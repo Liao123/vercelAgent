@@ -8,6 +8,8 @@ export type ThreadMetaRecord = {
   threadId: string;
   workspaceId: string;
   customTitle?: string;
+  /** 为 true 时不在左侧会话列表展示（Trace 文件仍保留） */
+  hidden?: boolean;
   updatedAt: string;
 };
 
@@ -88,4 +90,21 @@ export function deleteThreadMeta(threadId: string): boolean {
   const deleted = metaByThread.delete(threadId);
   if (deleted) persistToDisk();
   return deleted;
+}
+
+export function hideThreadInSidebar(
+  threadId: string,
+  workspaceId: string,
+): ThreadMetaRecord {
+  const existing = metaByThread.get(threadId);
+  const record: ThreadMetaRecord = {
+    threadId,
+    workspaceId,
+    customTitle: existing?.customTitle,
+    hidden: true,
+    updatedAt: new Date().toISOString(),
+  };
+  metaByThread.set(threadId, record);
+  persistToDisk();
+  return record;
 }
