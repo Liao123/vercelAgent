@@ -294,6 +294,125 @@ Codex CLI 是 Apache-2.0 开源项目，有成熟架构价值。但它主要是 
 
 用户主要盯中栏阅读推理逻辑；Cursor/Codex 将 Thought/Worked 嵌在对话流而非独立规划侧栏。A067 的规划同步逻辑保留，展示层迁移至 A071。
 
+### D028：UI 入口组件树追踪（A072，2026-06-01）
+
+决策：
+
+- 新增 `ui.trace_from_page`：从路由页（默认 `src/app/page.tsx`）沿 `@/` 与相对 import BFS 追踪 UI 组件树，返回 `suggestedReadOrder` 与 `visibleLabels`。
+- `file.locate` 在检测到首页/UI 改动意图（去掉、按钮、左边等）时自动合并 trace 结果并对 import 树内文件加权；结果附带 `uiTrace` 字段。
+- `@/` 别名解析为 `src/*`（与 tsconfig paths 一致）；跳过 `src/agent/core/*` 避免误改运行时。
+- `file-locator` / `file.search` 对 UI 意图升权 `src/app/*`、`src/components/*`，降权 agent 运行时源码。
+- 系统 prompt 要求：改可见 UI 前先 trace/read 页面组件树，勿因「loop/闭环」关键词误改 `agent-loop` 等运行时文件。
+- `suggestedReadOrder` 对含「闭环/Loop」可见文案的组件优先（三栏布局 RunMode 在 `agent-composer.tsx`，非 default 布局的 `agent-panel.tsx`）。
+
+原因：
+
+用户案例「去掉首页左边闭环/Loop」曾误改 `agent-panel.tsx`（default 布局）而非实际三栏输入区 `agent-composer.tsx`；根因是无 @文件上下文 + 文本搜索大量命中 agent 源码 + 未沿 page import 树追踪。
+
+### D029：开发准确度路线（A073–A080，2026-06-01）
+
+决策：
+
+- 对照 Cursor/Codex，准确度优先补 **改前证据链**（非单纯加 reflect 轮次）；详表见 [`docs/agent-accuracy-roadmap.md`](agent-accuracy-roadmap.md)。
+- **P0（A073–A075）**：Loop 注入 `uiContext`（A073）；prepare 硬门禁（A074）；`edit-recovery` 统一 trace + `validate:ui-locate`（A075）— **均已完成**。
+- **P1（A076–A078）**：多候选消歧、prepare 证据快照、轻量 jsx/symbol 引用（不上向量库）。
+- **P2（A079–A080）**：execute 后 lint 回灌、压缩 pin 最近 read、`@path` attach（MVP）。
+- 三栏首页 RunMode：**triple → `agent-composer.tsx`**；**default → `agent-panel.tsx`**；须由 runtime 注入，不靠模型猜。
+- 黄金路径回归：「去掉首页左边闭环/Loop」— 先 trace/locate composer，prepare 前 filesRead 含目标，search 来自磁盘 exact JSX。
+
+原因：
+
+用户以「去掉首页 Loop」测试开发能力；A072 解决 import 树，仍缺 layout 态与 prepare 门禁。Cursor/Codex 靠 IDE 上下文 + 工具约束；vec-next 在审批写盘约束下用 **runtime gate + uiContext** 对齐。
+
+### D030：prepare 硬门禁（A074，2026-06-01）
+
+决策：
+
+- `file.replace.prepare` / `file.mutation.prepare` / `patch.prepare` 执行前经 `assertPrepareGate`：目标 path 须在当轮 `filesRead`（`create` 新建 path 豁免）。
+- UI/首页意图（与 `isUiLocationQuery` 一致）须已调用 `ui.trace_from_page` 或 `file.locate`。
+- UI 意图禁止 prepare 修改 `src/agent/core/*`。
+- 门禁失败以工具 error 返回，驱动模型 reflect 后补 read/trace。
+- 回归：`npm run validate:prepare-gate`。
+
+### D039：edit.recovery 字面量过滤（A082 试用暴露，2026-06-01）
+
+决策：
+
+- `extractLiteralCandidates` 跳过长度 < 3 的英文 token，并过滤 `approval`、`ui`、`prepare` 等技术词，避免试用/需求里的英文触发 recovery 误删 composer 内 `approvalStatus` 等。
+- UI 黄金路径试用文案改用中文，避免 `approval id`、`UI` 等干扰 recovery。
+- 这不替代模型 prepare；`--strict` 试用仍暴露「模型未自主 prepare」问题 → 见 A083 候选。
+
+### D038：UI 黄金路径在线试用（A082，2026-06-01）
+
+决策：
+
+- `golden-path-ui-trial.mjs` 与离线 `validate-golden-path` 互补：调真实 `/api/agent/loop`，传 `uiContext: { layout: "triple" }`。
+- 用例：「去掉首页闭环/Loop」；断言 trace/locate、`file.read` composer、approval 目标为 `agent-composer.tsx`（非 panel / agent/core）。
+- **默认 dry-run**：校验通过后 `reject` approval，避免试玩改动 composer；本地需写盘时加 `--execute`。
+- **默认模式**允许 `edit.recovery` 兜底（只要审批指向 composer）；加 `--strict` 则强制模型走 `file.replace.prepare`。
+- 前置：`npm run dev` + 模型配置（`.env.local`）；`npm run trial:golden-path-ui`。
+
+### D037：黄金路径全链路 validate（A081，2026-06-01）
+
+决策：
+
+- 离线脚本 `validate-golden-path-accuracy.ts` 串联 A072–A080 能力，用固定用例「triple + 去掉首页闭环/Loop」验收。
+- 检查点：trace 首读 composer、消歧 mustRead、jsx 首命中 composer、@ 附加预读仍须 trace、全 read 后 prepare 通过、磁盘 exact 证据行号。
+- UI 消歧搜索限定 `src/components` + `src/app`，避免 `docs/` 占满 `searchText` 结果上限。
+- 接入 `npm run validate:agent`；不替代 LLM 实机 Loop，但保证 runtime 规则链不回退。
+
+### D036：压缩 pin + @ 文件 attach（A080，2026-06-01）
+
+决策：
+
+- `[COMPACTED_MEMORY]` 新增 `## 钉住文件片段`：从 evicted 的 `file.read` 观测提取最近 6 个路径、每文件约 1200 字符；按 `runState.filesRead` 顺序优先；跨轮 merge。
+- 用户可通过 `@path` 或 Composer `@` 按钮附加文件；Loop 启动时预读并计入 `filesRead`（prepare 门禁有效）。
+- `/api/agent/loop` 收 `attachedPaths`；与请求内 `@path` 合并去重（最多 8 个）。
+- 回归：`npm run validate:attached-pin`。
+
+### D035：执行后验证回灌（A079，2026-06-01）
+
+决策：
+
+- 用户 **execute** 文件/patch 审批成功后，若变更含 ts/tsx/js 等，自动顺序跑 `npm run lint` → `npm run typecheck`（package.json 白名单，缺 script 则跳过）。
+- 失败 **不自动修复**；结果写入 `approval.execution.result.postExecuteVerification`、`.agent-state/post-execute-verify.json`、中栏 `verification.completed` 事件。
+- 审查 UI 展示验证摘要与 stderr 片段；下一轮 Loop 可 `workspace.inspect` 读取 `lastPostExecuteVerification`。
+- 环境变量 `AGENT_POST_EXECUTE_VERIFY=0` 关闭自动验证。
+
+### D034：轻量 JSX/符号引用（A078，2026-06-01）
+
+决策：
+
+- `jsx.find_text`：仅扫 `.tsx/.jsx`；返回 line、matchKind、componentName 推断、UI/layout 加权；UI 文案优先于 `file.search`。
+- `symbol.find_references`：按 `path` 查 import 链（基于 project index）；按 `name` 查 export 定义 + import 行；无 AST/向量库。
+- 回归：`npm run validate:jsx-reference`（闭环→composer L166；composer 被 panel import；AgentComposer 定义）。
+
+### D033：prepare 证据快照（A077，2026-06-01）
+
+决策：
+
+- `ApprovalPrepareEvidence`：`path`、`startLine`、`endLine`、`matchedSnippet`、可选 `searchText`、`source`。
+- `file.replace.prepare` 用 `buildPrepareEvidenceFromSearch`；write mutation 用 `buildPrepareEvidenceFromContentChange`（围绕 diff）。
+- 持久化在 `approval.details.evidence`（file_mutation）；审查 UI `PrepareEvidenceView` 展示行号与磁盘片段。
+- 回归：`npm run validate:prepare-evidence`。
+
+### D032：UI label 多候选消歧（A076，2026-06-01）
+
+决策：
+
+- `disambiguateUiLabels`：从需求提取 label 字面量，在 `src/components/*` / `src/app/*` 中搜索；≥2 命中则打分（layout、import 树序、控件 JSX、agent 降权）。
+- `file.locate` / `ui.trace_from_page` 返回 `disambiguation`：`mustReadPaths`、`recommendedPath`、`selectionRationale`、各候选行段。
+- prepare 门禁：存在消歧时须 **全部** `mustReadPaths` 已 read 才允许 prepare。
+- runtime checkpoint 要求 reflect 简要说明为何选推荐文件而非备选。
+- 回归：`npm run validate:ui-disambiguate`（triple +「去掉首页闭环」→ composer 推荐，composer/panel 均须 read）。
+
+### D031：定位统一与黄金路径（A075，2026-06-01）
+
+决策：
+
+- `edit-recovery.resolveTargetPaths` 优先 `traceUiEntryForQuery` 的 `suggestedReadOrder`，再 merge `file.locate`（带 `uiContext`）。
+- 黄金路径脚本 `validate-ui-locate.ts`：「去掉首页闭环」+ `layout: triple` → composer 排名第一；接入 `validate:agent`。
+
 ### D012：三栏工作区（A049，2026-05 落地；布局 2026-06 由 A071 调整）
 
 决策：
@@ -348,8 +467,8 @@ A049 将首页改为 Cursor/Codex 向三栏：左（项目 + 会话）、中（T
 - AgentPanel 的 Workspace 区域需要保留明确的读取/设置反馈；如果用户说“设置按钮点不动”，优先检查路径输入、接口返回和 UI 状态提示。
 - 产品方向上应预留桌面端。浏览器环境无法像 Codex 桌面端那样可靠弹出系统目录选择器并把本机路径交给服务端；Electron/本地客户端更适合承载项目选择、本地文件读写、命令执行、Chrome DevTools 连接和权限沙箱。
 - 迁移策略不是立刻重写成 Electron，而是继续保持 Agent Runtime 与 UI 解耦，先把 `src/agent` 能力做稳，再让 Web UI 和 Electron UI 共享同一套本地 runtime/API。
-- 当前优先级建议：A071 中栏推理 UI 已落地；可选继续打磨路径跳转、步骤耗时；**git.status 结构化**（A066）、大文件 diff（A067）、长任务压缩（A068）已完成。
-- 接续入口：恢复 Trace 后审批/输入框行为见 D025；外部 workspace 试用见 D026。
+- 当前优先级建议：**A083（模型稳定 prepare）**；准确度路线图 A073–A082 已完成；离线 `validate:agent` + `validate:golden-path` 全绿；在线 `trial:golden-path-ui` 默认 PASSED（prepare 仍常靠 recovery）。
+- 准确度路线图：[`docs/agent-accuracy-roadmap.md`](agent-accuracy-roadmap.md)；接续入口 D029。
 - A034 已完成：ApprovalRecord 增加可 JSON 持久化的 `details` 字段，`/api/agent/files` 和 `/api/agent/git` 的 preview 会写入 operation、operationHash 和 preview。
 - A034 文件详情已包含：operation type、path/fromPath/toPath、existsBefore/existsAfter、oldSize/newSize、sizeDelta、oldContent/newContent 的截断快照。
 - A034 Git 详情已包含：operation type、preview command、branchName/branch/remote/setUpstream、risk notes。后续可继续补 git status/diff 快照，但这不阻塞 A035。

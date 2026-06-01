@@ -59,6 +59,14 @@ import {
   saveThreadMemory,
 } from "@/agent/memory/thread-memory-store";
 import { getCurrentWorkspace } from "@/agent/workspace";
+import { describeUiContextForPrompt } from "@/agent/indexer/ui-layout-boost";
+import {
+  formatAttachedFilesUserNote,
+  mergeAttachedPaths,
+  parseAtPathsFromRequest,
+  preloadAttachedFiles,
+} from "@/agent/core/attached-files";
+import type { AgentUiContext } from "@/agent/types";
 
 export type AgentLoopInput = {
   userRequest: string;
@@ -68,6 +76,10 @@ export type AgentLoopInput = {
   model?: string;
   /** 延续已有 Thread，并注入其滚动任务记忆 */
   threadId?: string;
+  /** 产品 UI 运行时上下文（layout、当前路由） */
+  uiContext?: AgentUiContext;
+  /** 用户手动附加的文件路径（与 @path 合并预读） */
+  attachedPaths?: string[];
   onEvent?: (event: AgentEvent) => void;
 };
 
@@ -103,7 +115,10 @@ type AgentLoopDecision =
 const DEFAULT_MAX_ITERATIONS = 12;
 const MAX_REFLECTION_ROUNDS = 4;
 
-function createSystemPrompt(workspaceRoot: string): string {
+function createSystemPrompt(
+  workspaceRoot: string,
+  uiContext?: AgentUiContext,
+): string {
   const toolList = AGENT_LOOP_TOOLS.map((tool) => ({
     name: tool.name,
     description: tool.description,
@@ -124,17 +139,30 @@ function createSystemPrompt(workspaceRoot: string): string {
     "Only call tools from the provided list. Do not invent tools.",
     "For code-change requests:",
     "- Gather evidence first: project.index, file.locate, file.read, file.search as needed.",
+    "- UI / 首页 / 页面 / 按钮 / 去掉某段界面文字:",
+    "  1) Call ui.trace_from_page (or file.locate—the latter merges import tree for UI queries) BEFORE file.search.",
+    "  2) Use jsx.find_text for visible labels (闭环/Loop/buttons)—returns line numbers + component guess; prefer over raw file.search.",
+    "  3) Use symbol.find_references when you need who imports a component file or where a symbol is exported.",
+    "  4) file.read files in suggestedReadOrder until you find the exact JSX with the visible label.",
+    "  5) Do NOT edit src/agent/core/* just because file.search found loop/闭环—prefer src/app/* and src/components/* for user-visible UI.",
+    "  6) If multiple files contain the same label, file.read EACH candidate (see disambiguation.mustReadPaths from locate/trace) before prepare; in reflect explain why you chose the recommended file.",
+    "  7) Before file.replace.prepare, file.read EVERY file you will edit and confirm the exact visible label text exists there.",
     "- Never guess file.replace.prepare search text from loose Chinese (e.g. 删除首页123文字). Read the file and copy an exact substring from disk.",
     "- Small edits: file.replace.prepare. Single-file full replace: file.mutation.prepare. Multi-file or /dev/null diffs: patch.prepare.",
     "- Mutation prepare tools only create approvals; the user approves and executes in the UI.",
     "- Do not action=final on edit tasks until an approval was prepared, unless you explain clearly why it is impossible.",
     "- To verify: shell.command.prepare with lint, build, test, or typecheck (only if script exists in package.json).",
+    "- After user executes a file/patch approval, runtime may auto-run lint/typecheck; failures appear as verification.completed events—fix in a new Loop round, never auto-apply.",
+    "- User may attach files via @path in the request or UI; pre-loaded file.read at task start counts as read evidence.",
     "- Git branch/commit/push: git.mutation.prepare only; never assume they ran.",
     "On tool errors: action=reflect, then try a different strategy (another path, file.search, different exact search string).",
     "Do not run arbitrary shell, install packages, or auto-execute git/shell without user approval in the UI.",
     `Workspace root: ${workspaceRoot}`,
+    describeUiContextForPrompt(uiContext),
     `Tools: ${JSON.stringify(toolList)}`,
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function extractJsonObjectCandidates(text: string): string[] {
@@ -374,6 +402,7 @@ async function attemptEditRecovery(
   taskId: string,
   runState: AgentLoopRunState,
   rootPath: string,
+  uiContext?: AgentUiContext,
 ): Promise<string | null> {
   if (!runState.likelyEditRequest || runState.approvalPrepared) return null;
 
@@ -382,6 +411,7 @@ async function attemptEditRecovery(
     taskId,
     userRequest: runState.userRequest,
     filesRead: runState.filesRead,
+    uiContext,
   });
 
   if (!recovery) return null;
@@ -421,6 +451,13 @@ export async function runAgentLoop(
 
   const now = nowIso();
   const workspace = await getCurrentWorkspace();
+  const { cleanRequest, attachedPaths: parsedAttachedPaths } =
+    parseAtPathsFromRequest(input.userRequest);
+  const effectiveUserRequest = cleanRequest || input.userRequest;
+  const attachedPaths = mergeAttachedPaths(
+    input.attachedPaths,
+    parsedAttachedPaths,
+  );
   const priorThreadMemory = input.threadId
     ? getThreadMemory(input.threadId)
     : undefined;
@@ -440,7 +477,7 @@ export async function runAgentLoop(
     id: newId("task"),
     threadId: thread.id,
     workspaceId: workspace.id,
-    userRequest: input.userRequest,
+    userRequest: effectiveUserRequest,
     status: "running",
     createdAt: now,
     updatedAt: now,
@@ -449,7 +486,7 @@ export async function runAgentLoop(
     id: newId("turn"),
     threadId: thread.id,
     taskId: task.id,
-    userInput: input.userRequest,
+    userInput: effectiveUserRequest,
     status: "running",
     createdAt: now,
     updatedAt: now,
@@ -462,8 +499,8 @@ export async function runAgentLoop(
     createdAt: now,
     updatedAt: now,
   });
-  const plan = createAgentLoopPlan(input.userRequest);
-  const runState = createAgentLoopRunState(input.userRequest);
+  const plan = createAgentLoopPlan(effectiveUserRequest);
+  const runState = createAgentLoopRunState(effectiveUserRequest);
   const events: AgentEvent[] = [];
   const emit = (event: AgentEvent) => {
     events.push(event);
@@ -483,9 +520,12 @@ export async function runAgentLoop(
   emitPlan();
 
   const openingReflection: AgentReflection = {
-    understanding: input.userRequest,
+    understanding: effectiveUserRequest,
     blockers: [],
-    plannedNext: "先用工具在磁盘上核实假设，再决定是否准备代码变更审批。",
+    plannedNext:
+      attachedPaths.length > 0
+        ? `已预读 ${attachedPaths.length} 个附加文件；继续核实其他假设后再决定是否准备变更审批。`
+        : "先用工具在磁盘上核实假设，再决定是否准备代码变更审批。",
     source: "runtime",
   };
   emitReflection(emit, task.id, openingReflection);
@@ -494,7 +534,7 @@ export async function runAgentLoop(
   const messages: AgentMessage[] = [
     {
       role: "system",
-      content: createSystemPrompt(workspace.rootPath),
+      content: createSystemPrompt(workspace.rootPath, input.uiContext),
     },
   ];
   if (priorThreadMemory?.memoryContent) {
@@ -502,16 +542,68 @@ export async function runAgentLoop(
       buildThreadMemoryInjectionMessage(priorThreadMemory.memoryContent),
     );
   }
+  const userMessageText = [
+    effectiveUserRequest,
+    attachedPaths.length > 0 ? formatAttachedFilesUserNote(attachedPaths) : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   messages.push({
     role: "user",
     content: buildAgentUserContent(
-      input.userRequest,
+      userMessageText,
       input.referenceImages,
     ),
   });
+  if (attachedPaths.length > 0) {
+    const preloaded = await preloadAttachedFiles({
+      rootPath: workspace.rootPath,
+      paths: attachedPaths,
+    });
+    for (const file of preloaded) {
+      const result = file.error
+        ? { path: file.path, error: file.error }
+        : {
+            path: file.path,
+            content: file.content ?? "",
+            truncated: file.truncated ?? false,
+          };
+      const toolCall = createToolCall(
+        task.id,
+        "file.read",
+        { path: file.path },
+        "用户附加文件，启动时预读。",
+      );
+      emit({ type: "tool.started", taskId: task.id, toolCall });
+      emit({
+        type: "tool.completed",
+        taskId: task.id,
+        toolCall: completeToolCall(toolCall),
+        result,
+      });
+      if (!file.error) {
+        recordToolCall(runState, "file.read", result);
+      }
+      messages.push({
+        role: "assistant",
+        content: JSON.stringify({
+          action: "tool_call",
+          tool: "file.read",
+          args: { path: file.path },
+          thought: "用户附加文件，启动时预读。",
+        }),
+      });
+      messages.push(observationMessage("file.read", result));
+    }
+  }
   pushReflectionToMessages(messages, openingReflection, buildRuntimeCheckpoint(runState));
 
-  let toolContext: AgentLoopToolContext = { workspace, taskId: task.id };
+  let toolContext: AgentLoopToolContext = {
+    workspace,
+    taskId: task.id,
+    uiContext: input.uiContext,
+    runState,
+  };
   let summary = "Agent loop stopped without a final answer.";
   const maxIterations = Math.min(
     Math.max(input.maxIterations ?? DEFAULT_MAX_ITERATIONS, 1),
@@ -524,10 +616,11 @@ export async function runAgentLoop(
   for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
     const compactResult = await compactAgentLoopMessages({
       messages,
-      userRequest: input.userRequest,
+      userRequest: effectiveUserRequest,
       provider,
       enableSemanticCompact: isSemanticCompactEnabled(),
       compactRound: contextCompactRound + 1,
+      filesReadPaths: runState.filesRead,
     });
     if (compactResult.method !== "none") {
       contextCompactRound = compactResult.round;
@@ -563,7 +656,7 @@ export async function runAgentLoop(
             method: payload.method,
             updatedAt: nowIso(),
             lastTaskId: task.id,
-            lastUserRequest: input.userRequest,
+            lastUserRequest: effectiveUserRequest,
             title: thread.title,
             summaryPreview,
           });
@@ -773,6 +866,7 @@ export async function runAgentLoop(
     task.id,
     runState,
     workspace.rootPath,
+    input.uiContext,
   );
   if (recoverySummary) {
     summary = runState.approvalPrepared

@@ -1,6 +1,8 @@
 /**
  * 黄金路径试用：设置 workspace → Agent Loop → 批准 → 执行。
  * 用法：npx tsx scripts/golden-path-trial.mjs [workspacePath]
+ *
+ * UI 准确度黄金路径（triple + 闭环/Loop）见：npm run trial:golden-path-ui
  */
 const BASE = process.env.AGENT_BASE_URL ?? "http://localhost:3000";
 const workspacePath = process.argv[2] ?? "D:\\案例\\aiproject";

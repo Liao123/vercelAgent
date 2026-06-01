@@ -1,0 +1,62 @@
+/**
+ * 根据 Agent 产品 layout 对 UI 候选文件加权。
+ * triple 布局 RunMode 在 agent-composer；default/workspace 在 agent-panel。
+ */
+import type { AgentUiContext, AgentUiLayout } from "@/agent/types";
+
+const COMPOSER_PATH = "src/components/agent-composer.tsx";
+const PANEL_PATH = "src/components/agent-panel.tsx";
+
+export function primaryRunModeComponentPath(
+  layout?: AgentUiLayout,
+): string | undefined {
+  if (layout === "triple") return COMPOSER_PATH;
+  if (layout === "default" || layout === "workspace") return PANEL_PATH;
+  return undefined;
+}
+
+export function layoutCandidateBoost(
+  filePath: string,
+  uiContext?: AgentUiContext,
+): number {
+  const normalized = filePath.replaceAll("\\", "/");
+  const layout = uiContext?.layout;
+  if (!layout) return 0;
+
+  if (layout === "triple") {
+    if (normalized === COMPOSER_PATH) return 45;
+    if (normalized === PANEL_PATH) return -28;
+  }
+
+  if (layout === "default" || layout === "workspace") {
+    if (normalized === PANEL_PATH) return 40;
+    if (normalized === COMPOSER_PATH) return -18;
+  }
+
+  return 0;
+}
+
+export function describeUiContextForPrompt(uiContext?: AgentUiContext): string {
+  if (!uiContext?.layout) return "";
+
+  const route = uiContext.activeRoute ?? "/";
+  const primary = primaryRunModeComponentPath(uiContext.layout);
+
+  if (uiContext.layout === "triple") {
+    return [
+      `Product UI context: layout=triple (Codex/Cursor 三栏), activeRoute=${route}.`,
+      `Visible RunMode (Loop/闭环) selector lives in ${COMPOSER_PATH} (center column composer), NOT ${PANEL_PATH}.`,
+      primary ? `For RunMode / 闭环 / Loop UI edits, prefer file.read ${primary} first.` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  return [
+    `Product UI context: layout=${uiContext.layout}, activeRoute=${route}.`,
+    `RunMode (Loop/闭环) selector lives in ${PANEL_PATH}.`,
+    primary ? `For RunMode UI edits, prefer file.read ${primary} first.` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}

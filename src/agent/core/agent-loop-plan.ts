@@ -9,9 +9,12 @@ const GATHER_TOOLS = new Set([
   "workspace.inspect",
   "project.index",
   "file.locate",
+  "ui.trace_from_page",
   "file.list",
   "file.read",
   "file.search",
+  "jsx.find_text",
+  "symbol.find_references",
   "git.status",
   "git.diff",
 ]);

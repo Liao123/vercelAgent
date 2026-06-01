@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { DiffView } from "@/components/diff-view";
+import { PrepareEvidenceView } from "@/components/prepare-evidence-view";
 import { PatchFilesDiffView } from "@/components/patch-files-diff";
 import type { ApprovalDetails } from "@/agent/types";
 import { approvalAnchorId } from "@/lib/approval-anchor";
@@ -200,6 +201,16 @@ function CompactApprovalCard({
           <PatchFilesDiffView files={approval.details.preview.files} />
         </div>
       )}
+      {showDiff &&
+        approval.details?.kind === "file_mutation" &&
+        approval.details.evidence && (
+          <div className="mt-2">
+            <PrepareEvidenceView
+              evidence={approval.details.evidence}
+              compact
+            />
+          </div>
+        )}
       {showDiff &&
         approval.details?.kind === "file_mutation" &&
         (approval.details.preview.oldContent ||

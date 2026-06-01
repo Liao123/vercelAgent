@@ -881,7 +881,7 @@ browser.inspect
 
 ## 20. MVP 实现顺序
 
-> **进度对照表（2026-06-01）** — 与 `docs/agent-progress.md` 工作项 A001–A071 对齐。详细验收见进度文档。
+> **进度对照表（2026-06-01）** — 与 `docs/agent-progress.md` 工作项 A001–A080 对齐；准确度专项见 [`agent-accuracy-roadmap.md`](agent-accuracy-roadmap.md)。
 
 | 阶段 | 名称 | 状态 | 说明 |
 | --- | --- | --- | --- |
@@ -889,7 +889,7 @@ browser.inspect
 | 2 | 本地工作区与基础工具 | **已完成** | Workspace、规则读取、文件/Git 只读工具、Trace 雏形与 JSON 持久化（A009–A012、A026–A027）。 |
 | 3 | 受控修改和审批 | **已完成** | Patch、文件 mutation、Git/shell 写操作、审批+执行闭环、diff 审查 UI（A013–A015、A029–A041、A043–A048）。 |
 | 4 | 上下文管理和压缩 | **已完成** | 分层 Memory、Token Budget、Loop 压缩+pinned facts、Thread 滚动记忆（A015–A017、A051–A053、A058–A059、A068）。 |
-| 5 | 代码索引和中文定位 | **部分完成** | 轻量内存索引 + 关键词定位已落地（A018–A019）；**未做** SQLite 持久化、AST 引用图、向量/语义检索。 |
+| 5 | 代码索引和中文定位 | **部分完成** | 轻量索引 + 中文定位 + UI import 树（A018–A019、A072）；**进行中** A073–A078 准确度（layout 上下文、prepare 门禁、jsx 引用）；**未做** SQLite、向量检索。 |
 | 6 | 开发闭环 | **部分完成** | `/api/agent/develop` 固定流水线已跑通（A021），**日常主路径为 Agent Loop**（A028）；develop 不再投入（D018）；自动修复验证错误仍弱。 |
 | 7 | 内置浏览器与 DevTools | **部分完成** | iframe 浏览器 + `browser.open` 已可用（A022）；**未做** CDP 深度读取、DOM/样式/截图/console/network（A023 deferred）。 |
 | 8 | 设计解析与页面生成 | **暂缓** | demo → design spec → 代码生成主链路未启动（A024 deferred）。 |

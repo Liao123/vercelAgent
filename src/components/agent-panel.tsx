@@ -18,6 +18,7 @@ import {
   type TraceRestorePayload,
 } from "@/components/agent-workspace-bridge";
 import { DiffView } from "@/components/diff-view";
+import { PrepareEvidenceView } from "@/components/prepare-evidence-view";
 import { snapshotDiffHint } from "@/lib/snapshot-diff-text";
 import { GitStatusView } from "@/components/git-status-view";
 import { AgentRightRail } from "@/components/agent-right-rail";
@@ -27,6 +28,9 @@ import { PatchFilesDiffView } from "@/components/patch-files-diff";
 import { resolveThreadIdFromEvents } from "@/lib/agent-feed";
 import { approvalAnchorId } from "@/lib/approval-anchor";
 import { extractFileChangesFromApproval } from "@/lib/approval-file-changes";
+import { extractPostExecuteVerification } from "@/lib/post-execute-verification";
+import { PostExecuteVerificationView } from "@/components/post-execute-verification-view";
+import type { PostExecuteVerification } from "@/agent/verification";
 import type {
   AgentEvent,
   ApprovalContentSnapshot,
@@ -100,6 +104,7 @@ const APPROVAL_STATUS_ORDER: Record<ApprovalRecordView["status"], number> = {
 };
 
 const MAX_REFERENCE_IMAGES = 4;
+const MAX_ATTACHED_FILES = 8;
 
 function sortApprovals(items: ApprovalRecordView[]): ApprovalRecordView[] {
   return [...items].sort((left, right) => {
@@ -419,7 +424,13 @@ function GitWorkspaceSnapshotView({
   );
 }
 
-function ApprovalDetailsView({ details }: { details?: ApprovalDetails }) {
+function ApprovalDetailsView({
+  details,
+  postExecuteVerification,
+}: {
+  details?: ApprovalDetails;
+  postExecuteVerification?: PostExecuteVerification;
+}) {
   if (!details) return null;
 
   if (details.kind === "patch_apply") {
@@ -466,6 +477,12 @@ function ApprovalDetailsView({ details }: { details?: ApprovalDetails }) {
             {preview.existsAfter ? "是" : "否"}
           </p>
         </div>
+        {details.evidence && (
+          <PrepareEvidenceView evidence={details.evidence} />
+        )}
+        {postExecuteVerification && (
+          <PostExecuteVerificationView verification={postExecuteVerification} />
+        )}
         <FileDiffBlock
           label="Diff"
           before={preview.oldContent}
@@ -591,6 +608,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
   const [pushConfirmId, setPushConfirmId] = useState<string | null>(null);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
+  const [attachedFiles, setAttachedFiles] = useState<string[]>([]);
   const [currentThreadId, setCurrentThreadId] = useState<string | null>(null);
   const [continueThreadMemory, setContinueThreadMemory] = useState(true);
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0);
@@ -704,6 +722,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     setCurrentTaskId(null);
     setTaskSummary(null);
     setRequest("");
+    setAttachedFiles([]);
     setError(null);
     setApprovalStatus("已开始新会话，输入任务后点击运行。");
     setApprovalFilters({
@@ -879,6 +898,24 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     }
   }
 
+  function applyPostExecuteVerificationFeedback(
+    verification: PostExecuteVerification | undefined,
+    taskId: string | null,
+  ): string | undefined {
+    if (!verification?.triggered) return undefined;
+    if (taskId) {
+      setEvents((current) => [
+        ...current,
+        ...verification.results.map((result) => ({
+          type: "verification.completed" as const,
+          taskId,
+          result,
+        })),
+      ]);
+    }
+    return verification.summary;
+  }
+
   async function approveAndExecute(approval: ApprovalRecordView) {
     if (!approval.details) {
       setError("该审批缺少可执行详情，无法一键执行。请重新发起任务。");
@@ -938,7 +975,15 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
         );
         return sortApprovals(next);
       });
-      setApprovalStatus("已批准并已写入代码。");
+      const verifySummary = applyPostExecuteVerificationFeedback(
+        execData.postExecuteVerification as PostExecuteVerification | undefined,
+        approval.taskId ?? currentTaskId,
+      );
+      setApprovalStatus(
+        verifySummary
+          ? `已批准并已写入代码。${verifySummary}`
+          : "已批准并已写入代码。",
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "批准并执行失败。");
       void loadApprovals();
@@ -993,7 +1038,13 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
         );
         return sortApprovals(next);
       });
-      setApprovalStatus("执行完成。");
+      const verifySummary = applyPostExecuteVerificationFeedback(
+        data.postExecuteVerification as PostExecuteVerification | undefined,
+        approval.taskId ?? currentTaskId,
+      );
+      setApprovalStatus(
+        verifySummary ? `执行完成。${verifySummary}` : "执行完成。",
+      );
       setPushConfirmId(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "执行审批失败。");
@@ -1022,10 +1073,28 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     }
   }
 
+  function onAddAttachedFile() {
+    if (running || attachedFiles.length >= MAX_ATTACHED_FILES) return;
+    const raw = window.prompt(
+      "输入 workspace 内相对路径，例如 src/components/agent-composer.tsx",
+    );
+    if (!raw?.trim()) return;
+    const path = raw.trim().replaceAll("\\", "/").replace(/^\.\/+/, "");
+    if (attachedFiles.includes(path)) return;
+    setAttachedFiles((prev) => [...prev, path].slice(0, MAX_ATTACHED_FILES));
+  }
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const userRequest = request.trim();
-    if ((!userRequest && referenceImages.length === 0) || running) return;
+    if (
+      (!userRequest && referenceImages.length === 0 && attachedFiles.length === 0) ||
+      running
+    )
+      return;
+
+    const attachedPathsForLoop =
+      runMode === "loop" && attachedFiles.length > 0 ? attachedFiles : undefined;
 
     const imagesForLoop =
       runMode === "loop" && referenceImages.length > 0
@@ -1062,6 +1131,11 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
               currentThreadId
                 ? currentThreadId
                 : undefined,
+            uiContext:
+              runMode === "loop"
+                ? { layout, activeRoute: "/" }
+                : undefined,
+            attachedPaths: attachedPathsForLoop,
           }),
         },
       );
@@ -1141,13 +1215,17 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     } finally {
       setRunning(false);
       setReferenceImages([]);
+      setAttachedFiles([]);
       setSidebarRefreshKey((key) => key + 1);
       void loadApprovals();
     }
   }
 
   const canRunTask =
-    (request.trim().length > 0 || referenceImages.length > 0) && !running;
+    (request.trim().length > 0 ||
+      referenceImages.length > 0 ||
+      attachedFiles.length > 0) &&
+    !running;
 
   const pendingCount = approvals.filter((a) => a.status === "pending").length;
 
@@ -1306,7 +1384,12 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
                   </span>
                 </div>
               </div>
-              <ApprovalDetailsView details={approval.details} />
+              <ApprovalDetailsView
+                details={approval.details}
+                postExecuteVerification={extractPostExecuteVerification(
+                  approval.execution?.result,
+                )}
+              />
               {approval.status === "approved" && !approval.details && (
                 <p className="rounded-md bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700 dark:bg-amber-950 dark:text-amber-300">
                   旧审批缺少可执行详情，请重新发起任务。
@@ -1547,6 +1630,12 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
               setReferenceImages((prev) => prev.filter((_, i) => i !== index))
             }
             maxReferenceImages={MAX_REFERENCE_IMAGES}
+            attachedFiles={attachedFiles}
+            onAddAttachedFile={onAddAttachedFile}
+            onRemoveAttachedFile={(index) =>
+              setAttachedFiles((prev) => prev.filter((_, i) => i !== index))
+            }
+            maxAttachedFiles={MAX_ATTACHED_FILES}
             approvalStatus={approvalStatus}
             developImageWarning={runMode === "develop" && referenceImages.length > 0}
           />

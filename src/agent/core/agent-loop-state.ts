@@ -7,6 +7,13 @@ export type AgentLoopRunState = {
   approvalPrepared: boolean;
   toolsCalled: string[];
   filesRead: string[];
+  /** UI label 多文件命中时的消歧状态（A076） */
+  disambiguation?: {
+    label: string;
+    mustReadPaths: string[];
+    recommendedPath: string;
+    selectionRationale: string;
+  };
   lastToolError?: string;
   lastPrepareError?: string;
   reflectionRounds: number;
@@ -85,6 +92,19 @@ export function recordToolCall(
     }
   }
 
+  if (
+    (toolName === "file.locate" || toolName === "ui.trace_from_page") &&
+    result &&
+    typeof result === "object"
+  ) {
+    const disambiguation = (result as {
+      disambiguation?: AgentLoopRunState["disambiguation"];
+    }).disambiguation;
+    if (disambiguation) {
+      state.disambiguation = disambiguation;
+    }
+  }
+
   if (error) {
     state.lastToolError = error;
     if (
@@ -116,6 +136,11 @@ export function recordToolCall(
   }
 }
 
+import {
+  hasUiLocationEvidence,
+  isUiLocationQuery,
+} from "@/agent/core/prepare-gate";
+
 export function buildRuntimeCheckpoint(state: AgentLoopRunState): string {
   const lines = [
     "=== Runtime checkpoint (reflect before you finalize) ===",
@@ -125,6 +150,24 @@ export function buildRuntimeCheckpoint(state: AgentLoopRunState): string {
     `Tools used: ${state.toolsCalled.length > 0 ? state.toolsCalled.join(" → ") : "(none yet)"}`,
     `Files read: ${state.filesRead.length > 0 ? state.filesRead.join(", ") : "(none yet)"}`,
   ];
+
+  if (state.disambiguation) {
+    const unread = state.disambiguation.mustReadPaths.filter(
+      (path) => !state.filesRead.includes(path),
+    );
+    lines.push(
+      `UI disambiguation (${state.disambiguation.label}): recommend ${state.disambiguation.recommendedPath}.`,
+      `Rationale: ${state.disambiguation.selectionRationale}`,
+      `Must file.read all candidates before prepare: ${state.disambiguation.mustReadPaths.join(", ")}.`,
+    );
+    if (unread.length > 0) {
+      lines.push(`Still unread: ${unread.join(", ")}.`);
+    } else {
+      lines.push(
+        "All disambiguation candidates read. In reflect, briefly explain why you chose the recommended file over alternatives before prepare.",
+      );
+    }
+  }
 
   if (state.lastToolError) {
     lines.push(`Last tool issue: ${state.lastToolError}`);
@@ -146,6 +189,7 @@ export function buildRuntimeCheckpoint(state: AgentLoopRunState): string {
       "Required for this task: produce exactly one approval via file.replace.prepare, file.mutation.prepare, or patch.prepare.",
       "Do not action=final until approval exists or you have exhausted reasonable tool strategies.",
       "Suggested flow: file.locate → file.read → (optional file.search) → file.replace.prepare with exact search from disk.",
+      "Prepare gate: target file MUST be in Files read above; UI/homepage edits MUST call ui.trace_from_page or file.locate first; do NOT prepare edits under src/agent/core/* for UI tasks.",
     );
   } else if (state.approvalPrepared) {
     lines.push(

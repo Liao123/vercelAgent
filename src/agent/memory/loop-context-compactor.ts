@@ -25,6 +25,15 @@ import {
 import {
   LOOP_COMPACTION_CONFIG,
 } from "@/agent/memory/loop-compaction-config";
+import {
+  extractFileReadSnippetsFromMessages,
+  formatPinnedFileSnippetsBlock,
+  mergePinnedFileSnippets,
+  parsePinnedFileSnippetsFromBlock,
+  SECTION_FILE_SNIPPETS,
+  SECTION_FILE_SNIPPETS_ZH,
+  type PinnedFileSnippet,
+} from "@/agent/memory/loop-files-read-pin";
 import type { ModelProvider } from "@/agent/model/types";
 import type { AgentMessage } from "@/agent/types";
 import { newId, nowIso } from "@/agent/types";
@@ -77,6 +86,7 @@ export type ParsedCompactedMemory = {
   pinnedFacts: LoopPinnedFacts;
   summaryBody: string;
   changedFiles: string[];
+  pinnedFileSnippets: PinnedFileSnippet[];
 };
 
 function messageText(message: AgentMessage): string {
@@ -366,6 +376,11 @@ export function parseCompactedMemory(content: string): ParsedCompactedMemory | n
   const roundMatch = /round\s+(\d+)/i.exec(content);
   const methodMatch = /,\s*(deterministic|semantic)\]/i.exec(content);
   const pinnedStart = findSectionStart(content, SECTION_PINNED_ZH, SECTION_PINNED);
+  const snippetsStart = findSectionStart(
+    content,
+    SECTION_FILE_SNIPPETS_ZH,
+    SECTION_FILE_SNIPPETS,
+  );
   const summaryStart = findSectionStart(content, SECTION_SUMMARY_ZH, SECTION_SUMMARY);
   const changedStart = findSectionStart(content, SECTION_CHANGED_ZH, SECTION_CHANGED);
 
@@ -388,9 +403,23 @@ export function parseCompactedMemory(content: string): ParsedCompactedMemory | n
         : SECTION_CHANGED.length
       : 0;
 
+  const snippetsHeaderLen =
+    snippetsStart >= 0
+      ? content.startsWith(SECTION_FILE_SNIPPETS_ZH, snippetsStart)
+        ? SECTION_FILE_SNIPPETS_ZH.length
+        : SECTION_FILE_SNIPPETS.length
+      : 0;
+
   const pinnedBlock =
     pinnedStart >= 0 && summaryStart > pinnedStart
-      ? content.slice(pinnedStart + pinnedHeaderLen, summaryStart).trim()
+      ? content.slice(
+          pinnedStart + pinnedHeaderLen,
+          snippetsStart > pinnedStart ? snippetsStart : summaryStart,
+        ).trim()
+      : "";
+  const snippetsBlock =
+    snippetsStart >= 0 && summaryStart > snippetsStart
+      ? content.slice(snippetsStart + snippetsHeaderLen, summaryStart).trim()
       : "";
   const summaryBody =
     summaryStart >= 0
@@ -415,6 +444,7 @@ export function parseCompactedMemory(content: string): ParsedCompactedMemory | n
     pinnedFacts: extractPinnedFactsFromText(pinnedBlock),
     summaryBody,
     changedFiles,
+    pinnedFileSnippets: parsePinnedFileSnippetsFromBlock(snippetsBlock),
   };
 }
 
@@ -424,11 +454,15 @@ export function buildStructuredCompactedMemory(input: {
   pinnedFacts: LoopPinnedFacts;
   summaryBody: string;
   changedFiles: string[];
+  pinnedFileSnippets?: PinnedFileSnippet[];
 }): string {
   const changedLines =
     input.changedFiles.length > 0
       ? input.changedFiles.map((file) => `- ${file}`)
       : ["- none"];
+  const snippetBlock = formatPinnedFileSnippetsBlock(
+    input.pinnedFileSnippets ?? [],
+  );
 
   return [
     `${COMPACTED_MEMORY_PREFIX} — round ${input.round}, ${input.method}]`,
@@ -437,6 +471,9 @@ export function buildStructuredCompactedMemory(input: {
     "",
     SECTION_PINNED_ZH,
     formatPinnedFactsBlock(input.pinnedFacts),
+    "",
+    SECTION_FILE_SNIPPETS_ZH,
+    snippetBlock,
     "",
     SECTION_SUMMARY_ZH,
     input.summaryBody.trim(),
@@ -581,6 +618,8 @@ export async function compactAgentLoopMessages(input: {
   provider?: ModelProvider | null;
   enableSemanticCompact?: boolean;
   compactRound?: number;
+  /** 运行态 filesRead，用于钉住片段时优先最近读取的文件 */
+  filesReadPaths?: string[];
 }): Promise<LoopContextCompactResult> {
   const messages = [...input.messages];
   const estimatedTokensBefore = estimateMessagesTokens(messages);
@@ -645,6 +684,15 @@ export async function compactAgentLoopMessages(input: {
     ),
   );
 
+  const evictedSnippets = extractFileReadSnippetsFromMessages(
+    [...head, ...middle, ...tail],
+    { filesReadPaths: input.filesReadPaths },
+  );
+  const pinnedFileSnippets = mergePinnedFileSnippets(
+    priorMemory?.pinnedFileSnippets ?? [],
+    evictedSnippets,
+  );
+
   let method: LoopContextCompactMethod = "deterministic";
   const compressed = compressContext({
     scope: "task",
@@ -667,11 +715,12 @@ export async function compactAgentLoopMessages(input: {
     {
       role: "user",
       content: buildStructuredCompactedMemory({
-        round: (input.compactRound ?? 1),
+        round: input.compactRound ?? 1,
         method: "deterministic",
         pinnedFacts,
         summaryBody,
         changedFiles,
+        pinnedFileSnippets,
       }),
     },
     ...tail,
@@ -714,6 +763,7 @@ export async function compactAgentLoopMessages(input: {
     pinnedFacts,
     summaryBody,
     changedFiles,
+    pinnedFileSnippets,
   });
 
   const memoryMessage: AgentMessage = {

@@ -44,6 +44,7 @@ npm run dev
 
 - [架构规划](docs/agent-architecture.md)
 - [项目进度](docs/agent-progress.md)
+- [开发准确度路线图（Cursor/Codex 对照）](docs/agent-accuracy-roadmap.md)
 - [本地记忆 / 决策](docs/agent-memory.md)
 
 ## 部署到 Vercel

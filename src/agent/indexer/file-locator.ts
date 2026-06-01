@@ -5,6 +5,8 @@
  * 路径、route、summary、业务关键词、exports/imports 命中越多，分数越高。
  */
 import type { ProjectFileIndex, ProjectIndex } from "@/agent/indexer/types";
+import type { AgentUiContext } from "@/agent/types";
+import { layoutCandidateBoost } from "@/agent/indexer/ui-layout-boost";
 
 export type FileCandidateReason = {
   label: string;
@@ -113,24 +115,79 @@ function scoreFile(file: ProjectFileIndex, tokens: string[]): FileCandidate {
   return { file, score, reasons };
 }
 
+/** 用户改「首页 / 界面 / 按钮」类需求时，优先路由页与 components，降权 agent 运行时。 */
+function applyUiIntentAdjustments(
+  query: string,
+  candidates: FileCandidate[],
+  uiContext?: AgentUiContext,
+): FileCandidate[] {
+  const normalized = normalizeText(query);
+  const homepageIntent = /首页|主页|homepage|landing/.test(normalized);
+  const uiChangeIntent =
+    /去掉|删除|移除|隐藏|显示|按钮|选择|切换|左边|左侧|右边|右侧|界面|组件|样式|布局|tab|菜单/.test(
+      normalized,
+    );
+
+  if (!homepageIntent && !uiChangeIntent && !uiContext?.layout) return candidates;
+
+  return candidates
+    .map((candidate) => {
+      const filePath = normalizeText(candidate.file.filePath);
+      let bonus = layoutCandidateBoost(filePath, uiContext);
+
+      if (homepageIntent && filePath === "src/app/page.tsx") bonus += 35;
+      if (homepageIntent && filePath.includes("agent-workspace")) bonus += 18;
+      if (uiChangeIntent && filePath.startsWith("src/components/")) bonus += 16;
+      if (uiChangeIntent && filePath.startsWith("src/app/")) bonus += 10;
+      if (filePath.startsWith("src/agent/core/")) bonus -= 30;
+      if (filePath.includes("agent-loop")) bonus -= 25;
+      if (filePath.startsWith("src/agent/") && !filePath.startsWith("src/agent/README")) {
+        bonus -= 12;
+      }
+
+      if (bonus === 0) return candidate;
+      return {
+        ...candidate,
+        score: candidate.score + bonus,
+        reasons: [
+          ...candidate.reasons,
+          {
+            label: uiContext?.layout
+              ? `ui/layout intent (${uiContext.layout})`
+              : "ui/homepage intent adjustment",
+            score: bonus,
+          },
+        ],
+      };
+    })
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.file.filePath.localeCompare(b.file.filePath);
+    });
+}
+
 export function locateFilesForRequest(
   index: ProjectIndex,
   query: string,
   limit = 12,
+  uiContext?: AgentUiContext,
 ): LocateFilesResult {
   const tokens = tokenizeQuery(query);
   if (tokens.length === 0) {
     return { query, candidates: [] };
   }
 
-  const candidates = index.files
-    .map((file) => scoreFile(file, tokens))
-    .filter((candidate) => candidate.score > 0)
-    .sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      return a.file.filePath.localeCompare(b.file.filePath);
-    })
-    .slice(0, limit);
+  const candidates = applyUiIntentAdjustments(
+    query,
+    index.files
+      .map((file) => scoreFile(file, tokens))
+      .filter((candidate) => candidate.score > 0)
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return a.file.filePath.localeCompare(b.file.filePath);
+      }),
+    uiContext,
+  ).slice(0, limit);
 
   return { query, candidates };
 }

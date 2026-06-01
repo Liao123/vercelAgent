@@ -18,6 +18,13 @@ import {
   type AppliedGitMutation,
   type PatchResult,
 } from "@/agent/tools";
+import {
+  changedPathsFromFileMutation,
+  changedPathsFromPatch,
+  persistPostExecuteVerification,
+  runPostExecuteVerification,
+  type PostExecuteVerification,
+} from "@/agent/verification";
 import { getCurrentWorkspace } from "@/agent/workspace";
 
 export const dynamic = "force-dynamic";
@@ -72,6 +79,26 @@ function compactPatchResult(result: PatchResult) {
   };
 }
 
+async function attachPostExecuteVerification(input: {
+  rootPath: string;
+  taskId: string;
+  approvalId: string;
+  changedPaths: string[];
+}): Promise<PostExecuteVerification> {
+  const verification = await runPostExecuteVerification(
+    input.rootPath,
+    input.changedPaths,
+  );
+  if (verification.triggered) {
+    await persistPostExecuteVerification(input.rootPath, {
+      taskId: input.taskId,
+      approvalId: input.approvalId,
+      verification,
+    });
+  }
+  return verification;
+}
+
 export async function POST(request: Request) {
   let body: { approvalId?: string };
   try {
@@ -118,12 +145,30 @@ export async function POST(request: Request) {
         operation: approval.details.operation,
         approvalId: approval.id,
       });
+      const postExecuteVerification = await attachPostExecuteVerification({
+        rootPath: workspace.rootPath,
+        taskId: approval.taskId,
+        approvalId: approval.id,
+        changedPaths: changedPathsFromFileMutation({
+          type: result.preview.type,
+          path: result.preview.path,
+          fromPath: result.preview.fromPath,
+          toPath: result.preview.toPath,
+        }),
+      });
       const updatedApproval = recordApprovalExecution(approval.id, {
         status: "succeeded",
-        summary: `Applied ${result.preview.type} for ${filePathSummary(result)}.`,
-        result: compactFileResult(result),
+        summary: `Applied ${result.preview.type} for ${filePathSummary(result)}.${postExecuteVerification.triggered ? ` ${postExecuteVerification.summary}` : ""}`,
+        result: {
+          ...compactFileResult(result),
+          postExecuteVerification,
+        },
       });
-      return Response.json({ approval: updatedApproval, result });
+      return Response.json({
+        approval: updatedApproval,
+        result,
+        postExecuteVerification,
+      });
     }
 
     if (approval.details.kind === "shell_command") {
@@ -154,12 +199,25 @@ export async function POST(request: Request) {
         approvalId: approval.id,
       });
       const paths = describePatchFiles(result);
+      const postExecuteVerification = await attachPostExecuteVerification({
+        rootPath: workspace.rootPath,
+        taskId: approval.taskId,
+        approvalId: approval.id,
+        changedPaths: changedPathsFromPatch(result.files),
+      });
       const updatedApproval = recordApprovalExecution(approval.id, {
         status: "succeeded",
-        summary: `Applied patch to ${paths.join(", ") || "workspace files"}.`,
-        result: compactPatchResult(result),
+        summary: `Applied patch to ${paths.join(", ") || "workspace files"}.${postExecuteVerification.triggered ? ` ${postExecuteVerification.summary}` : ""}`,
+        result: {
+          ...compactPatchResult(result),
+          postExecuteVerification,
+        },
       });
-      return Response.json({ approval: updatedApproval, result });
+      return Response.json({
+        approval: updatedApproval,
+        result,
+        postExecuteVerification,
+      });
     }
 
     const result = await applyGitMutation({

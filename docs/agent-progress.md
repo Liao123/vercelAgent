@@ -131,8 +131,76 @@ MVP 阶段对照表见 [`docs/agent-architecture.md` §20](agent-architecture.md
 | A069 | done | 语义 vs 确定性压缩对比 | `semantic-compact-compare.mjs` + `npm run trial:semantic-compare`；导出 `.agent-state/compare/semantic-{on,off}.md`。 |
 | A070 | done | Codex/Cursor 式 Turn 折叠活动流 | `groupEventsIntoTurns` + `AgentTurnBlock`；Worked 默认折叠、交付摘要 + 变更条；筛选非「全部」时退回平铺。 |
 | A071 | done | 中栏逐步推理时间线（Cursor/Codex 向） | 推理/工具在中栏总折叠展示；反思→打算→工具链；`tool_call.thought`；不含技术日志；右栏仅浏览器。 |
+| A072 | done | UI 入口组件树追踪 + 定位纠偏 | `ui.trace_from_page`；`file.locate` 合并 import 树加权；`@/` 解析修复；首页/UI 意图降权 `src/agent/core/*`。 |
+| A073 | done | Loop 注入 UI 运行时上下文 | `/api/agent/loop` 收 `uiContext`；triple→composer / default→panel 加权；prompt 注入 layout。 |
+| A074 | done | prepare 硬门禁 | 未 `file.read` 目标 path 则 prepare 拒绝；UI 意图须先 trace/locate；禁误改 `src/agent/core/*`。 |
+| A075 | done | 定位逻辑统一 + 黄金路径脚本 | `edit-recovery` 用 `traceUiEntryForQuery`；`npm run validate:ui-locate` + `validate:prepare-gate`。 |
+| A076 | done | 多候选消歧 | 同 label 多文件打分 + mustReadPaths；prepare 须 read 全部候选；locate/trace 返回 disambiguation；`validate:ui-disambiguate`。 |
+| A077 | done | prepare 证据快照 | `approval.details.evidence` 含 path/行号/matchedSnippet/searchText；审查 UI 展示「变更依据」；`validate:prepare-evidence`。 |
+| A078 | done | 轻量符号/JSX 引用 | `jsx.find_text` + `symbol.find_references` 工具；行号/组件名/import 引用；`validate:jsx-reference`。 |
+| A079 | done | 执行后验证回灌 | execute 后自动 lint/typecheck（白名单）；结果写入 approval/`.agent-state/post-execute-verify.json`；UI 事件+审查区展示；`validate:post-execute-verify`。 |
+| A080 | done | 压缩 pin + @ 文件 attach | compaction 钉住最近 read 片段；composer `@path` / 手动附加传入 Loop；`validate:attached-pin`。 |
+| A081 | done | 黄金路径全链路 validate | `validate-golden-path-accuracy.ts` 串联 trace/消歧/jsx/attach/门禁/evidence；接入 `validate:agent`。 |
+| A082 | done | UI 黄金路径在线试用 | `golden-path-ui-trial.mjs`：Loop 传 `uiContext.layout=triple`；校验 trace/locate、read composer、审批目标；默认 dry-run；`--strict`/`--execute`；实机 PASSED（2026-06-01）。 |
+
+**准确度路线图（Cursor/Codex 对照）**：详见 [`docs/agent-accuracy-roadmap.md`](agent-accuracy-roadmap.md)。A073–A082 已全部完成。
 
 ## 完成记录
+
+### 2026-06-01（续 11）
+
+- **A082 已完成**：`scripts/golden-path-ui-trial.mjs`；在线 E2E：`layout=triple` + 「去掉 Loop/闭环」→ 校验 trace/locate、`file.read` composer、审批指向 composer（非 panel/core）；默认 dry-run 拒绝 approval；`--execute` 可选写盘；`--strict` 强制模型 prepare；`npm run trial:golden-path-ui`。
+- **A082 实机试用（2026-06-01 晚）**：`npm run trial:golden-path-ui` **PASSED**（~86s，dry-run）。`ui.trace_from_page` + read composer + 审批 `agent-composer.tsx`（证据 L191–197）；**模型未调用 `file.replace.prepare`，由 `edit.recovery` 兜底**（默认模式允许并告警；`--strict` 预期 FAIL）。
+- **试用脚本/恢复修复**：试用文案去掉 `approval id`/`UI` 等英文，避免 recovery 误删 `approval`/`ui`；`edit-recovery.extractLiteralCandidates` 过滤短英文与技术词（`approval`、`ui` 等）。
+- **消歧修复（同日）**：UI 消歧 `searchText` 限定 `src/components` + `src/app`，避免 `docs/` 占满结果上限。
+
+### 2026-06-01（续 10）
+
+- **A081 已完成**：`scripts/validate-golden-path-accuracy.ts` 串联黄金路径「去掉首页闭环/Loop」：trace→composer 优先、消歧 mustRead、jsx.find_text、@ 附加预读、prepare 门禁 happy/attach-only、磁盘 exact 证据行号；`npm run validate:golden-path` 接入 `validate:agent`。
+- **修复**：UI 消歧 `searchText` 原先在 `docs/` 即占满 80 条上限，扫不到 `src/components`；现消歧改为仅搜 `src/components` + `src/app`（`validate:ui-disambiguate` / `validate:golden-path` 恢复通过）。
+
+### 2026-06-01（续 9）
+
+- **A080 已完成**：`loop-files-read-pin.ts` 在 `[COMPACTED_MEMORY]` 中新增 `## 钉住文件片段`；压缩时从 file.read 观测提取最近 6 个路径片段并随轮次合并；`attached-files.ts` 解析 `@path` + 启动预读；`/api/agent/loop` 收 `attachedPaths`；`AgentComposer` 底栏 `@` 按钮手动附加；`npm run validate:attached-pin`。
+- **准确度路线图 A073–A080 全部交付**。
+
+### 2026-06-01（续 8）
+
+- **A079 已完成**：`post-execute-verify.ts`；file/patch execute 后自动跑 `lint`→`typecheck`（白名单 npm scripts）；结果持久化 `.agent-state/post-execute-verify.json`；execute API 返回 `postExecuteVerification`；中栏 `verification.completed` 事件 + 审查区 `PostExecuteVerificationView`；`workspace.inspect` 暴露 `lastPostExecuteVerification`；`AGENT_POST_EXECUTE_VERIFY=0` 可关闭。
+- **下一步**：A080 压缩 pin + @ 文件 attach。
+
+### 2026-06-01（续 7）
+
+- **A078 已完成**：`symbol-reference.ts`；Loop 工具 `jsx.find_text`（TSX 文案+行号+组件名+UI 加权）、`symbol.find_references`（path import 链 / name 定义+import）；接入 GATHER_TOOLS 与 system prompt；`npm run validate:jsx-reference`。
+- **下一步**：A079 执行后验证回灌。
+
+### 2026-06-01（续 6）
+
+- **A077 已完成**：`prepare-evidence.ts` 从 exact search / diff 生成 `ApprovalPrepareEvidence`；写入 `file_mutation` approval.details；`file.replace.prepare` / write mutation / edit-recovery 附带 evidence；`PrepareEvidenceView` 在右栏审查与中栏内联审批展示「变更依据」；`npm run validate:prepare-evidence`。
+- **下一步**：A078 jsx/symbol 轻量引用。
+
+### 2026-06-01（续 5）
+
+- **A076 已完成**：`ui-candidate-disambiguator.ts` 提取 UI label（闭环/Loop/引号内文字），多文件命中时按 layout、import 树、控件 JSX 打分；`file.locate` / `ui.trace_from_page` 返回 `disambiguation`（mustReadPaths、recommendedPath、selectionRationale）；prepare 门禁要求消歧候选全部 read；checkpoint 提示 reflect 说明选型；`npm run validate:ui-disambiguate`。
+- **下一步**：A077 prepare 证据快照。
+
+### 2026-06-01（续 4）
+
+- **A074 已完成**：`prepare-gate.ts` 硬门禁；`file.replace.prepare` / `file.mutation.prepare` / `patch.prepare` 须目标 path 已在 `filesRead`（create 新建豁免）；UI 意图须先 `ui.trace_from_page` 或 `file.locate`；UI 意图禁止改 `src/agent/core/*`；`runState` 注入 `AgentLoopToolContext`；`npm run validate:prepare-gate`。
+- **A075 已完成**：`edit-recovery` 合并 `traceUiEntryForQuery` + layout 加权 locate；`validate-ui-locate.ts` 黄金路径（triple→composer 优先）；接入 `validate:agent`。
+
+### 2026-06-01（续 3）
+
+- 新增 `docs/agent-accuracy-roadmap.md`：Cursor/Codex 维度对照、P0–P2 工作项 A073–A080、黄金路径回归用例与实施顺序。
+- 决策 D029 写入 `agent-memory.md`；架构 §20 对照表更新至 A080 规划。
+- **A073 已完成**：`AgentUiContext`（layout/activeRoute）；`/api/agent/loop` + `AgentPanel` 传入 `layout`；`ui-layout-boost.ts` 加权 triple→`agent-composer` / default→`agent-panel`；`file.locate` / trace / system prompt 注入 layout 说明。
+- 涉及文件：`types.ts`、`ui-layout-boost.ts`、`ui-entry-tracer.ts`、`file-locator.ts`、`agent-loop-tools.ts`、`agent-loop.ts`、`loop/route.ts`、`agent-panel.tsx`。
+- **下一步**：A074 prepare 硬门禁 → A075 `validate:ui-locate`。
+
+### 2026-06-01（续 2）
+
+- A072 已完成：`ui-entry-tracer.ts` 从 `src/app/page.tsx` BFS 沿 `@/` import 追踪组件树；新工具 `ui.trace_from_page`；`file.locate` 在首页/UI 意图时合并 `uiTrace.suggestedReadOrder` 加权；`file-locator` / `file.search` UI 意图纠偏；修复 `@/` → `src/*` 路径解析；含「闭环/Loop」可见文案的组件在建议阅读序中优先（如 `agent-composer.tsx`）。
+- 涉及文件：`ui-entry-tracer.ts`、`agent-loop-tools.ts`、`agent-loop-plan.ts`、`file-locator.ts`、`file-tools.ts`、`agent-loop.ts`（system prompt）。
 
 ### 2026-06-01（续）
 
@@ -325,6 +393,46 @@ MVP 阶段对照表见 [`docs/agent-architecture.md` §20](agent-architecture.md
 - A056 已完成：内联重命名、记忆导出 `.md`、中栏记忆复制/导出；`AgentRunModeHint`（Loop vs 闭环说明，闭环后续不投入）。
 - 验证：A054–A056 均 `npm run lint`、`npm run build` 通过。
 
+## 接续收工（2026-06-01）
+
+**阶段结论**：准确度路线图 **A073–A082 全部交付**；离线 `npm run validate:agent` 全绿；在线 UI 黄金路径 **`trial:golden-path-ui` 默认模式 PASSED**（定位 composer 正确，prepare 链路仍靠 recovery 兜底）。
+
+**本批交付摘要**：
+
+| 范围 | 内容 |
+| --- | --- |
+| A080 | 压缩 pin 文件片段 + Composer `@` 附加；`validate:attached-pin` |
+| A081 | 离线黄金路径全链路；`validate:golden-path` |
+| A082 | 在线 triple E2E；`trial:golden-path-ui`（dry-run 默认） |
+| 修复 | 消歧搜索 scope；recovery 英文 token 过滤；试用文案 |
+
+**黄金路径三层验证**：
+
+```text
+npm run validate:golden-path     # 离线，无模型，CI 友好
+npm run trial:golden-path-ui     # 在线，需 dev + .env.local 模型
+node scripts/golden-path-ui-trial.mjs --strict   # 强制模型 prepare（当前常 FAIL）
+node scripts/golden-path-trial.mjs "D:\案例\aiproject"   # 外部项目改 index.html（A064）
+```
+
+**A082 实机结论（2026-06-01）**：
+
+| 项 | 结果 |
+| --- | --- |
+| triple → composer 定位 | 通过 |
+| trace + read + 审批目标 | 通过 |
+| 模型自主 `file.replace.prepare` | **未稳定**（常走 `edit.recovery`） |
+| 写盘 | dry-run 已 reject，composer 未改 |
+
+**启动续作**：`npm run dev`（3000）→ workspace 指向 vec-next → `npm run trial:golden-path-ui` 或浏览器三栏手动测「去掉闭环」。
+
+## 下一步建议（优先级）
+
+1. **A083 候选（回家可接续）**：模型在 read composer 后**稳定调用 `file.replace.prepare`**，减少 `edit.recovery` 兜底；可试 `--strict` 回归、加强 checkpoint/reflect、或 recovery 在已 trace+read 时延后/禁用。
+2. **日常验证**：改 agent 相关代码后跑 `npm run validate:agent`；动 Loop/定位后加跑 `npm run validate:golden-path`。
+3. **在线试用**：`npm run trial:golden-path-ui`（默认）；需要测写盘再加 `--execute`（会改 composer）。
+4. **暂缓**：文件树、编辑器、Electron、Chrome DevTools 深度读取、开发闭环增强。
+
 ## 接续收工（2026-05-29）
 
 **阶段结论**：主链路已在真实外部 workspace（`aiproject`）跑通 **Loop → 审批 → 执行**；侧栏会话/项目管理与恢复 Trace 的体验 bug 已修。
@@ -342,7 +450,9 @@ MVP 阶段对照表见 [`docs/agent-architecture.md` §20](agent-architecture.md
 
 **启动续作**：`npm run dev` → 设 workspace → 默认 Loop；删/藏侧栏项只改 UI 偏好，不动项目磁盘。
 
-## 下一步建议（优先级）
+（以下条目已被上方「接续收工 2026-06-01」中的下一步建议取代，保留仅供对照。）
+
+## 下一步建议（2026-05-29，已 superseded）
 
 1. **日常默认**：`.env.local` 已恢复语义压缩默认开启；dev 在 **3000** 运行；中栏关注「已执行 X 秒」总折叠即可跟踪 Agent 推理。
 2. **可选**：需要更激进压缩时设 `AGENT_LOOP_MIDDLE_MSG_TRIGGER=3` 等（见 `.env.example`）。

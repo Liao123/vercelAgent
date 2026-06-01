@@ -149,6 +149,16 @@ export type ApprovalFileMutationPreview = {
   newContent?: ApprovalContentSnapshot;
 };
 
+/** prepare 时磁盘依据：exact 匹配片段 + 行号（A077）。 */
+export type ApprovalPrepareEvidence = {
+  path: string;
+  startLine: number;
+  endLine: number;
+  matchedSnippet: string;
+  searchText?: string;
+  source: "file.replace.prepare" | "file.mutation.prepare";
+};
+
 export type ApprovalGitMutationOperation =
   | {
       type: "branch";
@@ -242,6 +252,7 @@ export type ApprovalDetails =
       operationHash: string;
       operation: ApprovalFileMutationOperation;
       preview: ApprovalFileMutationPreview;
+      evidence?: ApprovalPrepareEvidence;
     }
   | {
       kind: "git_mutation";
@@ -354,6 +365,16 @@ export type AgentEvent =
     }
   | { type: "task.completed"; taskId: string; task: Task; summary: string }
   | { type: "task.failed"; taskId: string; task?: Task; error: string };
+
+/** Agent 产品 UI 运行时上下文（由前端传入 Loop，非用户 workspace 代码）。 */
+export type AgentUiLayout = "default" | "workspace" | "triple";
+
+export type AgentUiContext = {
+  /** 当前 Agent Workspace 布局；triple 时 RunMode 在 agent-composer。 */
+  layout?: AgentUiLayout;
+  /** 用户当前查看的路由，默认 `/`。 */
+  activeRoute?: string;
+};
 
 export function nowIso(): string {
   return new Date().toISOString();

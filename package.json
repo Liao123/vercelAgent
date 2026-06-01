@@ -13,9 +13,18 @@
     "validate:git-status": "npx --yes tsx scripts/validate-git-status.ts",
     "validate:content-snapshot": "npx --yes tsx scripts/validate-content-snapshot.ts",
     "validate:long-thread-compaction": "npx --yes tsx scripts/validate-long-thread-compaction.ts",
+    "validate:prepare-gate": "npx --yes tsx scripts/validate-prepare-gate.ts",
+    "validate:ui-locate": "npx --yes tsx scripts/validate-ui-locate.ts",
+    "validate:ui-disambiguate": "npx --yes tsx scripts/validate-ui-disambiguate.ts",
+    "validate:prepare-evidence": "npx --yes tsx scripts/validate-prepare-evidence.ts",
+    "validate:jsx-reference": "npx --yes tsx scripts/validate-jsx-reference.ts",
+    "validate:post-execute-verify": "npx --yes tsx scripts/validate-post-execute-verify.ts",
+    "validate:attached-pin": "npx --yes tsx scripts/validate-attached-pin.ts",
+    "validate:golden-path": "npx --yes tsx scripts/validate-golden-path-accuracy.ts",
     "trial:long-thread": "node scripts/long-thread-compaction-trial.mjs",
     "trial:semantic-compare": "node scripts/semantic-compact-compare.mjs",
-    "validate:agent": "npm run validate:compaction && npm run validate:thread-memory && npm run validate:loop-state && npm run validate:git-status && npm run validate:content-snapshot && npm run validate:long-thread-compaction"
+    "trial:golden-path-ui": "node scripts/golden-path-ui-trial.mjs",
+    "validate:agent": "npm run validate:compaction && npm run validate:thread-memory && npm run validate:loop-state && npm run validate:git-status && npm run validate:content-snapshot && npm run validate:long-thread-compaction && npm run validate:prepare-gate && npm run validate:ui-locate && npm run validate:ui-disambiguate && npm run validate:prepare-evidence && npm run validate:jsx-reference && npm run validate:post-execute-verify && npm run validate:attached-pin && npm run validate:golden-path"
   },
   "dependencies": {
     "next": "16.2.6",

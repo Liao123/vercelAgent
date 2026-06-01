@@ -4,10 +4,18 @@
  * Agent Loop 可调用只读/低风险工具，也可以为文件变更和 Git 写操作准备审批。
  * prepare 类工具只创建 approval，不直接 apply。
  */
-import { openBrowserUrl } from "@/agent/browser";
+import fs from "node:fs/promises";
+import path from "node:path";
 import {
   buildProjectIndex,
   locateFilesForRequest,
+  traceUiEntryForQuery,
+  traceUiEntryFromPage,
+  layoutCandidateBoost,
+  disambiguateUiLabels,
+  disambiguationForRunState,
+  findJsxText,
+  findSymbolReferences,
   type ProjectIndex,
 } from "@/agent/indexer";
 import {
@@ -24,15 +32,26 @@ import {
   type FileMutationOperation,
   type GitMutationOperation,
 } from "@/agent/tools";
+import type { AgentLoopRunState } from "@/agent/core/agent-loop-state";
+import {
+  assertPrepareGate,
+  extractExistingPatchPaths,
+  normalizeWorkspacePath,
+} from "@/agent/core/prepare-gate";
+import { buildPrepareEvidenceFromSearch } from "@/agent/approval/prepare-evidence";
+import type { AgentUiContext } from "@/agent/types";
 import type { WorkspaceInfo } from "@/agent/workspace";
 
 export type AgentLoopToolName =
   | "workspace.inspect"
   | "project.index"
   | "file.locate"
+  | "ui.trace_from_page"
   | "file.list"
   | "file.read"
   | "file.search"
+  | "jsx.find_text"
+  | "symbol.find_references"
   | "git.status"
   | "git.diff"
   | "browser.open"
@@ -52,7 +71,16 @@ export type AgentLoopToolContext = {
   workspace: WorkspaceInfo;
   taskId: string;
   projectIndex?: ProjectIndex;
+  uiContext?: AgentUiContext;
+  runState?: AgentLoopRunState;
 };
+
+function requireRunState(context: AgentLoopToolContext): AgentLoopRunState {
+  if (!context.runState) {
+    throw new Error("Internal error: prepare gate requires runState.");
+  }
+  return context.runState;
+}
 
 export type AgentLoopToolResult = {
   result: unknown;
@@ -166,6 +194,13 @@ async function prepareExactTextReplacement(
   if (!filePath) throw new Error("path is required.");
   if (!search) throw new Error("search is required.");
 
+  assertPrepareGate({
+    toolName: "file.replace.prepare",
+    requiredReadPaths: [normalizeWorkspacePath(filePath)],
+    runState: requireRunState(context),
+    uiContext: context.uiContext,
+  });
+
   const current = await readTextFile(context.workspace.rootPath, filePath, 500_000);
   const firstIndex = current.content.indexOf(search);
   if (firstIndex === -1) {
@@ -182,6 +217,13 @@ async function prepareExactTextReplacement(
     throw new Error("Replacement would not change the file.");
   }
 
+  const evidence = buildPrepareEvidenceFromSearch({
+    path: current.path,
+    content: current.content,
+    search,
+    source: "file.replace.prepare",
+  });
+
   return prepareFileMutation({
     rootPath: context.workspace.rootPath,
     taskId: context.taskId,
@@ -191,6 +233,7 @@ async function prepareExactTextReplacement(
       content: nextContent,
     },
     createApproval: true,
+    evidence,
   });
 }
 
@@ -234,6 +277,16 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
     args: {},
     async execute(_args, context) {
       const workspace = context.workspace;
+      let lastPostExecuteVerification: unknown;
+      try {
+        const raw = await fs.readFile(
+          path.join(workspace.rootPath, ".agent-state/post-execute-verify.json"),
+          "utf8",
+        );
+        lastPostExecuteVerification = JSON.parse(raw) as unknown;
+      } catch {
+        lastPostExecuteVerification = undefined;
+      }
       return {
         result: {
           rootPath: workspace.rootPath,
@@ -242,6 +295,7 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
           framework: workspace.framework,
           packageName: workspace.packageName,
           git: workspace.git,
+          lastPostExecuteVerification,
           rules: workspace.rules.map((rule) => ({
             path: rule.path,
             truncated: rule.truncated,
@@ -274,12 +328,108 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
         context.projectIndex ?? (await buildProjectIndex(context.workspace.rootPath));
       const query = stringArg(args, "query");
       const limit = numberArg(args, "limit", 8, 1, 20);
-      const located = locateFilesForRequest(projectIndex, query, limit);
+      const located = locateFilesForRequest(
+        projectIndex,
+        query,
+        limit,
+        context.uiContext,
+      );
+      const uiTrace = await traceUiEntryForQuery(
+        context.workspace.rootPath,
+        query,
+        context.uiContext,
+      );
+
+      const candidateMap = new Map(
+        located.candidates.map((candidate) => [
+          candidate.file.filePath,
+          { ...candidate },
+        ]),
+      );
+
+      if (uiTrace) {
+        for (const filePath of uiTrace.suggestedReadOrder) {
+          const indexed = projectIndex.files.find((f) => f.filePath === filePath);
+          if (!indexed) continue;
+          const existing = candidateMap.get(filePath);
+          const traceBonus = 40 - uiTrace.suggestedReadOrder.indexOf(filePath) * 3;
+          const layoutBonus = context.uiContext
+            ? layoutCandidateBoost(filePath, context.uiContext)
+            : 0;
+          const totalBonus = traceBonus + Math.max(0, layoutBonus);
+          if (existing) {
+            existing.score += totalBonus;
+            existing.reasons.push({
+              label: "ui entry import tree",
+              score: totalBonus,
+            });
+          } else {
+            candidateMap.set(filePath, {
+              file: indexed,
+              score: totalBonus + 20,
+              reasons: [
+                { label: "ui entry import tree", score: totalBonus + 20 },
+              ],
+            });
+          }
+        }
+      }
+
+      const mergedCandidates = [...candidateMap.values()]
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit);
+
+      const disambiguationResult = await disambiguateUiLabels({
+        rootPath: context.workspace.rootPath,
+        query,
+        uiContext: context.uiContext,
+        traceSuggestedOrder: uiTrace?.suggestedReadOrder,
+      });
+
       return {
         context: { ...context, projectIndex },
         result: {
           query: located.query,
-          candidates: located.candidates.map((candidate) => ({
+          uiTrace: uiTrace
+            ? {
+                entryPath: uiTrace.entryPath,
+                route: uiTrace.route,
+                summary: uiTrace.summary,
+                suggestedReadOrder: uiTrace.suggestedReadOrder,
+                nodes: uiTrace.nodes.map((node) => ({
+                  filePath: node.filePath,
+                  depth: node.depth,
+                  importedFrom: node.importedFrom,
+                  visibleLabels: node.visibleLabels,
+                })),
+              }
+            : undefined,
+          disambiguation: disambiguationResult.hasAmbiguity
+            ? {
+                hasAmbiguity: true,
+                primaryLabel: disambiguationResult.primaryLabel,
+                mustReadPaths: disambiguationResult.mustReadPaths,
+                recommendedPath: disambiguationResult.recommendedPath,
+                selectionRationale: disambiguationResult.selectionRationale,
+                summary: disambiguationResult.summary,
+                groups: disambiguationResult.groups.map((group) => ({
+                  label: group.label,
+                  recommendedPath: group.recommendedPath,
+                  mustReadPaths: group.mustReadPaths,
+                  candidates: group.candidates.map((candidate) => ({
+                    filePath: candidate.filePath,
+                    score: candidate.score,
+                    reasons: candidate.reasons,
+                    matches: candidate.matches,
+                  })),
+                })),
+                ...disambiguationForRunState(disambiguationResult),
+              }
+            : {
+                hasAmbiguity: false,
+                summary: disambiguationResult.summary,
+              },
+          candidates: mergedCandidates.map((candidate) => ({
             filePath: candidate.file.filePath,
             kind: candidate.file.kind,
             route: candidate.file.route,
@@ -287,6 +437,69 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
             reasons: candidate.reasons,
             summary: candidate.file.summary,
           })),
+        },
+      };
+    },
+  },
+  {
+    name: "ui.trace_from_page",
+    description:
+      "Trace UI component import tree from a route page (default src/app/page.tsx). Use BEFORE editing homepage/buttons/visible labels—returns suggestedReadOrder for file.read.",
+    args: {
+      path: "Workspace-relative page file. Default src/app/page.tsx.",
+      maxDepth: "Optional import depth 1-6. Default 5.",
+    },
+    async execute(args, context) {
+      const entryPath = stringArg(args, "path", "src/app/page.tsx");
+      const maxDepth = numberArg(args, "maxDepth", 5, 1, 6);
+      const trace = await traceUiEntryFromPage(
+        context.workspace.rootPath,
+        entryPath,
+        maxDepth,
+        context.uiContext,
+      );
+      const userQuery = context.runState?.userRequest ?? "";
+      const disambiguationResult = userQuery
+        ? await disambiguateUiLabels({
+            rootPath: context.workspace.rootPath,
+            query: userQuery,
+            uiContext: context.uiContext,
+            traceSuggestedOrder: trace.suggestedReadOrder,
+          })
+        : {
+            hasAmbiguity: false,
+            groups: [],
+            mustReadPaths: [],
+            summary: "无 userRequest，跳过 label 消歧。",
+          };
+
+      return {
+        result: {
+          entryPath: trace.entryPath,
+          route: trace.route,
+          summary: trace.summary,
+          suggestedReadOrder: trace.suggestedReadOrder,
+          nodes: trace.nodes.map((node) => ({
+            filePath: node.filePath,
+            depth: node.depth,
+            importedFrom: node.importedFrom,
+            visibleLabels: node.visibleLabels,
+          })),
+          disambiguation: disambiguationResult.hasAmbiguity
+            ? {
+                hasAmbiguity: true,
+                primaryLabel: disambiguationResult.primaryLabel,
+                mustReadPaths: disambiguationResult.mustReadPaths,
+                recommendedPath: disambiguationResult.recommendedPath,
+                selectionRationale: disambiguationResult.selectionRationale,
+                summary: disambiguationResult.summary,
+                groups: disambiguationResult.groups,
+                ...disambiguationForRunState(disambiguationResult),
+              }
+            : {
+                hasAmbiguity: false,
+                summary: disambiguationResult.summary,
+              },
         },
       };
     },
@@ -339,6 +552,57 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
       const maxResults = numberArg(args, "maxResults", 30, 1, 80);
       return {
         result: await searchText(context.workspace.rootPath, query, maxResults),
+      };
+    },
+  },
+  {
+    name: "jsx.find_text",
+    description:
+      "Find visible UI text in TSX/JSX files with line numbers, component name guess, and UI path ranking. Prefer over file.search for labels like 闭环/Loop/buttons.",
+    args: {
+      query: "Visible label or short UI text to find in JSX.",
+      maxResults: "Optional max matches, 1-40.",
+    },
+    async execute(args, context) {
+      const query = stringArg(args, "query");
+      const maxResults = numberArg(args, "maxResults", 24, 1, 40);
+      return {
+        result: await findJsxText({
+          rootPath: context.workspace.rootPath,
+          query,
+          maxResults,
+          uiContext: context.uiContext,
+        }),
+      };
+    },
+  },
+  {
+    name: "symbol.find_references",
+    description:
+      "Find import references to a workspace file path and/or export/import sites for a symbol name. Lightweight, no AST.",
+    args: {
+      path: "Optional workspace-relative file path (who imports this file).",
+      name: "Optional exported symbol name (definitions + import lines).",
+      maxResults: "Optional max results, 1-40.",
+    },
+    async execute(args, context) {
+      const filePath = stringArg(args, "path");
+      const name = stringArg(args, "name");
+      const maxResults = numberArg(args, "maxResults", 30, 1, 40);
+      if (!filePath && !name) {
+        throw new Error("Provide at least one of path or name.");
+      }
+      const projectIndex =
+        context.projectIndex ?? (await buildProjectIndex(context.workspace.rootPath));
+      return {
+        context: { ...context, projectIndex },
+        result: await findSymbolReferences({
+          rootPath: context.workspace.rootPath,
+          index: projectIndex,
+          path: filePath || undefined,
+          name: name || undefined,
+          maxResults,
+        }),
       };
     },
   },
@@ -420,6 +684,26 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
     },
     async execute(args, context) {
       const operation = parseMutationOperation(args);
+      const requiredReadPaths: string[] = [];
+      const exemptReadPaths: string[] = [];
+
+      if (operation.type === "create") {
+        exemptReadPaths.push(normalizeWorkspacePath(operation.path));
+      } else if (operation.type === "write" || operation.type === "delete") {
+        requiredReadPaths.push(normalizeWorkspacePath(operation.path));
+      } else if (operation.type === "rename") {
+        requiredReadPaths.push(normalizeWorkspacePath(operation.fromPath));
+        exemptReadPaths.push(normalizeWorkspacePath(operation.toPath));
+      }
+
+      assertPrepareGate({
+        toolName: "file.mutation.prepare",
+        requiredReadPaths,
+        exemptReadPaths,
+        runState: requireRunState(context),
+        uiContext: context.uiContext,
+      });
+
       return {
         result: await prepareFileMutation({
           rootPath: context.workspace.rootPath,
@@ -508,6 +792,15 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
     },
     async execute(args, context) {
       const patch = stringArg(args, "patch");
+      const existingPaths = extractExistingPatchPaths(patch);
+
+      assertPrepareGate({
+        toolName: "patch.prepare",
+        requiredReadPaths: existingPaths,
+        runState: requireRunState(context),
+        uiContext: context.uiContext,
+      });
+
       const patchResult = await applyUnifiedPatch({
         rootPath: context.workspace.rootPath,
         patch,

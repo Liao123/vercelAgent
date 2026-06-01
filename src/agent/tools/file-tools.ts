@@ -112,6 +112,7 @@ export async function searchText(
   rootPath: string,
   query: string,
   maxResults = 100,
+  options?: { scopeRelativeDirs?: string[] },
 ): Promise<SearchMatch[]> {
   if (!query.trim()) return [];
   const normalizedQuery = query.toLowerCase();
@@ -120,7 +121,13 @@ export async function searchText(
   async function visit(directory: string): Promise<void> {
     if (matches.length >= maxResults) return;
 
-    const entries = await fs.readdir(directory, { withFileTypes: true });
+    let entries;
+    try {
+      entries = await fs.readdir(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
     for (const entry of entries) {
       if (matches.length >= maxResults) return;
       if (DEFAULT_IGNORED_DIRS.has(entry.name)) continue;
@@ -152,6 +159,44 @@ export async function searchText(
     }
   }
 
-  await visit(resolveInsideWorkspace(rootPath, "."));
-  return matches;
+  const scopeDirs = options?.scopeRelativeDirs?.filter(Boolean);
+  if (scopeDirs && scopeDirs.length > 0) {
+    for (const relativeDir of scopeDirs) {
+      await visit(resolveInsideWorkspace(rootPath, relativeDir));
+      if (matches.length >= maxResults) break;
+    }
+  } else {
+    await visit(resolveInsideWorkspace(rootPath, "."));
+  }
+
+  return rankSearchMatchesForUiIntent(query, matches);
+}
+
+function searchPathRank(filePath: string): number {
+  const normalized = filePath.replaceAll("\\", "/");
+  if (/^src\/app\/page\./.test(normalized)) return 100;
+  if (/^src\/components\//.test(normalized)) return 85;
+  if (/^src\/app\//.test(normalized)) return 75;
+  if (/^src\/agent\/core\//.test(normalized)) return 15;
+  if (/^src\/agent\//.test(normalized)) return 25;
+  return 50;
+}
+
+/** 搜可见 UI 文案（如「闭环」）时，优先 components / app，避免先命中 agent 运行时。 */
+function rankSearchMatchesForUiIntent(
+  query: string,
+  matches: SearchMatch[],
+): SearchMatch[] {
+  const q = query.toLowerCase();
+  const uiLabelSearch =
+    /闭环|loop|按钮|选择|记忆|审批|工作区/.test(q) &&
+    !/agent-loop|agent_loop/.test(q);
+
+  if (!uiLabelSearch) return matches;
+
+  return [...matches].sort((a, b) => {
+    const rankDiff = searchPathRank(b.path) - searchPathRank(a.path);
+    if (rankDiff !== 0) return rankDiff;
+    return a.path.localeCompare(b.path);
+  });
 }

@@ -15,6 +15,8 @@ export async function POST(request: Request) {
     maxIterations?: number;
     model?: string;
     threadId?: string;
+    uiContext?: { layout?: string; activeRoute?: string };
+    attachedPaths?: string[];
   };
   try {
     body = await request.json();
@@ -45,6 +47,28 @@ export async function POST(request: Request) {
       ? body.threadId.trim()
       : undefined;
 
+  const layout = body.uiContext?.layout;
+  const uiContext =
+    layout === "default" ||
+    layout === "workspace" ||
+    layout === "triple"
+      ? {
+          layout,
+          activeRoute:
+            typeof body.uiContext?.activeRoute === "string" &&
+            body.uiContext.activeRoute.trim()
+              ? body.uiContext.activeRoute.trim()
+              : "/",
+        }
+      : undefined;
+
+  const attachedPaths = Array.isArray(body.attachedPaths)
+    ? body.attachedPaths.filter(
+        (item): item is string =>
+          typeof item === "string" && item.trim().length > 0,
+      )
+    : undefined;
+
   void runAgentLoop({
     userRequest: userRequest || "请根据附图完成开发任务。",
     referenceImages:
@@ -52,6 +76,8 @@ export async function POST(request: Request) {
     maxIterations: body.maxIterations,
     model: body.model,
     threadId,
+    uiContext,
+    attachedPaths,
     onEvent: (event) => writer.emit(event),
   })
     .then(() => {

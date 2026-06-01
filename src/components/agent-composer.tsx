@@ -27,6 +27,10 @@ type AgentComposerProps = {
   onPickImages: () => void;
   onRemoveImage: (index: number) => void;
   maxReferenceImages: number;
+  attachedFiles: string[];
+  onAddAttachedFile: () => void;
+  onRemoveAttachedFile: (index: number) => void;
+  maxAttachedFiles: number;
   approvalStatus: string | null;
   developImageWarning?: boolean;
 };
@@ -55,6 +59,10 @@ export function AgentComposer({
   onPickImages,
   onRemoveImage,
   maxReferenceImages,
+  attachedFiles,
+  onAddAttachedFile,
+  onRemoveAttachedFile,
+  maxAttachedFiles,
   approvalStatus,
   developImageWarning = false,
 }: AgentComposerProps) {
@@ -83,6 +91,27 @@ export function AgentComposer({
   return (
     <footer className="shrink-0 border-t border-zinc-200/80 bg-white/90 backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-950/90">
       <div className="mx-auto w-full max-w-3xl px-4 py-3 sm:px-6">
+        {attachedFiles.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {attachedFiles.map((filePath, index) => (
+              <span
+                key={`${index}-${filePath}`}
+                className="inline-flex max-w-full items-center gap-1 rounded-lg border border-sky-200 bg-sky-50 px-2 py-0.5 font-mono text-[11px] text-sky-800 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-200"
+              >
+                <span className="truncate">@{filePath}</span>
+                <button
+                  type="button"
+                  onClick={() => onRemoveAttachedFile(index)}
+                  className="shrink-0 text-sky-600 hover:text-sky-900 dark:text-sky-300"
+                  aria-label={`移除 ${filePath}`}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
         {referenceImages.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
             {referenceImages.map((src, index) => (
@@ -112,7 +141,7 @@ export function AgentComposer({
               value={request}
               onChange={(e) => onRequestChange(e.target.value)}
               onKeyDown={onKeyDown}
-              placeholder="接下来做什么…"
+              placeholder="接下来做什么…（可用 @src/... 附加文件）"
               disabled={running}
               rows={1}
               className="block max-h-[200px] min-h-[44px] w-full resize-none bg-transparent px-4 py-3 text-[14px] leading-relaxed text-zinc-900 outline-none placeholder:text-zinc-400 disabled:opacity-60 dark:text-zinc-100 dark:placeholder:text-zinc-500"
@@ -128,6 +157,17 @@ export function AgentComposer({
                 >
                   ＋
                 </button>
+                {runMode === "loop" && (
+                  <button
+                    type="button"
+                    disabled={running || attachedFiles.length >= maxAttachedFiles}
+                    onClick={onAddAttachedFile}
+                    className="rounded-lg px-2 py-1 text-[12px] font-medium text-sky-600 transition hover:bg-sky-50 hover:text-sky-800 disabled:opacity-40 dark:text-sky-400 dark:hover:bg-sky-950/40"
+                    title="附加文件路径"
+                  >
+                    @
+                  </button>
+                )}
                 {runMode === "loop" && (
                   <label className="flex cursor-pointer items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">
                     <input

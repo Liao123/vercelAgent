@@ -11,6 +11,8 @@ import {
   contentSnapshot,
   contentSnapshotPair,
 } from "@/agent/approval/content-snapshot";
+import { buildPrepareEvidenceFromContentChange } from "@/agent/approval/prepare-evidence";
+import type { ApprovalPrepareEvidence } from "@/agent/types";
 import { createApprovalRequest, requireApprovedApproval } from "@/agent/approval";
 import type { ApprovalFileMutationPreview } from "@/agent/types";
 import {
@@ -212,6 +214,7 @@ function createFileMutationApproval(input: {
   operationHash: string;
   operation: FileMutationOperation;
   preview: FileMutationPreview;
+  evidence?: ApprovalPrepareEvidence;
 }): ReturnType<typeof createApprovalRequest> {
   return createApprovalRequest({
     taskId: input.taskId,
@@ -224,6 +227,7 @@ function createFileMutationApproval(input: {
       operationHash: input.operationHash,
       operation: input.operation,
       preview: approvalPreview(input.preview),
+      evidence: input.evidence,
     },
   });
 }
@@ -233,6 +237,7 @@ export async function prepareFileMutation(input: {
   taskId: string;
   operation: FileMutationOperation;
   createApproval?: boolean;
+  evidence?: ApprovalPrepareEvidence;
 }): Promise<PreparedFileMutation> {
   const operation = normalizeOperation(input.operation);
   const requiredApprovalAction = getFileMutationApprovalAction(operation);
@@ -332,6 +337,14 @@ export async function prepareFileMutation(input: {
       oldSize: existing.size,
       newSize: Buffer.byteLength(operation.content, "utf8"),
     };
+    const evidence =
+      input.evidence ??
+      buildPrepareEvidenceFromContentChange({
+        path: preview.path!,
+        oldContent: existing.content,
+        newContent: operation.content,
+        source: "file.mutation.prepare",
+      });
     return {
       operation,
       operationHash,
@@ -346,6 +359,7 @@ export async function prepareFileMutation(input: {
             operationHash,
             operation,
             preview,
+            evidence,
           })
         : undefined,
       preview,
