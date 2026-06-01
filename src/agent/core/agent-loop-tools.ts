@@ -229,7 +229,8 @@ function parseGitMutationOperation(
 export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
   {
     name: "workspace.inspect",
-    description: "Read current workspace metadata, git status summary, and rule file names.",
+    description:
+      "Read current workspace metadata, structured git status (dirty + files[]), and rule file names.",
     args: {},
     async execute(_args, context) {
       const workspace = context.workspace;
@@ -240,7 +241,7 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
           packageManager: workspace.packageManager,
           framework: workspace.framework,
           packageName: workspace.packageName,
-          gitStatus: workspace.gitStatus,
+          git: workspace.git,
           rules: workspace.rules.map((rule) => ({
             path: rule.path,
             truncated: rule.truncated,
@@ -343,10 +344,38 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
   },
   {
     name: "git.status",
-    description: "Read git status --short --branch for the workspace.",
+    description:
+      "Read structured git status: { dirty, branch, ahead, behind, files[] with path+status, summary }.",
     args: {},
     async execute(_args, context) {
-      return { result: await getGitStatus(context.workspace.rootPath) };
+      try {
+        const status = await getGitStatus(context.workspace.rootPath);
+        return {
+          result: {
+            dirty: status.dirty,
+            branch: status.branch,
+            upstream: status.upstream,
+            ahead: status.ahead,
+            behind: status.behind,
+            detached: status.detached,
+            files: status.files,
+            summary: status.summary,
+          },
+        };
+      } catch {
+        return {
+          result: {
+            dirty: false,
+            branch: null,
+            upstream: null,
+            ahead: null,
+            behind: null,
+            detached: false,
+            files: [],
+            summary: "Not a git repository.",
+          },
+        };
+      }
     },
   },
   {

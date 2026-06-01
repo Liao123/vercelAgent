@@ -1,6 +1,6 @@
 # 开发智能体本地记忆
 
-更新时间：2026-05-29
+更新时间：2026-06-01
 
 本文档用于记录项目长期事实、架构决策、用户偏好和后续开发注意事项。它不是聊天记录，也不是密钥存储。
 
@@ -136,7 +136,7 @@
 | 持久化 | `src/agent/memory/thread-memory-store.ts`、`thread-meta-store.ts`、`agent-thread-index.ts` |
 | Loop 接入 | `src/agent/core/agent-loop.ts`（每轮 generate 前 compact；`threadId` 注入记忆） |
 | API | `/api/agent/loop`、`/api/agent/threads`（GET/PATCH/DELETE）、`/api/agent/thread-memory` |
-| UI | `agent-session-sidebar.tsx`、`agent-compacted-memory-panel.tsx`、`agent-run-mode-hint.tsx` |
+| UI | `agent-session-sidebar.tsx`、`agent-compacted-memory-panel.tsx`、`agent-run-mode-hint.tsx`、`agent-turn-reasoning-timeline.tsx` |
 
 **环境变量**：`AGENT_LOOP_SEMANTIC_COMPACT=false` 可关闭语义压缩（仅确定性）。
 
@@ -223,7 +223,7 @@ Codex CLI 是 Apache-2.0 开源项目，有成熟架构价值。但它主要是 
 - 当前已有最小开发闭环 `/api/agent/develop`，可串起需求、项目索引、文件定位、可选 patch 预览/应用、验证和总结。
 - 当前开发闭环还不会让模型自动生成 patch；修改文件需要调用方显式传入 patch，且 apply 时必须提供匹配 approval。
 - 当前已有模型驱动 Agent Loop：`src/agent/core/agent-loop.ts`、`src/agent/core/agent-loop-tools.ts` 和 `/api/agent/loop`。
-- Agent Loop 协议：模型每轮必须返回 JSON，形如 `{"action":"tool_call","tool":"...","args":{}}` 或 `{"action":"final","summary":"..."}`。
+- Agent Loop 协议：模型每轮返回 JSON，形如 `{"action":"tool_call","tool":"...","args":{},"thought":"中文意图"}`、`{"action":"reflect","understanding":"...","plannedNext":"..."}` 或 `{"action":"final","summary":"..."}`。
 - 当前 Agent Loop 开放工具：workspace.inspect、project.index、file.locate、file.list、file.read、file.search、git.status、git.diff、browser.open、file.replace.prepare、file.mutation.prepare、git.mutation.prepare。
 - 当前 Agent Loop 不开放直接写文件、shell、Git 写操作、安装依赖；文件和 Git 的 prepare 工具只创建 approval，不执行 apply。真正 apply 仍需要用户在审批 UI 中先批准、再点击执行。
 - AgentPanel 仍有 `开发闭环` / `Agent Loop` 切换；**默认 Loop**。用户 2026-05-27 确认不必再投入闭环；见 D018。
@@ -232,7 +232,9 @@ Codex CLI 是 Apache-2.0 开源项目，有成熟架构价值。但它主要是 
 - 当前审批 UI 已接入 A035 执行闭环：`批准` 和 `执行` 是两个动作，approved 且未成功执行的 approval 才显示 `执行`，执行结果会持久化并在刷新后继续展示。
 - A036 已修复一个真实可用性问题：用户在页面说“把首页鹊桥去掉”时，旧默认开发闭环只定位/总结，不会真正生成改动。现在默认走 Agent Loop，并新增 `file.replace.prepare` 精确文本替换工具。
 - A036 兜底能力：对“首页 + 去掉/删除/移除某段文本”的请求，运行时会稳定准备 `src/app/page.tsx` 写入 approval；这只生成审批，不自动写文件。
-- 当前首页布局（A050）：左栏项目+任务历史 → **中栏**（上：活动流+涉及文件+内联待授权，**下：固定输入框**）→ **右栏**任务规划步骤+运行状态+内置浏览器显示/隐藏。不再在 Agent 首页挂载通用 `Chat` 组件。
+- 当前首页布局（A071）：左栏项目+会话 → **中栏**（用户消息 → **「已执行 X 秒」推理总折叠** → 最终回答 → 变更条；底栏输入）→ **右栏**变更审查 + 内置浏览器。**不再**在右栏展示任务规划/「当前思路」。
+- 推理 UI 代码：`agent-turn-block.tsx`、`agent-turn-reasoning-timeline.tsx`、`lib/agent-reasoning-steps.ts`、`lib/agent-turn-feed.ts`（`narrativeEvents` / `detailEvents`）。
+- 活动流由 `agent-event-timeline.tsx` 在 `chatMode` 下渲染 `AgentTurnBlock`；`plan.updated` 从中栏排除。
 - 已移除旧版通用聊天 UI（`chat.tsx`、`/api/chat`、`/api/images`、文生图链路）。识图仅用于 Agent：`referenceImages` + `readImageFile`。
 - Agent Loop 附图：`buildAgentUserContent` + `/api/agent/loop` 的 `referenceImages`；最多 4 张。开发闭环暂不接图。
 - 活动流由 `src/components/agent-event-timeline.tsx` 渲染为可读卡片；`layout=default` 时仍保留 JSON 分组调试视图。
@@ -277,11 +279,26 @@ Codex CLI 是 Apache-2.0 开源项目，有成熟架构价值。但它主要是 
 - 收到 `approval.required` SSE 时自动滚到对应审查卡片。
 - 三栏布局右侧下半恢复完整「变更审查」面板（含 diff）；中栏仍保留紧凑内联待授权区。
 
-### D012：三栏工作区（A049，2026-05 落地）
+### D027：中栏逐步推理时间线（A071，2026-06-01）
 
 决策：
 
-A049 将首页改为 Cursor/Codex 向三栏：左（项目 + Trace 任务历史）、中（输入 + 紧凑活动流）、右（变更审查）；聊天/浏览器通过最左图标栏展开次级侧栏，不再用底部抽屉。
+- **推理与工具步骤在中栏主对话区展示**，不再使用右栏「当前思路 / 任务规划步骤」面板。
+- `groupEventsIntoTurns` 拆分 `narrativeEvents`（反思 + 工具）与 `detailEvents`（原始 model.delta、context.compacted）。
+- `TurnReasoningTimeline`：顶层「已执行 X 秒 / 工作中…」总折叠；内部分轮展示 理解 → 打算 → 工具链；运行中秒级刷新；完成后自动收起。
+- 模型 `tool_call` 的 `thought` 持久化为 `ToolCallRecord.rationale`；`reflection.updated` 带可选 `at` 时间戳。
+- 「执行细节 / 技术日志」**不在中栏展示**；原始 model.delta、context.compacted 仅保留在 Trace / 记忆面板 / 调试 JSON 视图。
+- 中栏 SSE 时间线仍 `excludeEventTypes: ["plan.updated", "approval.required"]`；`plan.updated` 仅运行时/Trace 用。
+
+原因：
+
+用户主要盯中栏阅读推理逻辑；Cursor/Codex 将 Thought/Worked 嵌在对话流而非独立规划侧栏。A067 的规划同步逻辑保留，展示层迁移至 A071。
+
+### D012：三栏工作区（A049，2026-05 落地；布局 2026-06 由 A071 调整）
+
+决策：
+
+A049 将首页改为 Cursor/Codex 向三栏：左（项目 + 会话）、中（Turn 对话 + 推理时间线 + 输入）、右（变更审查 + 内置浏览器）；聊天/浏览器通过最左图标栏展开次级侧栏。**2026-06 A071 后**：右栏不再展示任务规划步骤，规划事件仍写入 Trace。
 
 ### D022：左侧栏按项目分组会话（A061）
 
@@ -331,7 +348,7 @@ A049 将首页改为 Cursor/Codex 向三栏：左（项目 + Trace 任务历史�
 - AgentPanel 的 Workspace 区域需要保留明确的读取/设置反馈；如果用户说“设置按钮点不动”，优先检查路径输入、接口返回和 UI 状态提示。
 - 产品方向上应预留桌面端。浏览器环境无法像 Codex 桌面端那样可靠弹出系统目录选择器并把本机路径交给服务端；Electron/本地客户端更适合承载项目选择、本地文件读写、命令执行、Chrome DevTools 连接和权限沙箱。
 - 迁移策略不是立刻重写成 Electron，而是继续保持 Agent Runtime 与 UI 解耦，先把 `src/agent` 能力做稳，再让 Web UI 和 Electron UI 共享同一套本地 runtime/API。
-- 当前优先级建议：A062–A065 已完成；下一步 **git.status 结构化**、大文件 diff、长任务压缩复测。
+- 当前优先级建议：A071 中栏推理 UI 已落地；可选继续打磨路径跳转、步骤耗时；**git.status 结构化**（A066）、大文件 diff（A067）、长任务压缩（A068）已完成。
 - 接续入口：恢复 Trace 后审批/输入框行为见 D025；外部 workspace 试用见 D026。
 - A034 已完成：ApprovalRecord 增加可 JSON 持久化的 `details` 字段，`/api/agent/files` 和 `/api/agent/git` 的 preview 会写入 operation、operationHash 和 preview。
 - A034 文件详情已包含：operation type、path/fromPath/toPath、existsBefore/existsAfter、oldSize/newSize、sizeDelta、oldContent/newContent 的截断快照。

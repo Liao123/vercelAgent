@@ -34,9 +34,17 @@ npm run dev
 
 - `src/app/page.tsx` — Agent 工作区首页
 - `src/components/agent-workspace.tsx` — 三栏 UI
+- `src/components/agent-turn-block.tsx` — 每轮对话（用户气泡 + 推理 + 回答）
+- `src/components/agent-turn-reasoning-timeline.tsx` — Cursor 式「已执行 X 秒」推理总折叠
 - `src/agent/` — Agent Runtime（Loop、工具、审批、Trace）
 - `src/app/api/agent/*` — Agent API
 - `src/agent/model/chat-completions-provider.ts` — 模型调用（非聊天 UI）
+
+## 文档
+
+- [架构规划](docs/agent-architecture.md)
+- [项目进度](docs/agent-progress.md)
+- [本地记忆 / 决策](docs/agent-memory.md)
 
 ## 部署到 Vercel
 

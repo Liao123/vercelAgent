@@ -1,6 +1,6 @@
 # 开发智能体项目进度
 
-更新时间：2026-05-29
+更新时间：2026-06-01
 
 本文档用于记录开发智能体项目的工作项、当前状态、验收标准和执行记录。后续每完成一个工作项，都必须更新本文档。
 
@@ -45,6 +45,8 @@ deferred    暂缓，不属于当前阶段
   -> 记录 trace
   -> 必要时压缩上下文
 ```
+
+MVP 阶段对照表见 [`docs/agent-architecture.md` §20](agent-architecture.md#20-mvp-实现顺序)（2026-06-01 更新）。
 
 设计解析链路：
 
@@ -107,7 +109,7 @@ deferred    暂缓，不属于当前阶段
 | A047 | done | 多文件 Patch Diff UI | `PatchFilesDiffView` 按文件 Tab 切换；split diff 左右行号对齐（`toSplitAlignedRows`）。 |
 | A048 | done | Patch 活动流摘要与原文折叠 | 工具/审批展示多文件摘要；patch 原文默认折叠；`patch.prepare` 正确创建 approval。 |
 | A049 | done | 三栏 Agent 工作区（Cursor/Codex 向） | 左：项目+任务历史；中：输入+紧凑活动流；右：变更审查；图标栏切换聊天/预览。 |
-| A050 | done | Codex 向信息流布局 | 中：底栏输入+上滑活动流/涉及文件/内联简短审批；右：规划步骤+运行态+浏览器折叠；移除 Agent 页通用 Chat 入口。 |
+| A050 | done | Codex 向信息流布局 | 中：对话 Turn + 逐步推理时间线 + 底栏输入；右：变更审查 + 内置浏览器（**不再**展示任务规划步骤）；移除 Agent 页通用 Chat 入口。 |
 | A051 | done | Agent Loop 上下文压缩（Codex 风格） | `loop-context-compactor` 接入 Loop：工具结果整形、head/tail 保留、中间段确定性+可选语义 compact；SSE `context.compacted`；活动流可见压缩事件。 |
 | A052 | done | 滚动任务记忆 + Pinned Facts | 增量合并 prior memory、结构化 `## Pinned/Summary/Changed files`、`ModelProvider.compact`、审批观测瘦身、右栏任务记忆。 |
 | A053 | done | Trace 全文记忆 + Thread 跨任务 | `context.compacted.memoryContent` 写入 Trace；`.agent-state/thread-memory.json`；Loop `threadId` 延续；Trace/中栏记忆面板；「延续会话记忆」开关。 |
@@ -123,8 +125,29 @@ deferred    暂缓，不属于当前阶段
 | A063 | done | 侧栏会话与项目管理 | 左栏「新会话」；会话悬停「继续/命名/删除」；`thread-meta.hidden` + `DELETE /api/agent/threads`；项目悬停「移除」+ `workspace-sidebar.json` + `DELETE/PATCH /api/agent/workspace`。 |
 | A064 | done | 黄金路径试用脚本 | `scripts/golden-path-trial.mjs`：设 workspace → Loop → 批准 → execute → 校验磁盘；已在 `D:\案例\aiproject` 验证通过。 |
 | A065 | done | 恢复 Trace 体验修复 | 恢复会话时 `mergeApprovalLists` 优先已批准/已执行状态并拉取 `/api/agent/approvals`；点击会话不再预填底栏输入（仅「继续」预填）；「新会话」清空输入框。 |
+| A066 | done | 结构化 Git 状态 + Codex 风格展示 | `git.status` 返回 `{ dirty, branch, ahead, behind, files[] }`；`workspace.git` 结构化；活动流/ Git 审批用 `GitStatusView`；`npm run validate:git-status`。 |
+| A067 | done | 中文任务规划 + 大文件 diff 打磨 | `agent-loop-plan.ts` 中文五步 + `plan.updated` 运行态同步（UI 展示见 A071）；反思「理解/下一步」；`contentSnapshotPair` 行号对齐 + `validate:content-snapshot`。 |
+| A068 | done | 长任务延续会话多轮压缩 | `validate-long-thread-compaction`（Task1 压 2 轮 → thread → Task2 压 3–4 轮）；tail 审批钉住；记忆模板/ UI 中文化。 |
+| A069 | done | 语义 vs 确定性压缩对比 | `semantic-compact-compare.mjs` + `npm run trial:semantic-compare`；导出 `.agent-state/compare/semantic-{on,off}.md`。 |
+| A070 | done | Codex/Cursor 式 Turn 折叠活动流 | `groupEventsIntoTurns` + `AgentTurnBlock`；Worked 默认折叠、交付摘要 + 变更条；筛选非「全部」时退回平铺。 |
+| A071 | done | 中栏逐步推理时间线（Cursor/Codex 向） | 推理/工具在中栏总折叠展示；反思→打算→工具链；`tool_call.thought`；不含技术日志；右栏仅浏览器。 |
 
 ## 完成记录
+
+### 2026-06-01（续）
+
+- A071 已完成：中栏 `TurnReasoningTimeline` 按「反思 → 工具动作」分组；运行中实时计时、完成后总折叠自动收起；流式 `reflect` 预览显示为「思考中…」；`ToolCallRecord.rationale` 来自模型 `thought`；工具步骤图标；中栏不展示技术日志（见 Trace/记忆面板）；右栏仅内置浏览器。
+- 涉及文件：`agent-turn-reasoning-timeline.tsx`、`agent-reasoning-steps.ts`、`agent-turn-block.tsx`、`agent-turn-feed.ts`（`narrativeEvents` / `detailEvents`）、`agent-right-rail.tsx`、`agent-loop.ts`。
+
+### 2026-06-01
+
+- A070 已完成：中栏活动流按 `task.created` 分组为 Turn；用户气泡 →「已完成本轮执行/工作中」折叠包（工具/反思/压缩）→ 高亮（验证/文件变更）→ 交付摘要 → Codex 风格变更条（待审批/已写入 + 审查跳转）；最新 running 轮 Worked 默认展开；`parse-agent-final` 提取 Loop final summary。
+
+- A066 已完成：`src/lib/git-status.ts` 解析 `git status --short --branch`；`git.status` / `workspace.inspect` 返回结构化 `{ dirty, files[], summary }`；Loop 观测瘦身；活动流 dirty 时自动展开 `GitStatusView`；Git commit/push 审批快照带 `statusSnapshot`。
+- A067 已完成：`agent-loop-plan.ts` 中文五步规划 + 运行态同步（`plan.updated` 仍写入事件流，**UI 不再在右栏展示**）；系统提示词要求 reflect/final 用中文、`tool_call` 带中文 `thought`；大文件 diff `startLine` 行号对齐 + `validate:content-snapshot`。**展示层**已由 A071 中栏推理时间线取代原右栏「当前思路」。
+- A068 已完成：`scripts/validate-long-thread-compaction.ts`（Task1→2 轮压→thread→Task2→3–4 轮压）；压缩时从 tail 钉住审批 ID；`[COMPACTED_MEMORY]`/`[THREAD_MEMORY]` 模板中文化；活动流/记忆面板 `deterministic`→「确定性压缩」。
+- A069 已完成：`scripts/semantic-compact-compare.mjs` 两轮对比导出；实机结果见 `.agent-state/compare/`（本轮两次均为 deterministic，语义层未触发 middle 阈值；关语义时压缩更频繁 5 次、末轮 token 略低）。
+- 验证：`npm run validate:agent`、`npm run lint`、`npm run build` 通过。
 
 ### 2026-05-29
 
@@ -321,9 +344,9 @@ deferred    暂缓，不属于当前阶段
 
 ## 下一步建议（优先级）
 
-1. **P1**：`git.status` 工具返回结构化 `{ dirty, files[] }`，减少模型口头误报。
-2. **P2**：大文件小改动审批 diff 再打磨（`agent-panel.tsx` 类场景）。
-3. **P3**：长任务 + 延续会话第二轮压缩，对照 `validate:agent` + 浏览器目视。
+1. **日常默认**：`.env.local` 已恢复语义压缩默认开启；dev 在 **3000** 运行；中栏关注「已执行 X 秒」总折叠即可跟踪 Agent 推理。
+2. **可选**：需要更激进压缩时设 `AGENT_LOOP_MIDDLE_MSG_TRIGGER=3` 等（见 `.env.example`）。
+3. **可选 UI**：点击路径跳转审查、工具步骤耗时细分、多轮折叠摘要一行化。
 4. **暂缓**：文件树、编辑器、Electron、Chrome DevTools 深度读取、开发闭环增强。
 
 ## 今日收工（2026-05-27）

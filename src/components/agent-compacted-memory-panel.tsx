@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import type { AgentEvent } from "@/agent/types";
 import { getLatestCompactedMemoryContent } from "@/lib/agent-feed";
+import { formatCompactMethod } from "@/lib/compaction-labels";
 import {
   buildThreadMemoryMarkdown,
   copyTextToClipboard,
@@ -51,7 +52,7 @@ export function AgentCompactedMemoryPanel({
           <p className="text-[11px] font-semibold text-blue-900 dark:text-blue-200">
             滚动任务记忆
             {meta?.round != null ? ` · 第 ${meta.round} 轮` : ""}
-            {meta?.method ? ` · ${meta.method}` : ""}
+            {meta?.method ? ` · ${formatCompactMethod(meta.method)}` : ""}
           </p>
           {!expanded && meta?.summaryPreview && (
             <p className="mt-0.5 line-clamp-2 whitespace-pre-wrap text-[10px] text-blue-900/80 dark:text-blue-200/70">

@@ -1,10 +1,18 @@
-import type { AgentEvent, AgentPlan } from "@/agent/types";
+import type { AgentEvent, AgentPlan, AgentReflection } from "@/agent/types";
 import { formatPatchPreviewSummary } from "@/lib/patch-summary";
 
 export function getLatestPlan(events: AgentEvent[]): AgentPlan | null {
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i];
     if (event.type === "plan.updated") return event.plan;
+  }
+  return null;
+}
+
+export function getLatestReflection(events: AgentEvent[]): AgentReflection | null {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event.type === "reflection.updated") return event.reflection;
   }
   return null;
 }

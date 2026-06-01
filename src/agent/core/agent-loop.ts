@@ -17,6 +17,12 @@ import {
   type AgentLoopRunState,
 } from "@/agent/core/agent-loop-state";
 import {
+  completedAgentLoopPlan,
+  createAgentLoopPlan,
+  syncAgentLoopPlanProgress,
+  type PlanProgressHint,
+} from "@/agent/core/agent-loop-plan";
+import {
   createConfiguredModelProvider,
   type ModelProvider,
 } from "@/agent/model";
@@ -35,7 +41,6 @@ import {
   nowIso,
   type AgentEvent,
   type AgentMessage,
-  type AgentPlan,
   type AgentReflection,
   type Task,
   type Thread,
@@ -98,47 +103,6 @@ type AgentLoopDecision =
 const DEFAULT_MAX_ITERATIONS = 12;
 const MAX_REFLECTION_ROUNDS = 4;
 
-function createAgentLoopPlan(input: AgentLoopInput): AgentPlan {
-  return {
-    goal: input.userRequest,
-    steps: [
-      {
-        id: "understand",
-        title: "Clarify user intent and constraints",
-        status: "doing",
-      },
-      {
-        id: "gather",
-        title: "Locate and read relevant files (evidence from disk)",
-        status: "todo",
-      },
-      {
-        id: "prepare",
-        title: "Prepare code change approval when needed",
-        status: "todo",
-      },
-      {
-        id: "reflect",
-        title: "Reflect on progress; adjust strategy if blocked",
-        status: "todo",
-      },
-      {
-        id: "finish",
-        title: "Summarize outcome for the user",
-        status: "todo",
-      },
-    ],
-    risks: [
-      "Code edits require an approval record; the runtime will push reflection if you try to finalize too early.",
-      "search strings for file.replace.prepare must match file content exactly—never guess from vague Chinese phrasing.",
-    ],
-    verification: [
-      "Edit tasks should end with approval.required or a clear explanation of what blocked progress.",
-    ],
-    updatedAt: nowIso(),
-  };
-}
-
 function createSystemPrompt(workspaceRoot: string): string {
   const toolList = AGENT_LOOP_TOOLS.map((tool) => ({
     name: tool.name,
@@ -149,11 +113,13 @@ function createSystemPrompt(workspaceRoot: string): string {
   return [
     "You are a coding agent runtime controller in a reflective loop.",
     "Workflow: UNDERSTAND → GATHER EVIDENCE (tools) → PREPARE CHANGE → REFLECT → repeat until done.",
+    "User-facing text in reflect (understanding, plannedNext, blockers) and final summary MUST be Simplified Chinese.",
     "You must respond with one JSON object and no markdown.",
     "Allowed response shapes:",
-    '{"action":"reflect","understanding":"what the user wants","blockers":["optional issues"],"plannedNext":"next concrete step","thought":"optional"}',
-    '{"action":"tool_call","tool":"tool.name","args":{},"thought":"short reason"}',
-    '{"action":"final","summary":"user-facing answer","thought":"optional"}',
+    '{"action":"reflect","understanding":"用户想要什么（中文）","blockers":["可选阻塞（中文）"],"plannedNext":"下一步具体动作（中文）","thought":"optional"}',
+    '{"action":"tool_call","tool":"tool.name","args":{},"thought":"为什么要调用这个工具（中文，一句话）"}',
+    '{"action":"final","summary":"给用户的中文总结","thought":"optional"}',
+    "Always include thought on tool_call: one Chinese sentence explaining why you are calling the tool and what you expect to learn.",
     "Use action=reflect when you need to think before the next tool, or after a failure, or when the request is ambiguous.",
     "Only call tools from the provided list. Do not invent tools.",
     "For code-change requests:",
@@ -315,12 +281,14 @@ function createToolCall(
   taskId: string,
   toolName: string,
   args: unknown,
+  rationale?: string,
 ): ToolCallRecord {
   return {
     id: newId("tool"),
     taskId,
     toolName,
     args,
+    ...(rationale ? { rationale } : {}),
     startedAt: nowIso(),
   };
 }
@@ -346,7 +314,7 @@ function emitReflection(
   taskId: string,
   reflection: AgentReflection,
 ): void {
-  emit({ type: "reflection.updated", taskId, reflection });
+  emit({ type: "reflection.updated", taskId, reflection, at: nowIso() });
 }
 
 function pushReflectionToMessages(
@@ -357,12 +325,12 @@ function pushReflectionToMessages(
   const parts = [
     checkpoint,
     `Reflection (${reflection.source}):`,
-    `Understanding: ${reflection.understanding}`,
+    `理解: ${reflection.understanding}`,
     reflection.blockers.length > 0
-      ? `Blockers: ${reflection.blockers.join("; ")}`
-      : "Blockers: (none)",
-    `Planned next: ${reflection.plannedNext}`,
-    "Continue with a tool_call or another reflect—do not finalize edit tasks without approval unless impossible.",
+      ? `阻塞: ${reflection.blockers.join("; ")}`
+      : "阻塞: (无)",
+    `下一步: ${reflection.plannedNext}`,
+    "Continue with tool_call or reflect—do not finalize edit tasks without approval unless impossible.",
   ].filter(Boolean);
 
   messages.push({
@@ -422,9 +390,9 @@ async function attemptEditRecovery(
     runState.approvalPrepared = true;
     emitRecoveryApprovalEvents(emit, taskId, recovery);
     emitReflection(emit, taskId, {
-      understanding: `Disk recovery prepared removal of "${recovery.search}" in ${recovery.path}.`,
+      understanding: `磁盘恢复：已在 ${recovery.path} 中准备删除「${recovery.search}」。`,
       blockers: [],
-      plannedNext: "User should approve and execute in the UI.",
+      plannedNext: "请在界面批准并执行审批。",
       source: "runtime",
     });
     return `已通过磁盘证据恢复并生成审批：从 ${recovery.path} 删除「${recovery.search}」。请在审批区点击「批准并执行」。`;
@@ -494,28 +462,34 @@ export async function runAgentLoop(
     createdAt: now,
     updatedAt: now,
   });
-  const plan = createAgentLoopPlan(input);
+  const plan = createAgentLoopPlan(input.userRequest);
+  const runState = createAgentLoopRunState(input.userRequest);
   const events: AgentEvent[] = [];
   const emit = (event: AgentEvent) => {
     events.push(event);
     appendTraceEvent(trace.id, event);
     input.onEvent?.(event);
   };
+  const emitPlan = (hint: PlanProgressHint = {}) => {
+    const nextPlan = syncAgentLoopPlanProgress(plan, runState, hint);
+    plan.steps = nextPlan.steps;
+    plan.updatedAt = nextPlan.updatedAt;
+    emit({ type: "plan.updated", taskId: task.id, plan: { ...plan } });
+  };
   emit({ type: "thread.created", threadId: thread.id, thread });
   emit({ type: "task.created", taskId: task.id, task });
   emit({ type: "trace.linked", taskId: task.id, traceId: trace.id });
   emit({ type: "turn.created", turnId: turn.id, turn });
-  emit({ type: "plan.updated", taskId: task.id, plan });
+  emitPlan();
 
-  const runState = createAgentLoopRunState(input.userRequest);
   const openingReflection: AgentReflection = {
     understanding: input.userRequest,
     blockers: [],
-    plannedNext:
-      "Use tools to verify assumptions on disk before preparing any code change.",
+    plannedNext: "先用工具在磁盘上核实假设，再决定是否准备代码变更审批。",
     source: "runtime",
   };
   emitReflection(emit, task.id, openingReflection);
+  emitPlan();
 
   const messages: AgentMessage[] = [
     {
@@ -623,10 +597,10 @@ export async function runAgentLoop(
       emitReflection(emit, task.id, {
         understanding: runState.userRequest,
         blockers: [summary],
-        plannedNext:
-          "Runtime will attempt disk-based edit recovery without the model.",
+        plannedNext: "运行时将在无模型情况下尝试磁盘恢复。",
         source: "runtime",
       });
+      emitPlan({ lastAction: "reflect" });
       break;
     }
     emit({
@@ -662,6 +636,7 @@ export async function runAgentLoop(
         reflection,
         buildRuntimeCheckpoint(runState),
       );
+      emitPlan({ lastAction: "reflect" });
       continue;
     }
 
@@ -676,18 +651,20 @@ export async function runAgentLoop(
       runState.reflectionRounds += 1;
       const reflection: AgentReflection = {
         understanding: decision.summary,
-        blockers: ["No approval prepared yet for this edit request."],
+        blockers: ["改代码任务尚未生成审批。"],
         plannedNext:
-          "Call file.locate / file.read / file.search, then file.replace.prepare with exact search text from disk.",
+          "依次调用 file.locate / file.read / file.search，再用 file.replace.prepare 传入磁盘上的精确子串。",
         source: "runtime",
       };
       emitReflection(emit, task.id, reflection);
       pushReflectionToMessages(messages, reflection, buildRuntimeCheckpoint(runState));
+      emitPlan({ lastAction: "reflect" });
       continue;
     }
 
     if (decision.action === "final") {
       summary = decision.summary;
+      emitPlan({ lastAction: "final" });
       break;
     }
 
@@ -702,18 +679,24 @@ export async function runAgentLoop(
       if (shouldInjectRuntimeReflection(runState)) {
         runState.reflectionRounds += 1;
         const reflection: AgentReflection = {
-          understanding: "Previous tool choice was invalid.",
+          understanding: "上一次工具选择无效。",
           blockers: [observation.error],
-          plannedNext: "Pick a tool from the allowed list.",
+          plannedNext: "从允许的工具列表中重新选择。",
           source: "runtime",
         };
         emitReflection(emit, task.id, reflection);
         pushReflectionToMessages(messages, reflection, buildRuntimeCheckpoint(runState));
+        emitPlan({ lastAction: "reflect" });
       }
       continue;
     }
 
-    const toolCall = createToolCall(task.id, tool.name, decision.args ?? {});
+    const toolCall = createToolCall(
+      task.id,
+      tool.name,
+      decision.args ?? {},
+      decision.thought,
+    );
     emit({ type: "tool.started", taskId: task.id, toolCall });
     try {
       const toolResult = await tool.execute(decision.args ?? {}, toolContext);
@@ -742,8 +725,8 @@ export async function runAgentLoop(
         runState.reflectionRounds += 1;
         const reflection: AgentReflection = {
           understanding: runState.approvalPrepared
-            ? "Approval is prepared; user must approve and execute in UI."
-            : "Tool ran but edit approval is still missing or last step failed.",
+            ? "审批已就绪，等待用户在界面批准并执行。"
+            : "工具已运行，但改代码审批仍未就绪或上一步失败。",
           blockers: [
             ...(runState.lastPrepareError ? [runState.lastPrepareError] : []),
             ...(runState.lastToolError && !runState.lastPrepareError
@@ -751,13 +734,15 @@ export async function runAgentLoop(
               : []),
           ],
           plannedNext: runState.approvalPrepared
-            ? "action=final with instructions for user to approve and execute."
-            : "action=reflect or file.read + file.replace.prepare with exact substring.",
+            ? "可以 action=final，提示用户去批准并执行。"
+            : "action=reflect，或 file.read + file.replace.prepare（精确子串）。",
           source: "runtime",
         };
         emitReflection(emit, task.id, reflection);
         pushReflectionToMessages(messages, reflection, buildRuntimeCheckpoint(runState));
+        emitPlan({ lastAction: "reflect" });
       }
+      emitPlan({ lastAction: "tool" });
     } catch (error) {
       const observation = { error: fallbackSummary(error) };
       recordToolCall(runState, tool.name, observation, observation.error);
@@ -771,14 +756,15 @@ export async function runAgentLoop(
 
       runState.reflectionRounds += 1;
       const reflection: AgentReflection = {
-        understanding: `Tool ${tool.name} failed.`,
+        understanding: `工具 ${tool.name} 执行失败。`,
         blockers: [observation.error],
         plannedNext:
-          "Reflect on alternative evidence (file.search, different path) before retrying prepare.",
+          "先反思：尝试 file.search、换路径或其他策略，再重试 prepare。",
         source: "runtime",
       };
       emitReflection(emit, task.id, reflection);
       pushReflectionToMessages(messages, reflection, buildRuntimeCheckpoint(runState));
+      emitPlan({ lastAction: "reflect" });
     }
   }
 
@@ -802,14 +788,13 @@ export async function runAgentLoop(
     summary = `${summary}\n模型不可用且磁盘恢复未生成审批。请检查 API 配额或 .env.local 配置后重试。`;
   }
 
+  Object.assign(plan, completedAgentLoopPlan(plan));
+  emit({ type: "plan.updated", taskId: task.id, plan: { ...plan } });
+
   const completedTask: Task = {
     ...task,
     status: "completed",
-    plan: {
-      ...plan,
-      steps: plan.steps.map((step) => ({ ...step, status: "done" })),
-      updatedAt: nowIso(),
-    },
+    plan,
     updatedAt: nowIso(),
     completedAt: nowIso(),
   };

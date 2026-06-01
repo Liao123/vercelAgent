@@ -9,27 +9,24 @@ import {
   useState,
 } from "react";
 import { readImageFile } from "@/lib/read-image-file";
-import { AgentCompactedMemoryPanel } from "@/components/agent-compacted-memory-panel";
+import { formatCompactMethod } from "@/lib/compaction-labels";
 import { AgentEventTimeline } from "@/components/agent-event-timeline";
+import { AgentReviewPanel } from "@/components/agent-review-panel";
+import { AgentComposer } from "@/components/agent-composer";
 import {
   useAgentWorkspaceBridge,
   type TraceRestorePayload,
 } from "@/components/agent-workspace-bridge";
 import { DiffView } from "@/components/diff-view";
-import { AgentInlineApprovals } from "@/components/agent-inline-approvals";
+import { snapshotDiffHint } from "@/lib/snapshot-diff-text";
+import { GitStatusView } from "@/components/git-status-view";
 import { AgentRightRail } from "@/components/agent-right-rail";
 import { AgentRunModeHint } from "@/components/agent-run-mode-hint";
 import { AgentSessionSidebar } from "@/components/agent-session-sidebar";
-import { AgentTouchedFiles } from "@/components/agent-touched-files";
 import { PatchFilesDiffView } from "@/components/patch-files-diff";
-import {
-  collectTouchedFiles,
-  resolveThreadIdFromEvents,
-} from "@/lib/agent-feed";
-import {
-  AGENT_COMPACTED_MEMORY_PANEL_ID,
-  approvalAnchorId,
-} from "@/lib/approval-anchor";
+import { resolveThreadIdFromEvents } from "@/lib/agent-feed";
+import { approvalAnchorId } from "@/lib/approval-anchor";
+import { extractFileChangesFromApproval } from "@/lib/approval-file-changes";
 import type {
   AgentEvent,
   ApprovalContentSnapshot,
@@ -365,10 +362,14 @@ function FileDiffBlock({
   after?: ApprovalContentSnapshot;
 }) {
   if (!before && !after) return null;
+  const hint = snapshotDiffHint(before, after);
   return (
     <div className="space-y-1">
       {label && (
         <p className="text-[11px] font-medium text-zinc-500">{label}</p>
+      )}
+      {hint && (
+        <p className="text-[10px] text-zinc-500 dark:text-zinc-400">{hint}</p>
       )}
       <DiffView before={before} after={after} changesOnly layout="split" />
     </div>
@@ -398,7 +399,7 @@ function GitWorkspaceSnapshotView({
   if (!workspace) return null;
   return (
     <div className="space-y-2 rounded-md border border-zinc-200 bg-white p-2 dark:border-zinc-700 dark:bg-zinc-950">
-      {workspace.branch && (
+      {workspace.branch && !workspace.statusSnapshot && (
         <p className="text-[11px] text-zinc-600 dark:text-zinc-400">
           当前分支：<span className="font-mono">{workspace.branch}</span>
         </p>
@@ -408,7 +409,11 @@ function GitWorkspaceSnapshotView({
           Remote：<span className="font-mono">{workspace.remoteUrl}</span>
         </p>
       )}
-      <ContentSnapshotBlock label="git status" snapshot={workspace.status} />
+      {workspace.statusSnapshot ? (
+        <GitStatusView snapshot={workspace.statusSnapshot} compact />
+      ) : (
+        <ContentSnapshotBlock label="git status" snapshot={workspace.status} />
+      )}
       <ContentSnapshotBlock label="git diff" snapshot={workspace.diff} />
     </div>
   );
@@ -590,43 +595,47 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
   const [continueThreadMemory, setContinueThreadMemory] = useState(true);
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0);
   const referenceFileRef = useRef<HTMLInputElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
   const focusApprovalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
   const [focusedApprovalId, setFocusedApprovalId] = useState<string | null>(
     null,
   );
-  const [memoryPanelHighlighted, setMemoryPanelHighlighted] = useState(false);
+  const [reviewFileKey, setReviewFileKey] = useState<string | null>(null);
 
-  const focusApproval = useCallback((approvalId: string) => {
-    if (focusApprovalTimerRef.current) {
-      clearTimeout(focusApprovalTimerRef.current);
-    }
-    setFocusedApprovalId(approvalId);
-    requestAnimationFrame(() => {
-      document
-        .getElementById(approvalAnchorId(approvalId))
-        ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    });
-    focusApprovalTimerRef.current = setTimeout(() => {
-      setFocusedApprovalId(null);
-    }, 2800);
-  }, []);
-
-  const focusCompactedMemory = useCallback(() => {
-    if (focusApprovalTimerRef.current) {
-      clearTimeout(focusApprovalTimerRef.current);
-    }
-    setMemoryPanelHighlighted(true);
-    requestAnimationFrame(() => {
-      document
-        .getElementById(AGENT_COMPACTED_MEMORY_PANEL_ID)
-        ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    });
-    focusApprovalTimerRef.current = setTimeout(() => {
-      setMemoryPanelHighlighted(false);
-    }, 2800);
-  }, []);
+  const focusApproval = useCallback(
+    (approvalId: string, filePath?: string) => {
+      if (focusApprovalTimerRef.current) {
+        clearTimeout(focusApprovalTimerRef.current);
+      }
+      setFocusedApprovalId(approvalId);
+      const approval = approvals.find((item) => item.id === approvalId);
+      if (approval) {
+        const files = extractFileChangesFromApproval(approval);
+        if (filePath) {
+          const match = files.find(
+            (file) =>
+              file.path === filePath ||
+              file.path.endsWith(filePath) ||
+              filePath.endsWith(file.path),
+          );
+          if (match) setReviewFileKey(match.fileKey);
+        } else if (files[0]) {
+          setReviewFileKey(files[0].fileKey);
+        }
+      }
+      requestAnimationFrame(() => {
+        document
+          .getElementById(approvalAnchorId(approvalId))
+          ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      });
+      focusApprovalTimerRef.current = setTimeout(() => {
+        setFocusedApprovalId(null);
+      }, 2800);
+    },
+    [approvals],
+  );
 
   useEffect(() => {
     return () => {
@@ -635,8 +644,14 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!running || layout !== "triple") return;
+    const node = chatScrollRef.current;
+    if (!node) return;
+    node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
+  }, [events, running, layout]);
   const bucket = useMemo(() => bucketEvents(events), [events]);
-  const touchedFiles = useMemo(() => collectTouchedFiles(events), [events]);
   const filteredApprovals = useMemo(
     () => filterApprovals(approvals, approvalFilters, currentTaskId),
     [approvals, approvalFilters, currentTaskId],
@@ -1103,9 +1118,8 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
           }
           if (parsed.type === "context.compacted") {
             setApprovalStatus(
-              `上下文已压缩（第 ${parsed.round ?? "?"} 轮，${parsed.method ?? "compact"}）· 可在「滚动任务记忆」查看 Pinned 审批 ID`,
+              `上下文已压缩（第 ${parsed.round ?? "?"} 轮 · ${formatCompactMethod(parsed.method)}）`,
             );
-            queueMicrotask(() => focusCompactedMemory());
           }
           if (parsed.type === "task.failed") {
             setError(parsed.error);
@@ -1437,20 +1451,20 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     </div>
   );
 
-  const centerApprovals = useMemo(
-    () =>
-      filterApprovals(
-        approvals,
-        { pendingOnly: false, currentTaskOnly: Boolean(currentTaskId) },
-        currentTaskId,
-      ).filter((a) => {
-        if (a.status === "pending") return true;
-        if (a.status === "approved" && a.execution?.status !== "succeeded") {
-          return Boolean(currentTaskId && a.taskId === currentTaskId);
-        }
-        return false;
-      }),
-    [approvals, currentTaskId],
+  const reviewPanel = (
+    <AgentReviewPanel
+      approvals={approvals}
+      currentTaskId={currentTaskId}
+      loading={loadingApprovals}
+      focusedApprovalId={focusedApprovalId}
+      selectedFileKey={reviewFileKey}
+      onSelectFile={setReviewFileKey}
+      onReject={(id) => void resolveApproval(id, "rejected")}
+      onApproveAndExecute={(a) => void approveAndExecute(a)}
+      onExecute={(a) => void executeApproval(a)}
+      pushConfirmId={pushConfirmId}
+      needsPushSecondConfirm={needsPushSecondConfirm}
+    />
   );
 
   if (layout === "triple") {
@@ -1485,154 +1499,68 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
         </aside>
 
         <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-white dark:bg-zinc-950">
-          <div className="min-h-0 flex-1 overflow-auto px-3 pt-3">
+          <div
+            ref={chatScrollRef}
+            className="min-h-0 flex-1 overflow-auto px-4 py-5 sm:px-6"
+          >
+            <div className="mx-auto w-full max-w-3xl">
             {error && (
-              <p className="mb-2 rounded-md bg-red-50 px-2.5 py-1.5 text-[11px] text-red-700 dark:bg-red-950 dark:text-red-300">
+              <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-[13px] text-red-700 dark:bg-red-950/50 dark:text-red-300">
                 {error}
               </p>
             )}
-            <AgentTouchedFiles files={touchedFiles} />
-            <AgentCompactedMemoryPanel
-              events={events}
-              compact
-              highlighted={memoryPanelHighlighted}
-            />
             <AgentEventTimeline
               events={events}
               running={running}
-              density="compact"
+              chatMode
               showRestoreHint
               excludeEventTypes={["plan.updated", "approval.required"]}
               onFocusApproval={focusApproval}
-              onFocusCompactedMemory={focusCompactedMemory}
+              onRejectApproval={(id) => void resolveApproval(id, "rejected")}
             />
-            <AgentInlineApprovals
-              approvals={centerApprovals}
-              currentTaskId={currentTaskId}
-              loading={loadingApprovals}
-              pushConfirmId={pushConfirmId}
-              focusedApprovalId={focusedApprovalId}
-              onReject={(id) => void resolveApproval(id, "rejected")}
-              onApprove={(id) => void resolveApproval(id, "approved")}
-              onApproveAndExecute={(a) => void approveAndExecute(a)}
-              onExecute={(a) => void executeApproval(a)}
-              needsPushSecondConfirm={needsPushSecondConfirm}
-            />
+            </div>
           </div>
 
-          <footer className="shrink-0 border-t border-zinc-200 bg-zinc-50/80 px-3 py-3 dark:border-zinc-800 dark:bg-zinc-900/50">
-            {runMode === "loop" && (
-              <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px] text-zinc-600 dark:text-zinc-400">
-                <label className="flex cursor-pointer items-center gap-1.5">
-                  <input
-                    type="checkbox"
-                    checked={continueThreadMemory}
-                    onChange={(e) => setContinueThreadMemory(e.target.checked)}
-                    disabled={running}
-                    className="rounded border-zinc-300"
-                  />
-                  延续会话记忆
-                </label>
-                {currentThreadId && continueThreadMemory && (
-                  <span className="font-mono text-zinc-500">
-                    thread:{currentThreadId.slice(0, 12)}…
-                  </span>
-                )}
-                <button
-                  type="button"
-                  disabled={running}
-                  onClick={startNewSession}
-                  className="text-blue-600 hover:underline disabled:opacity-50 dark:text-blue-400"
-                >
-                  新会话
-                </button>
-              </div>
-            )}
-            {referenceImages.length > 0 && (
-              <div className="mb-2 flex flex-wrap gap-2">
-                {referenceImages.map((src, index) => (
-                  <div key={`${index}-${src.slice(0, 24)}`} className="relative">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={src}
-                      alt=""
-                      className="h-14 w-14 rounded-md border border-zinc-200 object-cover dark:border-zinc-700"
-                    />
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setReferenceImages((prev) =>
-                          prev.filter((_, i) => i !== index),
-                        )
-                      }
-                      className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-zinc-800 text-[10px] text-white"
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <form onSubmit={handleSubmit} className="flex gap-2">
-              <input
-                ref={referenceFileRef}
-                type="file"
-                accept="image/jpeg,image/png,image/gif,image/webp"
-                multiple
-                className="hidden"
-                onChange={(e) => void onPickReferenceImages(e)}
-              />
-              <button
-                type="button"
-                disabled={running || referenceImages.length >= MAX_REFERENCE_IMAGES}
-                onClick={() => referenceFileRef.current?.click()}
-                className="shrink-0 rounded-xl border border-zinc-300 px-2.5 py-2.5 text-xs text-zinc-600 disabled:opacity-50 dark:border-zinc-600 dark:text-zinc-400"
-                title="附加参考图（走 vision 模型）"
-              >
-                图
-              </button>
-              <input
-                value={request}
-                onChange={(e) => setRequest(e.target.value)}
-                placeholder="描述编程任务，可附图…"
-                disabled={running}
-                className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950"
-              />
-              <button
-                type="submit"
-                disabled={!canRunTask}
-                className="shrink-0 rounded-xl bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-950"
-              >
-                {running ? "运行中" : "运行"}
-              </button>
-            </form>
-            <AgentRunModeHint mode={runMode} />
-            {runMode === "develop" && referenceImages.length > 0 && (
-              <p className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">
-                开发闭环暂不支持附图，请切换到 Agent Loop。
-              </p>
-            )}
-            {approvalStatus && (
-              <p className="mt-1.5 text-[10px] text-emerald-600 dark:text-emerald-400">
-                {approvalStatus}
-              </p>
-            )}
-          </footer>
+          <input
+            ref={referenceFileRef}
+            type="file"
+            accept="image/jpeg,image/png,image/gif,image/webp"
+            multiple
+            className="hidden"
+            onChange={(e) => void onPickReferenceImages(e)}
+          />
+          <AgentComposer
+            request={request}
+            onRequestChange={setRequest}
+            onSubmit={handleSubmit}
+            running={running}
+            canRun={canRunTask}
+            runMode={runMode}
+            onRunModeChange={setRunMode}
+            continueThreadMemory={continueThreadMemory}
+            onContinueThreadMemoryChange={setContinueThreadMemory}
+            currentThreadId={currentThreadId}
+            onNewSession={startNewSession}
+            referenceImages={referenceImages}
+            onPickImages={() => referenceFileRef.current?.click()}
+            onRemoveImage={(index) =>
+              setReferenceImages((prev) => prev.filter((_, i) => i !== index))
+            }
+            maxReferenceImages={MAX_REFERENCE_IMAGES}
+            approvalStatus={approvalStatus}
+            developImageWarning={runMode === "develop" && referenceImages.length > 0}
+          />
         </main>
 
         <aside className="flex w-[min(22rem,36vw)] shrink-0 flex-col border-l border-zinc-200 bg-zinc-50/50 dark:border-zinc-800 dark:bg-zinc-900/40">
-          <div className="min-h-0 shrink-0">
+          <div className="max-h-[22%] min-h-0 shrink-0 overflow-hidden">
             <AgentRightRail
-              events={events}
-              running={running}
-              taskSummary={taskSummary}
-              error={error}
               browserOpen={browserOpen}
               onToggleBrowser={() => setBrowserOpen((v) => !v)}
             />
           </div>
-          <div className="flex min-h-[12rem] flex-1 flex-col border-t border-zinc-200 dark:border-zinc-800">
-            {approvalsPanel}
+          <div className="flex min-h-0 flex-1 flex-col border-t border-zinc-200 dark:border-zinc-800">
+            {reviewPanel}
           </div>
         </aside>
       </div>
@@ -1772,7 +1700,6 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
             events={events}
             running={running}
             onFocusApproval={focusApproval}
-            onFocusCompactedMemory={focusCompactedMemory}
           />
           <aside className="flex min-h-[280px] min-w-0 flex-col lg:min-h-0">
             {approvalsPanel}
@@ -1786,7 +1713,6 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
               events={events}
               running={running}
               onFocusApproval={focusApproval}
-              onFocusCompactedMemory={focusCompactedMemory}
             />
             <Section title="计划" events={bucket.plans} />
             <Section title="反思" events={bucket.reflections} />

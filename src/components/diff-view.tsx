@@ -10,6 +10,7 @@ import {
   type DiffRow,
   type SplitDiffSide,
 } from "@/lib/line-diff";
+import { snapshotDiffText } from "@/lib/snapshot-diff-text";
 
 export type DiffLayout = "split" | "unified";
 
@@ -26,11 +27,6 @@ type DiffViewProps = {
   /** split 模式是否显示行号 */
   showLineNumbers?: boolean;
 };
-
-function snapshotText(value?: ApprovalContentSnapshot | string): string {
-  if (typeof value === "string") return value;
-  return value?.text ?? "";
-}
 
 function rowClass(kind: DiffRow["kind"]): string {
   if (kind === "delete") {
@@ -69,9 +65,11 @@ function formatLineNum(value: number | null): string {
 function SplitCell({
   side,
   showLineNumbers,
+  lineOffset = 0,
 }: {
   side: SplitDiffSide;
   showLineNumbers: boolean;
+  lineOffset?: number;
 }) {
   if (side.kind === "empty") {
     return (
@@ -90,7 +88,9 @@ function SplitCell({
     >
       {showLineNumbers && (
         <span className="w-9 shrink-0 select-none border-r border-zinc-800/60 px-1.5 py-0.5 text-right text-[10px] text-zinc-500">
-          {formatLineNum(side.lineNum)}
+          {formatLineNum(
+            side.lineNum != null ? side.lineNum + lineOffset : null,
+          )}
         </span>
       )}
       <div className="flex min-w-0 gap-2 px-2 py-0.5">
@@ -121,9 +121,12 @@ export function DiffView({
 }: DiffViewProps) {
   const [layout, setLayout] = useState<DiffLayout>(initialLayout);
 
-  const { rows, splitRows, truncated, meta, hasBothSides } = useMemo(() => {
-    const oldText = snapshotText(before);
-    const newText = snapshotText(after);
+  const { rows, splitRows, truncated, meta, hasBothSides, lineOffsets } =
+    useMemo(() => {
+    const oldSlice = snapshotDiffText(before);
+    const newSlice = snapshotDiffText(after);
+    const oldText = oldSlice.text;
+    const newText = newSlice.text;
     const diff = computeLineDiff(oldText, newText);
     const filtered = changesOnly
       ? diff.filter((row) => row.kind !== "equal")
@@ -139,9 +142,15 @@ export function DiffView({
       splitRows: cappedSplit.rows,
       truncated: capped.truncated || cappedSplit.truncated,
       hasBothSides: Boolean(oldText || newText),
+      lineOffsets: {
+        left: Math.max(0, oldSlice.startLine - 1),
+        right: Math.max(0, newSlice.startLine - 1),
+      },
       meta: {
         beforeTruncated: beforeSnap?.truncated,
         afterTruncated: afterSnap?.truncated,
+        beforeStartLine: beforeSnap?.startLine,
+        afterStartLine: afterSnap?.startLine,
       },
     };
   }, [after, before, changesOnly, maxRows]);
@@ -154,9 +163,15 @@ export function DiffView({
 
   if (rows.length === 0) {
     if (meta.beforeTruncated || meta.afterTruncated) {
+      const hint = [
+        meta.beforeStartLine ? `变更前约第 ${meta.beforeStartLine} 行起` : null,
+        meta.afterStartLine ? `变更后约第 ${meta.afterStartLine} 行起` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
       return (
         <p className={`text-[11px] text-zinc-500 ${className}`}>
-          （快照已截断且未包含变更行；请看上方大小变化或展开原文）
+          （快照未包含可见 diff 行{hint ? `；${hint}` : ""}，请展开原文或查看文件大小变化）
         </p>
       );
     }
@@ -210,15 +225,23 @@ export function DiffView({
             }`}
           >
             <span className="border-r border-zinc-200 px-2 py-1 dark:border-zinc-700">
-              Before
+              变更前
             </span>
-            <span className="px-2 py-1">After</span>
+            <span className="px-2 py-1">变更后</span>
           </div>
           <div className="max-h-64 overflow-auto bg-zinc-950">
             {splitRows.map((row, index) => (
               <div key={`split-${index}`} className="grid grid-cols-2">
-                <SplitCell side={row.left} showLineNumbers={showLineNumbers} />
-                <SplitCell side={row.right} showLineNumbers={showLineNumbers} />
+                <SplitCell
+                  side={row.left}
+                  showLineNumbers={showLineNumbers}
+                  lineOffset={lineOffsets.left}
+                />
+                <SplitCell
+                  side={row.right}
+                  showLineNumbers={showLineNumbers}
+                  lineOffset={lineOffsets.right}
+                />
               </div>
             ))}
           </div>

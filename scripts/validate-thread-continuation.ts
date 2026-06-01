@@ -57,7 +57,7 @@ async function main() {
 
   const injection = buildThreadMemoryInjectionMessage(stored!.memoryContent);
   assert.ok(injection.content.includes(APPROVAL_TASK1));
-  assert.ok(injection.content.includes("Rolling thread memory"));
+  assert.ok(injection.content.includes("[THREAD_MEMORY]"));
 
   const task2Messages: AgentMessage[] = [
     { role: "system", content: "You are a coding agent." },

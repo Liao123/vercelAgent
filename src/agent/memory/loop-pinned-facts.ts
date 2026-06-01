@@ -128,25 +128,25 @@ export function formatPinnedFactsBlock(facts: LoopPinnedFacts): string {
 
   if (facts.approvalIds.length > 0) {
     lines.push(
-      ...facts.approvalIds.map((id) => `- approval: ${id} (must not lose)`),
+      ...facts.approvalIds.map((id) => `- 审批: ${id}（不可丢失）`),
     );
   }
   if (facts.filePaths.length > 0) {
     lines.push(
-      ...facts.filePaths.slice(0, 24).map((file) => `- file: ${file}`),
+      ...facts.filePaths.slice(0, 24).map((file) => `- 文件: ${file}`),
     );
     if (facts.filePaths.length > 24) {
-      lines.push(`- … +${facts.filePaths.length - 24} more files`);
+      lines.push(`- … 还有 ${facts.filePaths.length - 24} 个文件`);
     }
   }
   if (facts.branches.length > 0) {
-    lines.push(...facts.branches.map((branch) => `- branch: ${branch}`));
+    lines.push(...facts.branches.map((branch) => `- 分支: ${branch}`));
   }
   if (facts.errors.length > 0) {
-    lines.push(...facts.errors.map((error) => `- error: ${error}`));
+    lines.push(...facts.errors.map((error) => `- 错误: ${error}`));
   }
   if (facts.blockers.length > 0) {
-    lines.push(...facts.blockers.map((blocker) => `- blocker: ${blocker}`));
+    lines.push(...facts.blockers.map((blocker) => `- 阻塞: ${blocker}`));
   }
   if (facts.toolHighlights.length > 0) {
     lines.push(

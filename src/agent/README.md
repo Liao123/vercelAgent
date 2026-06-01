@@ -24,6 +24,17 @@ npm run validate:agent
 
 - `validate:compaction` — 长任务 head/tail 压缩与 pinned approval
 - `validate:thread-memory` — Thread 跨 Task 记忆注入与二次压缩
+- `validate:loop-state` — 只读任务不误触发改代码反思
+- `validate:git-status` — 结构化 git.status
+- `validate:content-snapshot` — 大文件 diff 行号对齐
+- `validate:long-thread-compaction` — 跨 Task 多轮压缩
+
+## UI（中栏推理）
+
+- `src/lib/agent-turn-feed.ts` — 事件分组为 Turn；`narrativeEvents` / `detailEvents`
+- `src/lib/agent-reasoning-steps.ts` — 反思+工具步骤分组与时长摘要
+- `src/components/agent-turn-reasoning-timeline.tsx` — 总折叠推理时间线
+- `src/lib/agent-tool-icons.tsx` — 工具步骤图标
 
 ## Current Boundary
 

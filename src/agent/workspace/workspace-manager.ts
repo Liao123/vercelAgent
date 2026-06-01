@@ -9,6 +9,7 @@ import path from "node:path";
 import { getGitRoot, getGitStatus } from "@/agent/tools/git-tools";
 import { readProjectRules, type ProjectRuleFile } from "@/agent/tools/project-rules";
 import { getConfiguredWorkspacePath } from "@/agent/workspace/workspace-config";
+import type { GitStatusSnapshot } from "@/lib/git-status";
 
 export type PackageManager = "npm" | "pnpm" | "yarn" | "bun" | "unknown";
 
@@ -20,7 +21,7 @@ export type WorkspaceInfo = {
   framework: string | null;
   packageName: string | null;
   rules: ProjectRuleFile[];
-  gitStatus: string;
+  git: GitStatusSnapshot | null;
 };
 
 async function fileExists(filePath: string): Promise<boolean> {
@@ -74,14 +75,27 @@ function detectFramework(dependencies: Record<string, string>): string | null {
 
 export async function getCurrentWorkspace(): Promise<WorkspaceInfo> {
   const rootPath = (await getConfiguredWorkspacePath()) ?? process.cwd();
-  const [packageManager, packageInfo, rules, gitRootPath, gitStatus] =
+  const [packageManager, packageInfo, rules, gitRootPath, gitStatusResult] =
     await Promise.all([
       detectPackageManager(rootPath),
       readPackageJson(rootPath),
       readProjectRules(rootPath),
       getGitRoot(rootPath),
-      getGitStatus(rootPath),
+      getGitStatus(rootPath).catch(() => null),
     ]);
+
+  const git: GitStatusSnapshot | null = gitStatusResult
+    ? {
+        dirty: gitStatusResult.dirty,
+        branch: gitStatusResult.branch,
+        upstream: gitStatusResult.upstream,
+        ahead: gitStatusResult.ahead,
+        behind: gitStatusResult.behind,
+        detached: gitStatusResult.detached,
+        files: gitStatusResult.files,
+        summary: gitStatusResult.summary,
+      }
+    : null;
 
   return {
     id: rootPath,
@@ -91,6 +105,6 @@ export async function getCurrentWorkspace(): Promise<WorkspaceInfo> {
     framework: detectFramework(packageInfo.dependencies),
     packageName: packageInfo.name,
     rules,
-    gitStatus: gitStatus.stdout,
+    git,
   };
 }

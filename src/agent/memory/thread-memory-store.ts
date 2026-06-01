@@ -118,9 +118,10 @@ export function buildThreadMemoryInjectionMessage(
       memoryContent,
       "",
       "---",
-      "Rolling thread memory from earlier tasks in this thread (authoritative for paths, approval IDs, errors).",
-      "The user's CURRENT request is in the next user message.",
-      "Do not repeat completed work unless the new request asks for it.",
+      "[THREAD_MEMORY]",
+      "以上为同一会话内较早任务的滚动记忆（路径、审批 ID、错误信息以此为准）。",
+      "用户的「当前需求」在下一条 user 消息中。",
+      "除非新需求明确要求，否则不要重复已完成的工作。",
     ].join("\n"),
   };
 }

@@ -1,6 +1,6 @@
 # 开发智能体项目架构规划 V2
 
-更新时间：2026-05-26
+更新时间：2026-06-01
 
 本文档用于指导后续 AI 或开发者继续实现本项目。当前目标不是做一个普通聊天页面，而是逐步做成一个 Codex-like 的本地开发智能体：能理解项目、读取规则、定位代码、修改文件、运行验证、操作内置浏览器，并把长任务过程可靠地记录下来。
 
@@ -41,7 +41,9 @@
 
 当前关键文件：
 
-- `src/app/page.tsx`、`src/components/agent-workspace.tsx`：Agent 工作区 UI
+- `src/app/page.tsx`、`src/components/agent-workspace.tsx`：Agent 工作区 UI（三栏）
+- `src/components/agent-turn-block.tsx`、`agent-turn-reasoning-timeline.tsx`：中栏 Turn 与逐步推理时间线
+- `src/components/agent-right-rail.tsx`：右栏内置浏览器（推理已迁至中栏）
 - `src/app/api/agent/*`：Agent API（loop、审批、工具等）
 - `src/agent/model/chat-completions-provider.ts`：OpenAI 兼容模型调用（非聊天页面）
 
@@ -232,6 +234,7 @@ type AgentEvent =
   | { type: "file.changed"; taskId: string; filePath: string; diff: string }
   | { type: "browser.screenshot"; taskId: string; imagePath: string }
   | { type: "verification.completed"; taskId: string; result: VerificationResult }
+  | { type: "reflection.updated"; taskId: string; reflection: AgentReflection; at?: string }
   | { type: "context.compacted"; taskId: string; summaryId: string }
   | { type: "task.completed"; taskId: string; summary: string }
   | { type: "task.failed"; taskId: string; error: string };
@@ -781,16 +784,24 @@ npm run build
 
 UI 应该是开发工具，不是营销页。
 
-核心布局建议：
+**当前已落地（三栏 Agent Workspace，2026-06）**：
 
 ```text
-左侧：工作区、Thread、Task、文件/索引
-中间：对话、计划、事件流
-右侧：diff、文件预览、浏览器、截图、design spec
-底部：命令输出、验证结果、错误日志
+左栏：项目 → 会话树、新会话、继续/命名/删除
+中栏：用户气泡 →「已执行 X 秒 / 工作中…」推理总折叠 → 最终回答 → 变更条
+      （展开总折叠：多轮 理解/打算/工具链 + 技术日志）
+      底栏：任务输入 + Loop 模式 + 延续记忆
+右栏：变更审查（diff / patch / Git / shell 审批）+ 内置浏览器折叠
 ```
 
-必要功能：
+与 Codex/Cursor 对齐的要点：
+
+- **推理在主对话区**，不在独立「规划侧栏」；`plan.updated` 仍供运行时同步，中栏默认 `excludeEventTypes` 隐藏。
+- 每轮 Task 一组 Turn：`task.created` 分界；Worked 类事件进 `narrativeEvents` 或 `detailEvents`。
+- `reflection.updated` 提供理解 / 阻塞 / plannedNext；`tool_call` JSON 的 `thought` 写入 `ToolCallRecord.rationale` 展示。
+- 完成后推理总折叠自动收起，只留一行摘要 + 最终交付。
+
+必要功能（已实现 / 进行中）：
 
 - 选择项目目录
 - 显示当前 Git 分支和 dirty 状态
@@ -870,7 +881,34 @@ browser.inspect
 
 ## 20. MVP 实现顺序
 
+> **进度对照表（2026-06-01）** — 与 `docs/agent-progress.md` 工作项 A001–A071 对齐。详细验收见进度文档。
+
+| 阶段 | 名称 | 状态 | 说明 |
+| --- | --- | --- | --- |
+| 1 | 任务化聊天 | **已完成** | Thread/Task/Turn/AgentEvent、ModelProvider、任务流 UI；旧通用聊天页已移除，由 Agent Workspace 取代（A005–A007、A037+）。 |
+| 2 | 本地工作区与基础工具 | **已完成** | Workspace、规则读取、文件/Git 只读工具、Trace 雏形与 JSON 持久化（A009–A012、A026–A027）。 |
+| 3 | 受控修改和审批 | **已完成** | Patch、文件 mutation、Git/shell 写操作、审批+执行闭环、diff 审查 UI（A013–A015、A029–A041、A043–A048）。 |
+| 4 | 上下文管理和压缩 | **已完成** | 分层 Memory、Token Budget、Loop 压缩+pinned facts、Thread 滚动记忆（A015–A017、A051–A053、A058–A059、A068）。 |
+| 5 | 代码索引和中文定位 | **部分完成** | 轻量内存索引 + 关键词定位已落地（A018–A019）；**未做** SQLite 持久化、AST 引用图、向量/语义检索。 |
+| 6 | 开发闭环 | **部分完成** | `/api/agent/develop` 固定流水线已跑通（A021），**日常主路径为 Agent Loop**（A028）；develop 不再投入（D018）；自动修复验证错误仍弱。 |
+| 7 | 内置浏览器与 DevTools | **部分完成** | iframe 浏览器 + `browser.open` 已可用（A022）；**未做** CDP 深度读取、DOM/样式/截图/console/network（A023 deferred）。 |
+| 8 | 设计解析与页面生成 | **暂缓** | demo → design spec → 代码生成主链路未启动（A024 deferred）。 |
+| 9 | Electron 桌面端 | **暂缓** | 主链路 Web 版已可用；系统目录选择器、WebView/CDP 集成留待立项（A025 deferred）。 |
+
+**当前产品焦点（阶段 1–4 + Loop 主链路）**：
+
+```text
+选 workspace → Loop 任务 → 中栏推理时间线 → 工具取证 → 准备审批
+  → 右栏审查 diff → 用户批准/执行 → Trace + 可选 Thread 记忆延续
+```
+
+**图例**：已完成 = 交付物基本齐全；部分完成 = 核心可用但有明确缺口；暂缓 = 已决策不做或下一阶段。
+
+---
+
 ### 阶段 1：任务化聊天
+
+**状态：已完成**（工作项 A005–A007、A032+；A071 中栏 Turn/推理 UI）
 
 目标：
 
@@ -889,6 +927,8 @@ browser.inspect
 - 任务流 UI 雏形
 
 ### 阶段 2：本地工作区和基础工具
+
+**状态：已完成**（A009–A012、A026–A027）
 
 目标：
 
@@ -909,6 +949,8 @@ browser.inspect
 
 ### 阶段 3：受控修改和审批
 
+**状态：已完成**（A013–A014、A029–A041、A043–A048）
+
 目标：
 
 - 让 AI 可以通过 patch 修改文件
@@ -924,6 +966,8 @@ browser.inspect
 
 ### 阶段 4：上下文管理和压缩
 
+**状态：已完成**（A015–A017、A051–A053、A058–A059、A068）
+
 目标：
 
 - 不再无脑塞完整历史
@@ -938,6 +982,8 @@ browser.inspect
 - 压缩事件
 
 ### 阶段 5：代码索引和中文定位
+
+**状态：部分完成** — 缺 SQLite、向量检索（A018–A019 已做轻量版）
 
 目标：
 
@@ -955,6 +1001,8 @@ browser.inspect
 
 ### 阶段 6：开发闭环
 
+**状态：部分完成** — develop 流水线有（A021），**日常用 Agent Loop**（A028）；不增强 develop（D018）
+
 目标：
 
 - 中文需求 -> 定位文件 -> 计划 -> 修改 -> 验证 -> 总结
@@ -967,6 +1015,8 @@ browser.inspect
 - 最终 diff 总结
 
 ### 阶段 7：内置浏览器和 Chrome DevTools
+
+**状态：部分完成** — 仅打开 URL（A022）；DevTools 深度能力暂缓（A023）
 
 目标：
 
@@ -984,6 +1034,8 @@ browser.inspect
 
 ### 阶段 8：设计网站解析和页面生成
 
+**状态：暂缓**（A024 deferred）
+
 目标：
 
 - demo URL + 素材 -> design spec JSON -> 代码生成/修改 -> 浏览器验证
@@ -996,6 +1048,8 @@ browser.inspect
 - 浏览器截图验证
 
 ### 阶段 9：Electron 桌面端
+
+**状态：暂缓**（A025 deferred；见 agent-memory D026 立项条件）
 
 目标：
 

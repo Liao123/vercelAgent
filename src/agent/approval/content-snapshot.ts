@@ -48,6 +48,7 @@ function buildFocusedSlice(
     length: totalLength,
     lineCount: lines.length,
     truncated,
+    startLine: start + 1,
   };
 }
 
@@ -102,7 +103,7 @@ export function contentSnapshotPair(
     };
   }
 
-  const context = 8;
+  const context = 12;
   const startOld = Math.max(
     0,
     (firstOld === oldLines.length ? Math.max(lastOld, 0) : firstOld) - context,

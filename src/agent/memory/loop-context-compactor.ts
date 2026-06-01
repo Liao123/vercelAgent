@@ -41,8 +41,19 @@ const SUMMARY_PREVIEW_CHARS = 420;
 
 const COMPACTED_MEMORY_PREFIX = "[COMPACTED_MEMORY";
 const SECTION_PINNED = "## Pinned facts";
+const SECTION_PINNED_ZH = "## 钉住事实";
 const SECTION_SUMMARY = "## Summary";
+const SECTION_SUMMARY_ZH = "## 摘要";
 const SECTION_CHANGED = "## Changed files";
+const SECTION_CHANGED_ZH = "## 涉及文件";
+
+function findSectionStart(content: string, ...headers: string[]): number {
+  for (const header of headers) {
+    const index = content.indexOf(header);
+    if (index >= 0) return index;
+  }
+  return -1;
+}
 
 export type LoopContextCompactMethod = "none" | "deterministic" | "semantic";
 
@@ -140,15 +151,57 @@ export function shapeToolResultForObservation(
     }
   }
 
-  if (toolName === "git.diff" && typeof record.diff === "string") {
-    const diff = record.diff;
-    if (diff.length > 6_000) {
+  if (toolName === "git.diff") {
+    const diff =
+      typeof record.diff === "string"
+        ? record.diff
+        : typeof record.stdout === "string"
+          ? record.stdout
+          : null;
+    if (diff && diff.length > 6_000) {
       return {
         ...record,
         diff: `${diff.slice(0, 6_000)}\n...[diff truncated]`,
+        stdout: undefined,
         truncated: true,
       };
     }
+  }
+
+  if (toolName === "git.status" && typeof record.summary === "string") {
+    const files = Array.isArray(record.files)
+      ? (record.files as unknown[]).slice(0, 40)
+      : [];
+    return {
+      dirty: record.dirty,
+      branch: record.branch,
+      upstream: record.upstream,
+      ahead: record.ahead,
+      behind: record.behind,
+      summary: record.summary,
+      files,
+      fileCount: Array.isArray(record.files) ? record.files.length : 0,
+    };
+  }
+
+  if (toolName === "workspace.inspect" && record.git && typeof record.git === "object") {
+    const git = record.git as Record<string, unknown>;
+    return {
+      rootPath: record.rootPath,
+      gitRootPath: record.gitRootPath,
+      packageManager: record.packageManager,
+      framework: record.framework,
+      packageName: record.packageName,
+      git: {
+        dirty: git.dirty,
+        branch: git.branch,
+        summary: git.summary,
+        files: Array.isArray(git.files)
+          ? (git.files as unknown[]).slice(0, 24)
+          : [],
+      },
+      rules: record.rules,
+    };
   }
 
   if (toolName === "project.index") {
@@ -237,7 +290,8 @@ export function isThreadMemoryInjectionMessage(message: AgentMessage): boolean {
   const text = messageText(message);
   return (
     message.role === "user" &&
-    text.includes("Rolling thread memory from earlier tasks in this thread")
+    (text.includes("[THREAD_MEMORY]") ||
+      text.includes("Rolling thread memory from earlier tasks in this thread"))
   );
 }
 
@@ -311,24 +365,43 @@ export function parseCompactedMemory(content: string): ParsedCompactedMemory | n
 
   const roundMatch = /round\s+(\d+)/i.exec(content);
   const methodMatch = /,\s*(deterministic|semantic)\]/i.exec(content);
-  const pinnedStart = content.indexOf(SECTION_PINNED);
-  const summaryStart = content.indexOf(SECTION_SUMMARY);
-  const changedStart = content.indexOf(SECTION_CHANGED);
+  const pinnedStart = findSectionStart(content, SECTION_PINNED_ZH, SECTION_PINNED);
+  const summaryStart = findSectionStart(content, SECTION_SUMMARY_ZH, SECTION_SUMMARY);
+  const changedStart = findSectionStart(content, SECTION_CHANGED_ZH, SECTION_CHANGED);
+
+  const pinnedHeaderLen =
+    pinnedStart >= 0
+      ? content.startsWith(SECTION_PINNED_ZH, pinnedStart)
+        ? SECTION_PINNED_ZH.length
+        : SECTION_PINNED.length
+      : 0;
+  const summaryHeaderLen =
+    summaryStart >= 0
+      ? content.startsWith(SECTION_SUMMARY_ZH, summaryStart)
+        ? SECTION_SUMMARY_ZH.length
+        : SECTION_SUMMARY.length
+      : 0;
+  const changedHeaderLen =
+    changedStart >= 0
+      ? content.startsWith(SECTION_CHANGED_ZH, changedStart)
+        ? SECTION_CHANGED_ZH.length
+        : SECTION_CHANGED.length
+      : 0;
 
   const pinnedBlock =
     pinnedStart >= 0 && summaryStart > pinnedStart
-      ? content.slice(pinnedStart + SECTION_PINNED.length, summaryStart).trim()
+      ? content.slice(pinnedStart + pinnedHeaderLen, summaryStart).trim()
       : "";
   const summaryBody =
     summaryStart >= 0
       ? content.slice(
-          summaryStart + SECTION_SUMMARY.length,
+          summaryStart + summaryHeaderLen,
           changedStart >= summaryStart ? changedStart : undefined,
         ).trim()
       : content;
   const changedBlock =
     changedStart >= 0
-      ? content.slice(changedStart + SECTION_CHANGED.length).trim()
+      ? content.slice(changedStart + changedHeaderLen).trim()
       : "";
 
   const changedFiles = changedBlock
@@ -359,16 +432,16 @@ export function buildStructuredCompactedMemory(input: {
 
   return [
     `${COMPACTED_MEMORY_PREFIX} — round ${input.round}, ${input.method}]`,
-    "Rolling task memory. Tail messages are authoritative for the latest step.",
-    "Re-call tools only to verify facts missing below.",
+    "本轮滚动任务记忆。最近 tail 消息代表最新一步。",
+    "如需核实下方未列出的细节，可再次调用工具。",
     "",
-    SECTION_PINNED,
+    SECTION_PINNED_ZH,
     formatPinnedFactsBlock(input.pinnedFacts),
     "",
-    SECTION_SUMMARY,
+    SECTION_SUMMARY_ZH,
     input.summaryBody.trim(),
     "",
-    SECTION_CHANGED,
+    SECTION_CHANGED_ZH,
     ...changedLines,
   ].join("\n");
 }
@@ -563,9 +636,13 @@ export async function compactAgentLoopMessages(input: {
     ),
   );
   const evictedPinned = extractPinnedFactsFromMessages(middle);
+  const tailPinned = extractPinnedFactsFromMessages(tail);
   const pinnedFacts = mergePinnedFacts(
     priorMemory?.pinnedFacts ?? emptyPinnedFacts(),
-    mergePinnedFacts(headPinned, evictedPinned),
+    mergePinnedFacts(
+      mergePinnedFacts(headPinned, evictedPinned),
+      tailPinned,
+    ),
   );
 
   let method: LoopContextCompactMethod = "deterministic";

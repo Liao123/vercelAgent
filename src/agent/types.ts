@@ -108,6 +108,8 @@ export type ApprovalContentSnapshot = {
   length: number;
   lineCount: number;
   truncated: boolean;
+  /** 聚焦片段在完整文件中的起始行号（1-based），用于 diff 行号对齐。 */
+  startLine?: number;
 };
 
 export type ApprovalFileMutationOperation =
@@ -166,9 +168,35 @@ export type ApprovalGitMutationOperation =
       setUpstream?: boolean;
     };
 
+export type ApprovalGitStatusSnapshot = {
+  dirty: boolean;
+  branch: string | null;
+  upstream: string | null;
+  ahead: number | null;
+  behind: number | null;
+  detached: boolean;
+  files: Array<{
+    path: string;
+    previousPath?: string;
+    indexStatus: string;
+    worktreeStatus: string;
+    status:
+      | "modified"
+      | "added"
+      | "deleted"
+      | "renamed"
+      | "copied"
+      | "untracked"
+      | "conflicted";
+  }>;
+  summary: string;
+};
+
 export type ApprovalGitWorkspaceSnapshot = {
   branch?: string;
   status?: ApprovalContentSnapshot;
+  /** 结构化 git status，供 UI 与模型准确理解 dirty 文件列表。 */
+  statusSnapshot?: ApprovalGitStatusSnapshot;
   diff?: ApprovalContentSnapshot;
   remoteUrl?: string;
 };
@@ -260,6 +288,8 @@ export type ToolCallRecord = {
   taskId?: AgentId;
   toolName: string;
   args: unknown;
+  /** 模型调用工具前的简短意图说明（中文） */
+  rationale?: string;
   startedAt: string;
   completedAt?: string;
   error?: string;
@@ -320,6 +350,7 @@ export type AgentEvent =
       type: "reflection.updated";
       taskId: string;
       reflection: AgentReflection;
+      at?: string;
     }
   | { type: "task.completed"; taskId: string; task: Task; summary: string }
   | { type: "task.failed"; taskId: string; task?: Task; error: string };

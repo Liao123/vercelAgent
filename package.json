@@ -10,7 +10,12 @@
     "validate:compaction": "npx --yes tsx scripts/validate-loop-compaction.ts",
     "validate:thread-memory": "npx --yes tsx scripts/validate-thread-continuation.ts",
     "validate:loop-state": "npx --yes tsx scripts/validate-loop-state.ts",
-    "validate:agent": "npm run validate:compaction && npm run validate:thread-memory && npm run validate:loop-state"
+    "validate:git-status": "npx --yes tsx scripts/validate-git-status.ts",
+    "validate:content-snapshot": "npx --yes tsx scripts/validate-content-snapshot.ts",
+    "validate:long-thread-compaction": "npx --yes tsx scripts/validate-long-thread-compaction.ts",
+    "trial:long-thread": "node scripts/long-thread-compaction-trial.mjs",
+    "trial:semantic-compare": "node scripts/semantic-compact-compare.mjs",
+    "validate:agent": "npm run validate:compaction && npm run validate:thread-memory && npm run validate:loop-state && npm run validate:git-status && npm run validate:content-snapshot && npm run validate:long-thread-compaction"
   },
   "dependencies": {
     "next": "16.2.6",

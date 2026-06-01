@@ -13,6 +13,10 @@ import type {
   ApprovalGitMutationPreview,
   ApprovalGitWorkspaceSnapshot,
 } from "@/agent/types";
+import {
+  parseGitStatusOutput,
+  type GitStatusSnapshot,
+} from "@/lib/git-status";
 
 const execFileAsync = promisify(execFile);
 
@@ -21,6 +25,8 @@ export type GitCommandResult = {
   stdout: string;
   stderr: string;
 };
+
+export type GitStatusResult = GitCommandResult & GitStatusSnapshot;
 
 export type GitMutationOperation =
   | {
@@ -198,7 +204,7 @@ async function collectGitWorkspaceSnapshot(
     const status = await getGitStatus(cwd);
     const diff = await getGitDiff(cwd);
     const branchResult = await runGit(cwd, ["branch", "--show-current"]);
-    const branch = branchResult.stdout.trim() || undefined;
+    const branch = branchResult.stdout.trim() || status.branch || undefined;
     let remoteUrl: string | undefined;
     if (operation.type === "push") {
       const remote = operation.remote ?? "origin";
@@ -210,6 +216,16 @@ async function collectGitWorkspaceSnapshot(
       status: contentSnapshot(
         [status.stdout, status.stderr].filter(Boolean).join("\n"),
       ),
+      statusSnapshot: {
+        dirty: status.dirty,
+        branch: status.branch,
+        upstream: status.upstream,
+        ahead: status.ahead,
+        behind: status.behind,
+        detached: status.detached,
+        files: status.files,
+        summary: status.summary,
+      },
       diff: contentSnapshot(
         [diff.stdout, diff.stderr].filter(Boolean).join("\n"),
       ),
@@ -300,8 +316,13 @@ export async function getGitRoot(cwd: string): Promise<string | null> {
   return root.length > 0 ? root : null;
 }
 
-export async function getGitStatus(cwd: string): Promise<GitCommandResult> {
-  return runGit(cwd, ["status", "--short", "--branch"]);
+export async function getGitStatus(cwd: string): Promise<GitStatusResult> {
+  const result = await runGit(cwd, ["status", "--short", "--branch"]);
+  const parsed = parseGitStatusOutput(result.stdout);
+  return {
+    ...result,
+    ...parsed,
+  };
 }
 
 export async function getGitDiff(cwd: string): Promise<GitCommandResult> {
