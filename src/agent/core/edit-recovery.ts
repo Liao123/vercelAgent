@@ -9,6 +9,7 @@ import {
 import { prepareFileMutation, readTextFile, searchText } from "@/agent/tools";
 import { buildPrepareEvidenceFromSearch } from "@/agent/approval/prepare-evidence";
 import { isLikelyCodeEditRequest } from "@/agent/core/agent-loop-state";
+import { shouldSkipEditRecoveryForUiPrepare } from "@/agent/core/ui-prepare-nudge";
 import type { AgentUiContext } from "@/agent/types";
 import type { ApprovalRequest } from "@/agent/types";
 
@@ -35,6 +36,11 @@ function isDeleteIntent(request: string): boolean {
 /** 从需求中提取可能在文件里出现的字面量（数字、引号内文字、英文词），不整句猜。 */
 export function extractLiteralCandidates(request: string): string[] {
   const tokens: string[] = [];
+  const priority: string[] = [];
+  if (isDeleteIntent(request)) {
+    if (/闭环/.test(request)) priority.push("闭环");
+    if (/Loop/.test(request) || /\bloop\b/i.test(request)) priority.push("Loop");
+  }
 
   for (const match of request.matchAll(/["'“”‘’]([^"'“”‘’]+)["'“”‘’]/g)) {
     const value = match[1]?.trim();
@@ -56,7 +62,9 @@ export function extractLiteralCandidates(request: string): string[] {
     tokens.push(token);
   }
 
-  return [...new Set(tokens)].sort((left, right) => right.length - left.length);
+  return [...new Set([...priority, ...tokens])].sort(
+    (left, right) => right.length - left.length,
+  );
 }
 
 async function resolveTargetPaths(
@@ -131,7 +139,10 @@ export async function tryRecoverEditApproval(input: {
   userRequest: string;
   filesRead?: string[];
   uiContext?: AgentUiContext;
+  /** A083：UI 已具备 prepare 证据时跳过 recovery */
+  skipRecovery?: boolean;
 }): Promise<EditRecoveryResult | null> {
+  if (input.skipRecovery) return null;
   if (!isLikelyCodeEditRequest(input.userRequest)) return null;
   if (!isDeleteIntent(input.userRequest)) return null;
 

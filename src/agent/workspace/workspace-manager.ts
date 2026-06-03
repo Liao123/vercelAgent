@@ -9,6 +9,7 @@ import path from "node:path";
 import { getGitRoot, getGitStatus } from "@/agent/tools/git-tools";
 import { readProjectRules, type ProjectRuleFile } from "@/agent/tools/project-rules";
 import { getConfiguredWorkspacePath } from "@/agent/workspace/workspace-config";
+import { normalizeWorkspaceKey } from "@/lib/workspace-path";
 import type { GitStatusSnapshot } from "@/lib/git-status";
 
 export type PackageManager = "npm" | "pnpm" | "yarn" | "bun" | "unknown";
@@ -97,8 +98,10 @@ export async function getCurrentWorkspace(): Promise<WorkspaceInfo> {
       }
     : null;
 
+  const id = normalizeWorkspaceKey(rootPath);
+
   return {
-    id: rootPath,
+    id,
     rootPath,
     gitRootPath,
     packageManager,

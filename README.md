@@ -28,7 +28,17 @@ cp .env.example .env.local
 npm run dev
 ```
 
-浏览器打开 [http://localhost:3000](http://localhost:3000) 即为 **Agent Workspace**。
+浏览器打开 [http://localhost:3000](http://localhost:3000) 即为 **Agent Workspace**（三栏：会话 / 对话 / 审查·文件·浏览器）。
+
+### 桌面版（Windows）
+
+```bash
+npm run pack:desktop:dir
+# 运行 dist-desktop/win-unpacked/vec Agent.exe
+```
+
+首次启动按顶部提示配置 `.env.local` 中的模型 API，再用左下角 **打开文件夹…** 选项目。  
+完整步骤见 [桌面版快速上手](docs/desktop-quickstart.md)。
 
 ## 主要结构
 
@@ -46,6 +56,8 @@ npm run dev
 - [项目进度](docs/agent-progress.md)
 - [开发准确度路线图（Cursor/Codex 对照）](docs/agent-accuracy-roadmap.md)
 - [本地记忆 / 决策](docs/agent-memory.md)
+- [Electron 桌面端](docs/agent-electron.md)
+- [桌面版快速上手](docs/desktop-quickstart.md)
 
 ## 部署到 Vercel
 

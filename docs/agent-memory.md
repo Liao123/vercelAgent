@@ -124,7 +124,7 @@
 
 - 日常开发**只使用 Agent Loop**（`/api/agent/loop`）。
 - **开发闭环**（`/api/agent/develop`）为早期无模型流水线：索引 → 规则定位文件 → 仅当 API 传入 patch 时才改文件；**不调用 LLM**，界面自然语言不会自动生成代码。
-- UI 保留 Loop/闭环切换与 `AgentRunModeHint` 即可；**不必再增强 develop 路线**。
+- **A100/A101（2026-06）**：主界面仅 Agent Loop；无闭环、无「Agent 设置」及自动写盘/lint 再 Loop/strict 开关（与 Cursor/Codex 一致）。`strictPrepare` 仅试用脚本/API 传入；`canAutoApplyFileApproval` 等 lib 保留供评测。
 
 ### 收工快照（2026-05-27，便于明天接续）
 
@@ -340,7 +340,7 @@ Codex CLI 是 Apache-2.0 开源项目，有成熟架构价值。但它主要是 
 
 - `extractLiteralCandidates` 跳过长度 < 3 的英文 token，并过滤 `approval`、`ui`、`prepare` 等技术词，避免试用/需求里的英文触发 recovery 误删 composer 内 `approvalStatus` 等。
 - UI 黄金路径试用文案改用中文，避免 `approval id`、`UI` 等干扰 recovery。
-- 这不替代模型 prepare；`--strict` 试用仍暴露「模型未自主 prepare」问题 → 见 A083 候选。
+- A083 在 UI 证据齐备时 `skipRecovery`，并用 checkpoint `prepareHint` 推动 `file.replace.prepare`；`--strict` 试用已通过。
 
 ### D038：UI 黄金路径在线试用（A082，2026-06-01）
 
@@ -434,7 +434,7 @@ A049 将首页改为 Cursor/Codex 向三栏：左（项目 + 会话）、中（T
 ### D024：侧栏删除 ≠ 删磁盘（A063）
 
 - **删会话**：`DELETE /api/agent/threads?threadId=&workspaceId=` → 清滚动记忆 + `thread-meta.hidden`；Trace JSON 保留。
-- **移除项目**：`DELETE /api/agent/workspace?workspaceId=` → 写入 `.agent-state/workspace-sidebar.json` 的 `hiddenWorkspaceIds`；不删文件夹。
+- **项目列表**：按工作区路径去重（`normalizeWorkspaceKey`）；当前打开的工作区始终出现在侧栏，即使尚无会话。重复设置同一路径会合并到同一项目（对齐 Cursor 打开文件夹）。
 - **恢复项目**：`PATCH /api/agent/workspace` body `{ workspaceId, action: "show" }`。
 - 左栏「新会话」与底栏「新会话」共用 `startNewSession`（清 thread、活动流、输入框）。
 
@@ -467,7 +467,91 @@ A049 将首页改为 Cursor/Codex 向三栏：左（项目 + 会话）、中（T
 - AgentPanel 的 Workspace 区域需要保留明确的读取/设置反馈；如果用户说“设置按钮点不动”，优先检查路径输入、接口返回和 UI 状态提示。
 - 产品方向上应预留桌面端。浏览器环境无法像 Codex 桌面端那样可靠弹出系统目录选择器并把本机路径交给服务端；Electron/本地客户端更适合承载项目选择、本地文件读写、命令执行、Chrome DevTools 连接和权限沙箱。
 - 迁移策略不是立刻重写成 Electron，而是继续保持 Agent Runtime 与 UI 解耦，先把 `src/agent` 能力做稳，再让 Web UI 和 Electron UI 共享同一套本地 runtime/API。
-- 当前优先级建议：**A083（模型稳定 prepare）**；准确度路线图 A073–A082 已完成；离线 `validate:agent` + `validate:golden-path` 全绿；在线 `trial:golden-path-ui` 默认 PASSED（prepare 仍常靠 recovery）。
+- 准确度路线图 A073–A084 已完成；离线 `validate:agent`（含 `validate:ui-prepare-nudge`）全绿；在线 `trial:golden-path-ui` 默认与 `--strict` PASSED。
+
+### D040：UI prepare nudge（A083，2026-06-01）
+
+决策：
+
+- `captureUiPrepareHintFromFileRead`：读完消歧推荐文件后，从磁盘行提取 `Loop`/`闭环` 子节点行与 `onRunModeChange` 行作 exact search 候选，写入 `runState.prepareHint`。
+- `buildRuntimeCheckpoint` 注入 prepare nudge；`shouldInjectRuntimeReflection` 在未 prepare 时有 hint 则强制反思，`plannedNext` 指向 `file.replace.prepare` + Candidate JSON。
+- `shouldSkipEditRecoveryForUiPrepare`：已 trace/locate、读完 mustRead、有候选时 **不** 走 `edit.recovery`，避免误删 `"Loop"` 等短串。
+- 回归：`npm run validate:ui-prepare-nudge`；在线 `node scripts/golden-path-ui-trial.mjs --strict`。
+
+### D041：压缩钉住 prepare 候选（A084，2026-06-01）
+
+决策：
+
+- 问题：`prepareHint` 在 `runState` 中仍在，但 reflection/checkpoint 里的 Candidate 行随 middle 驱逐丢失，模型下一轮看不见 exact search。
+- `compactAgentLoopMessages` 合并 `runState.prepareHint` + 从消息解析的 nudge，写入滚动记忆 `## 钉住 prepare 候选`（与钉住文件片段并列）。
+- Loop 调用压缩时传入 `prepareHint`（未 prepare 时）；`parseCompactedMemory` 可 round-trip。
+- 回归：`npm run validate:prepare-hint-compaction`（两轮压缩仍保留 composer + Candidate）。
+
+### D042：执行后验证回灌 Loop（A086，2026-06-03）
+
+决策：
+
+- A079 在审批 execute 后跑 lint/typecheck 并写入 `.agent-state/post-execute-verify.json`；A086 在 **下一轮 Loop 启动** 读取失败记录，写入 `runState.postExecuteFeedback` 与 checkpoint。
+- 不自动改代码；开场反思 `blockers` 带摘要，`shouldInjectRuntimeReflection` 为 true。
+- 回归：`npm run validate:post-execute-loop-feedback`。
+
+### D043：末轮 prepare 助推（A087，2026-06-03）
+
+决策：
+
+- 主循环结束且 `isUiPrepareEvidenceReady`、尚未调用 prepare 时，追加 **一轮** 模型调用（user 消息仅允许 `file.replace.prepare` + Candidate）。
+- 成功则发 `approval.required`；失败仍走 recovery（若未尝试过 prepare）。
+- 回归：`npm run validate:final-prepare-nudge`。
+
+### D044：Web 只读文件树（A088，2026-06-03）
+
+决策：
+
+- `GET /api/agent/workspace/tree?path=` 复用 `listDirectory`；**右侧栏 Tab「文件」**（与 Cursor/Codex 一致，与「工具」「浏览器」并列）展示 `WorkspaceFileTree`，点击写入 `@path` 与附加列表。左栏仅保留 Workspace 路径与会话。
+- 不做编辑器；Electron 仍 deferred。
+- 回归：`npm run validate:workspace-tree`。
+
+### D045：命令底部授权 + strictPrepare（A089/A091，2026-06-03）
+
+决策：
+
+- **对齐 Cursor/Codex**：`shell_command` / `git_mutation` 待审批在中栏 **Composer 上方** 展示 `AgentCommandApprovalBar`；`file_mutation` / `patch_apply` 仍在右侧「审查」。
+- Loop API 增加 `strictPrepare`：`true` 时全程 `skipRecovery`（含 `edit.recovery`），与 `golden-path-ui-trial --strict` 一致。
+- **A095**：左栏开关 `vec.agent.strictPrepareLoop`（默认关），UI Loop 请求传 `strictPrepare`。
+### D046：自动应用文件变更（A093，2026-06-03）
+
+决策：
+
+- 左栏「自动应用文件变更（实验）」默认关，`localStorage` 键 `vec.agent.autoApplyFileChanges`。
+- 开启时 `approval.required` 对 `file_mutation` / `patch_apply` 且 `risk !== high` 自动 `approveAndExecute`。
+- `shell_command` / `git_mutation` / high risk 不自动；与 Cursor「文件直接改、命令要授权」对齐。
+- 回归：`npm run validate:file-auto-apply`。
+
+### D047：lint 失败再 Loop（A090，2026-06-03）
+
+决策：
+
+- 写盘后 `postExecuteVerification` 失败时，`buildLintFixLoopRequest` 预填 Composer；审查区按钮「根据 lint 结果再修一轮」。
+- 左栏「lint 失败自动再跑 Loop（实验）」`localStorage` 键 `vec.agent.autoReloopOnLintFail`；开启则 `handlePostExecuteOutcome` 自动 `runLoopWithRequest`。
+- Loop 用户提交与 lint 修复共用 `runLoopWithRequest`（develop 闭环仍走 `/api/agent/develop`）。
+- 回归：`npm run validate:lint-reloop`。
+
+### D049：strictPrepare 左栏开关（A095，2026-06-03）
+
+决策：
+
+- 与 `golden-path-ui-trial --strict` 一致：`strictPrepare: true` 禁用 `edit.recovery`。
+- 仅 Agent Loop 模式可勾选；`localStorage` 键 `vec.agent.strictPrepareLoop`。
+- 回归：`npm run validate:strict-prepare-prefs`（偏好归一化）+ 既有 `validate:strict-prepare`（recovery 行为）。
+
+### D048：审查区编辑器式 diff（A094，2026-06-03）
+
+决策：
+
+- 三栏 `AgentReviewPanel`：左侧变更文件列表 + 右侧 `ReviewEditorDiff` 占满剩余高度（split/unified、仅变更行、行号）。
+- 偏好键 `vec.agent.reviewDiffLayout`、`vec.agent.reviewDiffChangesOnly`；`DiffView.fillHeight` 供审查主区滚动。
+- 回归：`npm run validate:review-diff-prefs`。
+
 - 准确度路线图：[`docs/agent-accuracy-roadmap.md`](agent-accuracy-roadmap.md)；接续入口 D029。
 - A034 已完成：ApprovalRecord 增加可 JSON 持久化的 `details` 字段，`/api/agent/files` 和 `/api/agent/git` 的 preview 会写入 operation、operationHash 和 preview。
 - A034 文件详情已包含：operation type、path/fromPath/toPath、existsBefore/existsAfter、oldSize/newSize、sizeDelta、oldContent/newContent 的截断快照。

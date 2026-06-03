@@ -11,7 +11,11 @@ import {
   type VerificationCommand,
 } from "@/agent/verification";
 
-const POST_EXECUTE_SCRIPTS: VerificationCommand[] = ["lint", "typecheck"];
+const POST_EXECUTE_SCRIPTS: VerificationCommand[] = [
+  "lint",
+  "typecheck",
+  "build",
+];
 const CODE_FILE_PATTERN = /\.(tsx?|jsx?|css|json|mjs|cjs)$/i;
 
 export type PostExecuteVerification = {
@@ -66,7 +70,7 @@ export async function runPostExecuteVerification(
       changedPaths: normalizedPaths,
       results: [],
       success: true,
-      summary: "package.json 无 lint/typecheck，跳过执行后验证。",
+      summary: "package.json 无 lint/typecheck/build，跳过执行后验证。",
       completedAt,
     };
   }
@@ -85,7 +89,7 @@ export async function runPostExecuteVerification(
   const failed = results.find((item) => !item.success);
   const summary = success
     ? `执行后验证通过：${results.map((r) => r.command).join(" → ")}。`
-    : `执行后验证失败：${failed?.command ?? "unknown"}。请在下一轮 Loop 中修复 stderr 后重新 prepare（不会自动改代码）。`;
+    : `执行后验证失败：${failed?.command ?? "unknown"}。Agent 应读取错误输出并 file.replace.prepare 修复。`;
 
   return {
     triggered: true,
@@ -135,6 +139,88 @@ export function changedPathsFromFileMutation(input: {
   if (input.fromPath) paths.add(input.fromPath);
   if (input.toPath) paths.add(input.toPath);
   return [...paths];
+}
+
+export type StoredPostExecuteVerification = {
+  taskId: string;
+  approvalId: string;
+  verification: PostExecuteVerification;
+  savedAt: string;
+};
+
+/** 上一轮审批执行后写入的验证结果（供下一轮 Loop 读取）。 */
+export async function clearStoredPostExecuteVerification(
+  rootPath: string,
+): Promise<void> {
+  const filePath = path.join(rootPath, ".agent-state", "post-execute-verify.json");
+  try {
+    await fs.unlink(filePath);
+  } catch {
+    // missing file is fine
+  }
+}
+
+export async function loadStoredPostExecuteVerification(
+  rootPath: string,
+): Promise<StoredPostExecuteVerification | null> {
+  const filePath = path.join(rootPath, ".agent-state", "post-execute-verify.json");
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    const parsed = JSON.parse(raw) as StoredPostExecuteVerification;
+    if (!parsed?.verification || typeof parsed.taskId !== "string") {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export type PostExecuteFeedback = {
+  summary: string;
+  failedCommand?: string;
+  outputSnippet?: string;
+  changedPaths: string[];
+  approvalId?: string;
+  taskId?: string;
+};
+
+export function postExecuteFeedbackFromStored(
+  stored: StoredPostExecuteVerification,
+): PostExecuteFeedback | null {
+  const verification = stored.verification;
+  if (!verification.triggered || verification.success) return null;
+
+  const failed = verification.results.find((item) => !item.success);
+  return {
+    summary: verification.summary,
+    failedCommand: failed?.command,
+    outputSnippet: failed?.output?.slice(0, 2_000),
+    changedPaths: verification.changedPaths,
+    approvalId: stored.approvalId,
+    taskId: stored.taskId,
+  };
+}
+
+export function formatPostExecuteFeedbackBlock(
+  feedback: PostExecuteFeedback,
+): string {
+  const lines = [
+    "=== Post-execute verification failed (fix in this task) ===",
+    feedback.summary,
+    `Changed files: ${feedback.changedPaths.join(", ") || "(unknown)"}`,
+  ];
+  if (feedback.failedCommand) {
+    lines.push(`Failed command: npm run ${feedback.failedCommand}`);
+  }
+  if (feedback.outputSnippet?.trim()) {
+    lines.push("stderr/stdout excerpt:", feedback.outputSnippet.trim());
+  }
+  lines.push(
+    "Read the errors above, fix source with file.replace.prepare + approval, or run workspace.inspect for full JSON.",
+    "Do not action=final until lint/typecheck would pass or user accepts the failure.",
+  );
+  return lines.join("\n");
 }
 
 export function changedPathsFromPatch(

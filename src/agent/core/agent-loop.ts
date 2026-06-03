@@ -10,6 +10,24 @@ import {
 } from "@/agent/core/agent-loop-tools";
 import { tryRecoverEditApproval } from "@/agent/core/edit-recovery";
 import {
+  buildFinalPrepareNudgeUserMessage,
+  isPrepareToolName,
+  shouldRunFinalPrepareNudge,
+} from "@/agent/core/final-prepare-nudge";
+import {
+  captureUiPrepareHintFromFileRead,
+  listUnreadDisambiguationPaths,
+  shouldSkipEditRecoveryForUiPrepare,
+} from "@/agent/core/ui-prepare-nudge";
+import { isUiLocationQuery } from "@/agent/core/prepare-gate";
+import { parseCompactedMemory } from "@/agent/memory/loop-context-compactor";
+import {
+  loadStoredPostExecuteVerification,
+  clearStoredPostExecuteVerification,
+  postExecuteFeedbackFromStored,
+} from "@/agent/verification/post-execute-verify";
+import { isPostExecuteFixContinuation } from "@/lib/agent-lint-reloop";
+import {
   buildRuntimeCheckpoint,
   createAgentLoopRunState,
   isExplicitReadOnlyRequest,
@@ -80,6 +98,8 @@ export type AgentLoopInput = {
   uiContext?: AgentUiContext;
   /** 用户手动附加的文件路径（与 @path 合并预读） */
   attachedPaths?: string[];
+  /** 为 true 时禁止 edit.recovery，强制模型走 prepare（与试用 --strict 对齐） */
+  strictPrepare?: boolean;
   onEvent?: (event: AgentEvent) => void;
 };
 
@@ -412,6 +432,9 @@ async function attemptEditRecovery(
     userRequest: runState.userRequest,
     filesRead: runState.filesRead,
     uiContext,
+    skipRecovery:
+      runState.strictPrepare === true ||
+      shouldSkipEditRecoveryForUiPrepare(runState, uiContext),
   });
 
   if (!recovery) return null;
@@ -436,6 +459,15 @@ function shouldInjectRuntimeReflection(state: AgentLoopRunState): boolean {
   if (isExplicitReadOnlyRequest(state.userRequest)) return false;
   if (state.lastToolError || state.lastPrepareError) return true;
   if (state.likelyEditRequest && !state.approvalPrepared && state.toolsCalled.length >= 2) {
+    return true;
+  }
+  if (state.prepareHint && !state.approvalPrepared) {
+    return true;
+  }
+  if (listUnreadDisambiguationPaths(state).length > 0) {
+    return true;
+  }
+  if (state.postExecuteFeedback && !state.approvalPrepared) {
     return true;
   }
   return false;
@@ -501,6 +533,22 @@ export async function runAgentLoop(
   });
   const plan = createAgentLoopPlan(effectiveUserRequest);
   const runState = createAgentLoopRunState(effectiveUserRequest);
+  if (input.strictPrepare) {
+    runState.strictPrepare = true;
+  }
+  const storedPostExecute = await loadStoredPostExecuteVerification(
+    workspace.rootPath,
+  );
+  let postExecuteFeedback = storedPostExecute
+    ? postExecuteFeedbackFromStored(storedPostExecute)
+    : null;
+  if (postExecuteFeedback && !isPostExecuteFixContinuation(effectiveUserRequest)) {
+    await clearStoredPostExecuteVerification(workspace.rootPath);
+    postExecuteFeedback = null;
+  }
+  if (postExecuteFeedback) {
+    runState.postExecuteFeedback = postExecuteFeedback;
+  }
   const events: AgentEvent[] = [];
   const emit = (event: AgentEvent) => {
     events.push(event);
@@ -521,9 +569,12 @@ export async function runAgentLoop(
 
   const openingReflection: AgentReflection = {
     understanding: effectiveUserRequest,
-    blockers: [],
-    plannedNext:
-      attachedPaths.length > 0
+    blockers: postExecuteFeedback
+      ? [postExecuteFeedback.summary]
+      : [],
+    plannedNext: postExecuteFeedback
+      ? "先读 checkpoint 中 post-execute 失败摘要，修复相关文件后再 file.replace.prepare。"
+      : attachedPaths.length > 0
         ? `已预读 ${attachedPaths.length} 个附加文件；继续核实其他假设后再决定是否准备变更审批。`
         : "先用工具在磁盘上核实假设，再决定是否准备代码变更审批。",
     source: "runtime",
@@ -541,6 +592,15 @@ export async function runAgentLoop(
     messages.push(
       buildThreadMemoryInjectionMessage(priorThreadMemory.memoryContent),
     );
+    const priorMemory = parseCompactedMemory(priorThreadMemory.memoryContent);
+    if (
+      priorMemory?.pinnedPrepareHint &&
+      runState.likelyEditRequest &&
+      !runState.approvalPrepared &&
+      isUiLocationQuery(effectiveUserRequest)
+    ) {
+      runState.prepareHint = priorMemory.pinnedPrepareHint;
+    }
   }
   const userMessageText = [
     effectiveUserRequest,
@@ -621,6 +681,10 @@ export async function runAgentLoop(
       enableSemanticCompact: isSemanticCompactEnabled(),
       compactRound: contextCompactRound + 1,
       filesReadPaths: runState.filesRead,
+      prepareHint:
+        runState.prepareHint && !runState.approvalPrepared
+          ? runState.prepareHint
+          : undefined,
     });
     if (compactResult.method !== "none") {
       contextCompactRound = compactResult.round;
@@ -802,9 +866,27 @@ export async function runAgentLoop(
       });
       recordToolCall(runState, tool.name, toolResult.result);
 
+      if (tool.name === "file.read" && toolResult.result && typeof toolResult.result === "object") {
+        const readResult = toolResult.result as { path?: unknown; content?: unknown };
+        if (
+          typeof readResult.path === "string" &&
+          typeof readResult.content === "string"
+        ) {
+          captureUiPrepareHintFromFileRead(
+            runState,
+            readResult.path,
+            readResult.content,
+            toolContext.uiContext,
+          );
+        }
+      }
+
       const approval = extractApprovalFromToolResult(toolResult.result);
       if (approval) {
         runState.approvalPrepared = true;
+        if (runState.postExecuteFeedback) {
+          delete runState.postExecuteFeedback;
+        }
         emit({
           type: "approval.required",
           taskId: task.id,
@@ -816,19 +898,34 @@ export async function runAgentLoop(
 
       if (shouldInjectRuntimeReflection(runState)) {
         runState.reflectionRounds += 1;
+        const pendingLintFix =
+          Boolean(runState.postExecuteFeedback) && !runState.approvalPrepared;
         const reflection: AgentReflection = {
           understanding: runState.approvalPrepared
-            ? "审批已就绪，等待用户在界面批准并执行。"
-            : "工具已运行，但改代码审批仍未就绪或上一步失败。",
+            ? "已生成代码变更审批，等待界面接受并写盘（写盘后会自动跑 lint/typecheck）。"
+            : pendingLintFix
+              ? "上一轮写盘后 lint/typecheck 未通过，需用 file.replace.prepare 提交修复审批，不要只反复 file.read。"
+              : "工具已运行，但改代码审批仍未就绪或上一步失败。",
           blockers: [
+            ...(runState.postExecuteFeedback
+              ? [runState.postExecuteFeedback.summary]
+              : []),
             ...(runState.lastPrepareError ? [runState.lastPrepareError] : []),
-            ...(runState.lastToolError && !runState.lastPrepareError
+            ...(runState.lastToolError &&
+            !runState.lastPrepareError &&
+            !runState.postExecuteFeedback
               ? [runState.lastToolError]
               : []),
           ],
           plannedNext: runState.approvalPrepared
-            ? "可以 action=final，提示用户去批准并执行。"
-            : "action=reflect，或 file.read + file.replace.prepare（精确子串）。",
+            ? "可以 action=final，并提示用户在审查区接受变更。"
+            : pendingLintFix
+              ? "对 checkpoint 中列出的出错文件：file.read 确认原文 → file.replace.prepare（search 必须为磁盘原文）。"
+              : listUnreadDisambiguationPaths(runState).length > 0
+                ? `先 file.read 未读候选：${listUnreadDisambiguationPaths(runState).join("、")}，再 prepare。`
+                : runState.prepareHint
+                  ? `立即对 ${runState.prepareHint.path} 调用 file.replace.prepare；search 必须使用 checkpoint 里 Candidate 的 JSON 字符串原文（含空格）。`
+                  : "action=reflect，或 file.read + file.replace.prepare（精确子串）。",
           source: "runtime",
         };
         emitReflection(emit, task.id, reflection);
@@ -861,6 +958,72 @@ export async function runAgentLoop(
     }
   }
 
+  if (
+    !modelUnavailable &&
+    !runState.approvalPrepared &&
+    shouldRunFinalPrepareNudge(runState, input.uiContext)
+  ) {
+    const nudgeMessage = buildFinalPrepareNudgeUserMessage(runState);
+    if (nudgeMessage) {
+      emitReflection(emit, task.id, {
+        understanding: "主循环已结束但未生成审批；启动末轮 prepare 助推（A087）。",
+        blockers: ["须在 Candidate 原文基础上调用 file.replace.prepare。"],
+        plannedNext: `仅允许对 ${runState.prepareHint?.path} 调用 file.replace.prepare。`,
+        source: "runtime",
+      });
+      messages.push({ role: "user", content: nudgeMessage });
+      try {
+        const loopModel =
+          input.model ??
+          (agentMessagesHaveImages(messages)
+            ? getApiConfig()?.visionModel
+            : undefined);
+        const output = await provider.generate({
+          messages,
+          model: loopModel,
+          temperature: 0,
+          maxTokens: 1200,
+          metadata: { taskId: task.id, finalPrepareNudge: true },
+        });
+        emit({ type: "model.delta", taskId: task.id, text: output.content });
+        messages.push({ role: "assistant", content: output.content });
+        const decision = parseDecision(output.content);
+        if (decision.action === "tool_call" && decision.tool) {
+          const tool = getAgentLoopTool(decision.tool);
+          if (tool && isPrepareToolName(tool.name)) {
+            const toolCall = createToolCall(
+              task.id,
+              tool.name,
+              decision.args ?? {},
+              decision.thought ?? "Final prepare nudge",
+            );
+            emit({ type: "tool.started", taskId: task.id, toolCall });
+            const toolResult = await tool.execute(decision.args ?? {}, toolContext);
+            if (toolResult.context) toolContext = toolResult.context;
+            emit({
+              type: "tool.completed",
+              taskId: task.id,
+              toolCall: completeToolCall(toolCall),
+              result: toolResult.result,
+            });
+            recordToolCall(runState, tool.name, toolResult.result);
+            const approval = extractApprovalFromToolResult(toolResult.result);
+            if (approval) {
+              runState.approvalPrepared = true;
+              emit({ type: "approval.required", taskId: task.id, approval });
+              summary =
+                "末轮 prepare 助推已生成审批。请在界面批准并执行。";
+            }
+            messages.push(observationMessage(tool.name, toolResult.result));
+          }
+        }
+      } catch {
+        // 末轮失败则交给 recovery / 总结
+      }
+      emitPlan({ lastAction: "tool" });
+    }
+  }
+
   const recoverySummary = await attemptEditRecovery(
     emit,
     task.id,
@@ -877,7 +1040,11 @@ export async function runAgentLoop(
     !isExplicitReadOnlyRequest(runState.userRequest) &&
     !runState.approvalPrepared
   ) {
-    summary = `${summary}\n未能为本次改代码需求生成审批。请查看事件流中的反思步骤，或补充更具体的目标文件/要改的确切文字后重试。`;
+    if (shouldSkipEditRecoveryForUiPrepare(runState, input.uiContext)) {
+      summary = `${summary}\n已读完推荐 UI 文件并有 exact 行候选，但尚未调用 file.replace.prepare。请重试，并使用 checkpoint 中的 Candidate 作为 search 参数（勿依赖 edit.recovery）。`;
+    } else {
+      summary = `${summary}\n未能为本次改代码需求生成审批。请查看事件流中的反思步骤，或补充更具体的目标文件/要改的确切文字后重试。`;
+    }
   } else if (modelUnavailable && !runState.approvalPrepared) {
     summary = `${summary}\n模型不可用且磁盘恢复未生成审批。请检查 API 配额或 .env.local 配置后重试。`;
   }

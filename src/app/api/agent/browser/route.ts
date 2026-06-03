@@ -4,12 +4,19 @@
  * Web 阶段只负责记录和返回要打开的 URL；真正 WebView/Chrome DevTools
  * 控制留给 Electron 或本地 agent-server。
  */
-import { getPersistedBrowserTarget, openBrowserUrl } from "@/agent/browser";
+import {
+  getPersistedBrowserPageSnapshot,
+  getPersistedBrowserTarget,
+  openBrowserUrl,
+} from "@/agent/browser";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return Response.json({ target: await getPersistedBrowserTarget() });
+  return Response.json({
+    target: await getPersistedBrowserTarget(),
+    snapshot: await getPersistedBrowserPageSnapshot(),
+  });
 }
 
 export async function POST(request: Request) {

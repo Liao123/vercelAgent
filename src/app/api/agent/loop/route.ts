@@ -5,6 +5,7 @@
  */
 import { runAgentLoop } from "@/agent/core";
 import { createAgentEventStream } from "@/agent/protocol/stream";
+import type { AgentUiContext } from "@/agent/types";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,7 @@ export async function POST(request: Request) {
     threadId?: string;
     uiContext?: { layout?: string; activeRoute?: string };
     attachedPaths?: string[];
+    strictPrepare?: boolean;
   };
   try {
     body = await request.json();
@@ -48,7 +50,7 @@ export async function POST(request: Request) {
       : undefined;
 
   const layout = body.uiContext?.layout;
-  const uiContext =
+  const uiContext: AgentUiContext | undefined =
     layout === "default" ||
     layout === "workspace" ||
     layout === "triple"
@@ -78,6 +80,7 @@ export async function POST(request: Request) {
     threadId,
     uiContext,
     attachedPaths,
+    strictPrepare: body.strictPrepare === true,
     onEvent: (event) => writer.emit(event),
   })
     .then(() => {

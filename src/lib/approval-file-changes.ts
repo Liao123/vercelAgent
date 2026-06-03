@@ -193,6 +193,37 @@ export function collectTurnFileChanges(
   return pending;
 }
 
+function isReviewableFileApproval(approval: {
+  status: string;
+  execution?: { status: "succeeded" | "failed" };
+}): boolean {
+  if (approval.status === "pending") return true;
+  if (approval.status === "approved") {
+    return approval.execution?.status !== "succeeded";
+  }
+  return false;
+}
+
+function listReviewableFileApprovals(
+  approvals: Array<{
+    id: string;
+    taskId: string;
+    status: string;
+    details?: ApprovalDetails;
+    execution?: { status: "succeeded" | "failed" };
+  }>,
+  currentTaskId?: string | null,
+): typeof approvals {
+  const withFiles = approvals.filter(
+    (a) =>
+      isReviewableFileApproval(a) &&
+      extractFileChangesFromDetails(a.details).length > 0,
+  );
+  if (!currentTaskId) return withFiles;
+  const forTask = withFiles.filter((a) => a.taskId === currentTaskId);
+  return forTask.length > 0 ? forTask : withFiles;
+}
+
 /** 从当前任务待审 approval 合并文件列表（右侧审查用）。 */
 export function collectReviewFileChanges(
   approvals: Array<{
@@ -200,33 +231,104 @@ export function collectReviewFileChanges(
     taskId: string;
     status: string;
     details?: ApprovalDetails;
+    execution?: { status: "succeeded" | "failed" };
   }>,
   currentTaskId?: string | null,
+  focusedApprovalId?: string | null,
 ): {
   approvalId: string | null;
   files: FileChangeEntry[];
   totalAdditions: number;
   totalDeletions: number;
+  source: "approval";
 } {
-  const candidates = approvals.filter((a) => {
-    if (a.status !== "pending") return false;
-    if (currentTaskId && a.taskId !== currentTaskId) return false;
-    return extractFileChangesFromDetails(a.details).length > 0;
-  });
+  const candidates = listReviewableFileApprovals(approvals, currentTaskId);
 
-  const latest = candidates[candidates.length - 1];
-  if (!latest) {
+  if (candidates.length === 0) {
     return {
       approvalId: null,
       files: [],
       totalAdditions: 0,
       totalDeletions: 0,
+      source: "approval",
     };
   }
 
-  const files = sortByChangeSize(extractFileChangesFromDetails(latest.details));
-  const totals = summarizeFileChanges(files);
-  return { approvalId: latest.id, ...totals, files };
+  if (focusedApprovalId) {
+    const focused = candidates.find((a) => a.id === focusedApprovalId);
+    if (focused) {
+      const files = sortByChangeSize(
+        extractFileChangesFromDetails(focused.details),
+      );
+      return {
+        approvalId: focused.id,
+        files,
+        ...summarizeFileChanges(files),
+        source: "approval",
+      };
+    }
+  }
+
+  const byKey = new Map<string, FileChangeEntry>();
+  for (const approval of candidates) {
+    for (const file of extractFileChangesFromDetails(approval.details)) {
+      byKey.set(file.fileKey, file);
+    }
+  }
+  const files = sortByChangeSize([...byKey.values()]);
+  const latest = candidates[candidates.length - 1];
+  return {
+    approvalId: latest.id,
+    files,
+    ...summarizeFileChanges(files),
+    source: "approval",
+  };
+}
+
+export type ReviewDisplay = {
+  approvalId: string | null;
+  files: FileChangeEntry[];
+  totalAdditions: number;
+  totalDeletions: number;
+  source: "approval" | "git";
+};
+
+/** 无 Agent 审批时，用 Git 工作区脏文件填充审查列表（只读对比）。 */
+export function collectReviewDisplay(
+  approvals: Parameters<typeof collectReviewFileChanges>[0],
+  currentTaskId?: string | null,
+  focusedApprovalId?: string | null,
+  gitFiles?: Array<{ path: string; status: string }>,
+): ReviewDisplay {
+  const fromApproval = collectReviewFileChanges(
+    approvals,
+    currentTaskId,
+    focusedApprovalId,
+  );
+  if (fromApproval.files.length > 0) return fromApproval;
+
+  if (!gitFiles?.length) {
+    return { ...fromApproval, source: "git" };
+  }
+
+  const files = sortByChangeSize(
+    gitFiles.map((file) => {
+      const path = file.path.replaceAll("\\", "/");
+      const isDelete = file.status === "deleted";
+      return {
+        path,
+        additions: isDelete ? 0 : 1,
+        deletions: isDelete ? 1 : 0,
+        fileKey: `git:${path}`,
+      };
+    }),
+  );
+  return {
+    approvalId: null,
+    files,
+    ...summarizeFileChanges(files),
+    source: "git",
+  };
 }
 
 export function fileBasename(path: string): string {

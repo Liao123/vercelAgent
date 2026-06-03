@@ -30,6 +30,7 @@ function toolLabel(name: string): string {
     "git.status": "Git 状态",
     "git.diff": "Git diff",
     "browser.open": "打开浏览器",
+    "browser.inspect": "读取浏览器快照",
     "file.mutation.prepare": "准备文件变更",
     "file.replace.prepare": "准备文本替换",
     "git.mutation.prepare": "准备 Git 操作",
@@ -522,7 +523,14 @@ type AgentEventTimelineProps = {
   showRestoreHint?: boolean;
   /** 点击带审批的活动行时，滚动定位到审查面板 */
   onFocusApproval?: (approvalId: string, filePath?: string) => void;
+  onApplyApproval?: (approvalId: string) => void;
   onRejectApproval?: (approvalId: string) => void;
+  applyApprovalBusy?: boolean;
+  /** 中栏变更卡是否显示接受/拒绝（三栏下 false，与 Cursor 一致：改在审查/自动写盘） */
+  showInlineFileChangeActions?: boolean;
+  onFixLintAfterWrite?: (
+    verification: import("@/agent/verification").PostExecuteVerification,
+  ) => void;
   /** 点击「上下文已压缩」时仅提示（详情在活动流 Worked 内） */
   onFocusCompactedMemory?: () => void;
 };
@@ -535,7 +543,11 @@ export function AgentEventTimeline({
   excludeEventTypes = [],
   showRestoreHint = false,
   onFocusApproval,
+  onApplyApproval,
   onRejectApproval,
+  applyApprovalBusy = false,
+  showInlineFileChangeActions = true,
+  onFixLintAfterWrite,
 }: AgentEventTimelineProps) {
   const compact = density === "compact";
   const excludeSet = useMemo(
@@ -635,7 +647,11 @@ export function AgentEventTimeline({
                   isLatest={turnIndex === turns.length - 1}
                   running={running}
                   onReviewApproval={onFocusApproval}
+                  onApplyApproval={onApplyApproval}
                   onRejectApproval={onRejectApproval}
+                  applyApprovalBusy={applyApprovalBusy}
+                  showInlineFileChangeActions={showInlineFileChangeActions}
+                  onFixLintAfterWrite={onFixLintAfterWrite}
                 />
               </div>
             ))}

@@ -102,11 +102,11 @@ Cursor/Codex 的高准确度主要来自 **IDE 态上下文 + 符号级索引 + 
 | prepare 前 | `filesRead` 含 composer |
 | search 串 | 来自磁盘 exact JSX，非中文描述 |
 | prepare 门禁 | 未 read 则 prepare 被拒绝 |
-| 在线 E2E | 默认 `trial:golden-path-ui` PASSED（定位 composer）；`--strict` 要求模型 prepare（当前常 FAIL） |
+| 在线 E2E | 默认与 `--strict` 均 `trial:golden-path-ui` PASSED（A083：prepare nudge + skip recovery） |
 
 脚本目标：`npm run validate:ui-locate`（A075）；离线全链路 `npm run validate:golden-path`（A081）；**在线 E2E** `npm run trial:golden-path-ui`（A082，需 dev + 模型）。
 
-**回家接续**：优先 A083——模型 read 后稳定 `file.replace.prepare`，少依赖 `edit.recovery`。
+**A083 已交付**：`ui-prepare-nudge.ts` + checkpoint/reflect；`validate:ui-prepare-nudge`；`--strict` 在线试用通过。
 
 ---
 
@@ -123,8 +123,18 @@ A079 执行后 lint 回灌        ← 已完成
 A080 @文件 + 压缩 pin        ← 已完成
 A081 黄金路径全链路 validate  ← 已完成
 A082 UI 在线试用 layout=triple  ← 已完成
-A083 模型稳定 prepare（候选）   ← 下一步
+A083 模型稳定 prepare            ← 已完成
+A084 压缩钉住 prepare 候选       ← 已完成
+A085 消歧 + thread prepareHint   ← 已完成
+A086 执行后 lint 回灌 Loop       ← 已完成
+A087 prepare 末轮助推            ← 已完成
+A088 Web 只读文件树              ← 已完成
+A089 strict 与 Loop 对齐         ← 已完成
+A091 命令底部授权条              ← 已完成
+A093 可选自动写盘（Cursor 式）   ← 已完成
 ```
+
+**产品体感与 Cursor/Codex 对齐排期**（左栏/审查 Tab/设置入口等）见 **[`docs/agent-cursor-codex-gap.md`](agent-cursor-codex-gap.md)**（A096+），与本节准确度项互补，不重复列 ID。
 
 ---
 

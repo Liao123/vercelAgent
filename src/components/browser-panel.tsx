@@ -6,6 +6,8 @@
 "use client";
 
 import { FormEvent, useEffect, useRef, useState } from "react";
+import { BrowserWebview } from "@/components/browser-webview";
+import { useDesktopApp } from "@/lib/use-desktop-app";
 
 type BrowserTargetView = {
   url: string;
@@ -29,6 +31,7 @@ export function BrowserPanel({ embedded = false }: { embedded?: boolean }) {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const lastSeenVersion = useRef<number | null>(null);
+  const desktopBrowser = useDesktopApp();
 
   useEffect(() => {
     let cancelled = false;
@@ -106,7 +109,9 @@ export function BrowserPanel({ embedded = false }: { embedded?: boolean }) {
             内置浏览器
           </h2>
           <p className="mt-1 text-xs text-zinc-500">
-            当前是 Web 预览壳；后续桌面端接 WebView 和 Chrome DevTools。
+            {desktopBrowser
+              ? "桌面 WebView 预览（可绕过 iframe 限制）"
+              : "Web iframe 预览；桌面版使用 WebView。"}
           </p>
         </div>
       )}
@@ -144,15 +149,28 @@ export function BrowserPanel({ embedded = false }: { embedded?: boolean }) {
         className={`min-h-0 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 ${embedded ? "flex-1" : "flex-1"}`}
       >
         {target ? (
-          <iframe
-            key={target.version}
-            src={target.url}
-            title="内置浏览器预览"
-            sandbox="allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
-            className={`h-full w-full bg-white ${embedded ? "min-h-[200px]" : "min-h-[420px]"}`}
-            onLoad={() => setFrameFailed(false)}
-            onError={() => setFrameFailed(true)}
-          />
+          desktopBrowser ? (
+            <BrowserWebview
+              url={target.url}
+              version={target.version}
+              embedded={embedded}
+              onSnapshot={() => {
+                setFrameFailed(false);
+                setMessage("已捕获页面快照（可供 browser.inspect）。");
+              }}
+              onFail={() => setFrameFailed(true)}
+            />
+          ) : (
+            <iframe
+              key={target.version}
+              src={target.url}
+              title="内置浏览器预览"
+              sandbox="allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
+              className={`h-full w-full bg-white ${embedded ? "min-h-[200px]" : "min-h-[420px]"}`}
+              onLoad={() => setFrameFailed(false)}
+              onError={() => setFrameFailed(true)}
+            />
+          )
         ) : (
           <div className="flex h-full min-h-[420px] items-center justify-center px-6 text-center text-sm text-zinc-500">
             输入 URL 后在这里预览页面。
@@ -175,7 +193,9 @@ export function BrowserPanel({ embedded = false }: { embedded?: boolean }) {
       )}
       {frameFailed && (
         <p className="text-xs text-amber-600 dark:text-amber-400">
-          页面可能拒绝被 iframe 嵌入，请用新标签打开。
+          {desktopBrowser
+            ? "WebView 加载失败，请检查 URL 或网络。"
+            : "页面可能拒绝被 iframe 嵌入；请用桌面版或新标签打开。"}
         </p>
       )}
     </section>

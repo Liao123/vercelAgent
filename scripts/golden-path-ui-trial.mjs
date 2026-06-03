@@ -23,7 +23,7 @@ const workspacePath = argv.find((a) => !a.startsWith("--")) ?? process.cwd();
 const COMPOSER = "src/components/agent-composer.tsx";
 const PANEL = "src/components/agent-panel.tsx";
 const USER_REQUEST =
-  "请把首页底栏左侧的 Loop/闭环 运行模式切换去掉。先用 ui.trace_from_page 或 file.locate 定位可见界面文件，再 file.read 确认 JSX 精确文字，最后用 file.replace.prepare 生成审批，不要直接写盘。完成后用中文总结目标文件路径。";
+  "请把 agent-composer 输入框 placeholder 改成「描述要做的改动（@ 附加文件，Enter 发送）」。先用 ui.trace_from_page 或 file.locate 定位 composer，再 file.read 确认当前 placeholder 精确文字，最后用 file.replace.prepare 生成审批，不要直接写盘。完成后用中文总结目标文件路径。";
 
 const UI_CONTEXT = { layout: "triple", activeRoute: "/" };
 
@@ -139,6 +139,7 @@ async function main() {
       userRequest: USER_REQUEST,
       maxIterations: 14,
       uiContext: UI_CONTEXT,
+      strictPrepare: strictPrepare,
     }),
   });
   if (!loopRes.ok || !loopRes.body) {
@@ -206,7 +207,7 @@ async function main() {
   );
   assertCheck(
     targetPath !== PANEL,
-    `triple layout should not prepare ${PANEL} for RunMode UI`,
+    `triple layout should not prepare ${PANEL} for composer placeholder UI`,
   );
 
   const evidence = approval.details?.evidence;

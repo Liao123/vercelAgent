@@ -5,13 +5,18 @@ import { AgentMarkdown } from "@/components/agent-markdown";
 import { TurnReasoningTimeline } from "@/components/agent-turn-reasoning-timeline";
 import { TurnHighlightLine } from "@/components/agent-turn-worked-line";
 import type { AgentTurnFeed } from "@/lib/agent-turn-feed";
+import type { PostExecuteVerification } from "@/agent/verification";
 
 type AgentTurnBlockProps = {
   turn: AgentTurnFeed;
   isLatest: boolean;
   running: boolean;
   onReviewApproval?: (approvalId: string, filePath?: string) => void;
+  onApplyApproval?: (approvalId: string) => void;
   onRejectApproval?: (approvalId: string) => void;
+  applyApprovalBusy?: boolean;
+  showInlineFileChangeActions?: boolean;
+  onFixLintAfterWrite?: (verification: PostExecuteVerification) => void;
 };
 
 function UserBubble({ text }: { text: string }) {
@@ -65,7 +70,11 @@ export function AgentTurnBlock({
   isLatest,
   running,
   onReviewApproval,
+  onApplyApproval,
   onRejectApproval,
+  applyApprovalBusy = false,
+  showInlineFileChangeActions = true,
+  onFixLintAfterWrite,
 }: AgentTurnBlockProps) {
   const isActive = isLatest && running && turn.status === "running";
   const turnCompleted = turn.status === "completed" || turn.status === "failed";
@@ -133,7 +142,16 @@ export function AgentTurnBlock({
           <AgentTurnChangeCard
             summary={turn.fileChanges}
             onReview={onReviewApproval}
+            onApply={onApplyApproval}
             onReject={onRejectApproval}
+            applyBusy={applyApprovalBusy}
+            showInlineActions={showInlineFileChangeActions}
+            postExecuteVerification={turn.postExecuteVerification}
+            onFixLint={
+              turn.postExecuteVerification && onFixLintAfterWrite
+                ? () => onFixLintAfterWrite(turn.postExecuteVerification!)
+                : undefined
+            }
           />
         )}
       </div>

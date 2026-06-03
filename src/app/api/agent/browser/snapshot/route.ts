@@ -1,0 +1,42 @@
+/**
+ * 浏览器预览快照上报（桌面 WebView dom-ready 时由客户端 POST）。
+ */
+import { saveBrowserPageSnapshot } from "@/agent/browser/browser-snapshot";
+
+export const dynamic = "force-dynamic";
+
+export async function POST(request: Request) {
+  let body: {
+    url?: string;
+    title?: string | null;
+    textPreview?: string | null;
+    source?: "webview" | "iframe";
+  };
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ error: "Invalid request body." }, { status: 400 });
+  }
+
+  if (!body.url?.trim()) {
+    return Response.json({ error: "url is required." }, { status: 400 });
+  }
+
+  try {
+    const snapshot = await saveBrowserPageSnapshot({
+      url: body.url.trim(),
+      title: body.title ?? null,
+      textPreview: body.textPreview ?? null,
+      source: body.source === "iframe" ? "iframe" : "webview",
+    });
+    return Response.json({ snapshot });
+  } catch (error) {
+    return Response.json(
+      {
+        error:
+          error instanceof Error ? error.message : "Failed to save snapshot.",
+      },
+      { status: 400 },
+    );
+  }
+}

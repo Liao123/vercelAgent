@@ -59,7 +59,9 @@ function parseFileReadObservation(text: string): { path: string; content: string
           content = previewObj.content;
         }
       } catch {
-        const contentMatch = /"content":\s*"((?:[^"\\]|\\.)*)/s.exec(preview);
+        const contentMatch = /"content":\s*"((?:[^"\\]|\\.)*)"/.exec(
+          preview,
+        );
         if (contentMatch) {
           try {
             content = JSON.parse(`"${contentMatch[1]}"`) as string;

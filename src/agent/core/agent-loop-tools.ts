@@ -7,6 +7,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
+  getPersistedBrowserPageSnapshot,
+  getPersistedBrowserTarget,
+  openBrowserUrl,
+} from "@/agent/browser";
+import {
   buildProjectIndex,
   locateFilesForRequest,
   traceUiEntryForQuery,
@@ -55,6 +60,7 @@ export type AgentLoopToolName =
   | "git.status"
   | "git.diff"
   | "browser.open"
+  | "browser.inspect"
   | "file.replace.prepare"
   | "file.mutation.prepare"
   | "git.mutation.prepare"
@@ -412,7 +418,7 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
                 recommendedPath: disambiguationResult.recommendedPath,
                 selectionRationale: disambiguationResult.selectionRationale,
                 summary: disambiguationResult.summary,
-                groups: disambiguationResult.groups.map((group) => ({
+                groups: (disambiguationResult.groups ?? []).map((group) => ({
                   label: group.label,
                   recommendedPath: group.recommendedPath,
                   mustReadPaths: group.mustReadPaths,
@@ -489,11 +495,11 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
             ? {
                 hasAmbiguity: true,
                 primaryLabel: disambiguationResult.primaryLabel,
-                mustReadPaths: disambiguationResult.mustReadPaths,
+                mustReadPaths: disambiguationResult.mustReadPaths ?? [],
                 recommendedPath: disambiguationResult.recommendedPath,
                 selectionRationale: disambiguationResult.selectionRationale,
                 summary: disambiguationResult.summary,
-                groups: disambiguationResult.groups,
+                groups: disambiguationResult.groups ?? [],
                 ...disambiguationForRunState(disambiguationResult),
               }
             : {
@@ -667,6 +673,27 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
       const url = stringArg(args, "url");
       return {
         result: await openBrowserUrl({ url, requestedBy: "agent" }),
+      };
+    },
+  },
+  {
+    name: "browser.inspect",
+    description:
+      "Read the latest in-app browser preview snapshot (title, text excerpt, url). Call browser.open first, then inspect after the page loads.",
+    args: {},
+    async execute() {
+      const [target, snapshot] = await Promise.all([
+        getPersistedBrowserTarget(),
+        getPersistedBrowserPageSnapshot(),
+      ]);
+      return {
+        result: {
+          target,
+          snapshot,
+          hint: snapshot
+            ? "Snapshot from embedded webview/iframe preview."
+            : "No snapshot yet. Use browser.open and wait for preview to load.",
+        },
       };
     },
   },

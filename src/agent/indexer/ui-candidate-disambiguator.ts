@@ -293,7 +293,7 @@ export function disambiguationForRunState(
 
   return {
     label: result.primaryLabel,
-    mustReadPaths: result.mustReadPaths,
+    mustReadPaths: result.mustReadPaths ?? [],
     recommendedPath: result.recommendedPath,
     selectionRationale: result.selectionRationale ?? result.summary,
   };

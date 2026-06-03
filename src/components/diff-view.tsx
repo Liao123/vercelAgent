@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ApprovalContentSnapshot } from "@/agent/types";
 import {
   capDiffRows,
@@ -21,11 +21,16 @@ type DiffViewProps = {
   changesOnly?: boolean;
   maxRows?: number;
   className?: string;
-  /** split：左右对照（默认，更接近 Codex/Cursor） */
+  /** 默认布局（非受控时） */
+  defaultLayout?: DiffLayout;
+  /** 受控布局（审查区工具栏切换时传入） */
   layout?: DiffLayout;
+  onLayoutChange?: (layout: DiffLayout) => void;
   showLayoutToggle?: boolean;
   /** split 模式是否显示行号 */
   showLineNumbers?: boolean;
+  /** 填满父级 flex 列，用于右侧审查主区域 */
+  fillHeight?: boolean;
 };
 
 function rowClass(kind: DiffRow["kind"]): string {
@@ -115,11 +120,30 @@ export function DiffView({
   changesOnly = true,
   maxRows = 120,
   className = "",
-  layout: initialLayout = "split",
+  defaultLayout = "split",
+  layout: controlledLayout,
+  onLayoutChange,
   showLayoutToggle = true,
   showLineNumbers = true,
+  fillHeight = false,
 }: DiffViewProps) {
-  const [layout, setLayout] = useState<DiffLayout>(initialLayout);
+  const [internalLayout, setInternalLayout] = useState<DiffLayout>(
+    controlledLayout ?? defaultLayout,
+  );
+  const activeLayout = controlledLayout ?? internalLayout;
+
+  useEffect(() => {
+    if (controlledLayout != null) setInternalLayout(controlledLayout);
+  }, [controlledLayout]);
+
+  function selectLayout(next: DiffLayout) {
+    if (controlledLayout == null) setInternalLayout(next);
+    onLayoutChange?.(next);
+  }
+
+  const scrollBodyClass = fillHeight
+    ? "min-h-0 flex-1 overflow-auto bg-zinc-950"
+    : "max-h-64 overflow-auto bg-zinc-950";
 
   const { rows, splitRows, truncated, meta, hasBothSides, lineOffsets } =
     useMemo(() => {
@@ -188,15 +212,19 @@ export function DiffView({
     </p>
   );
 
+  const rootClass = fillHeight
+    ? `flex min-h-0 flex-col ${className}`
+    : `space-y-1 ${className}`;
+
   return (
-    <div className={`space-y-1 ${className}`}>
+    <div className={rootClass}>
       {showLayoutToggle && (
-        <div className="flex justify-end gap-1">
+        <div className="flex shrink-0 justify-end gap-1">
           <button
             type="button"
-            onClick={() => setLayout("split")}
+            onClick={() => selectLayout("split")}
             className={`rounded px-2 py-0.5 text-[10px] ${
-              layout === "split"
+              activeLayout === "split"
                 ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950"
                 : "text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-800"
             }`}
@@ -205,9 +233,9 @@ export function DiffView({
           </button>
           <button
             type="button"
-            onClick={() => setLayout("unified")}
+            onClick={() => selectLayout("unified")}
             className={`rounded px-2 py-0.5 text-[10px] ${
-              layout === "unified"
+              activeLayout === "unified"
                 ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950"
                 : "text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-800"
             }`}
@@ -217,8 +245,12 @@ export function DiffView({
         </div>
       )}
 
-      {layout === "split" ? (
-        <div className="overflow-hidden rounded-md border border-zinc-200 dark:border-zinc-700">
+      {activeLayout === "split" ? (
+        <div
+          className={`overflow-hidden rounded-md border border-zinc-200 dark:border-zinc-700 ${
+            fillHeight ? "flex min-h-0 flex-1 flex-col" : ""
+          }`}
+        >
           <div
             className={`grid border-b border-zinc-200 bg-zinc-100 text-[10px] font-medium uppercase tracking-wide text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 ${
               showLineNumbers ? "grid-cols-2" : "grid-cols-2"
@@ -229,7 +261,7 @@ export function DiffView({
             </span>
             <span className="px-2 py-1">变更后</span>
           </div>
-          <div className="max-h-64 overflow-auto bg-zinc-950">
+          <div className={scrollBodyClass}>
             {splitRows.map((row, index) => (
               <div key={`split-${index}`} className="grid grid-cols-2">
                 <SplitCell
@@ -248,8 +280,14 @@ export function DiffView({
           {footer}
         </div>
       ) : (
-        <div className="overflow-hidden rounded-md border border-zinc-200 dark:border-zinc-700">
-          <div className="max-h-64 overflow-auto bg-zinc-950 font-mono text-[11px] leading-relaxed">
+        <div
+          className={`overflow-hidden rounded-md border border-zinc-200 dark:border-zinc-700 ${
+            fillHeight ? "flex min-h-0 flex-1 flex-col" : ""
+          }`}
+        >
+          <div
+            className={`${scrollBodyClass} font-mono text-[11px] leading-relaxed`}
+          >
             {rows.map((row, index) => (
               <div
                 key={`${row.kind}-${index}`}

@@ -5,11 +5,24 @@ import {
   useCallback,
   useEffect,
   useRef,
+  useState,
   type KeyboardEvent,
 } from "react";
-import { AgentRunModeHint } from "@/components/agent-run-mode-hint";
-
-type RunMode = "develop" | "loop";
+import { AgentAgentSettings } from "@/components/agent-agent-settings";
+import {
+  AgentWorkspacePicker,
+  type WorkspacePickerProject,
+} from "@/components/agent-workspace-picker";
+import { ComposerMentionHighlight } from "@/components/composer-mention-highlight";
+import {
+  insertAtMention,
+  mergePathSuggestions,
+  parseActiveAtQuery,
+  removeTextRange,
+  requestContainsAtPath,
+  resolveMentionDeleteRange,
+  resolveMentionArrowCursor,
+} from "@/lib/composer-at-mention";
 
 type AgentComposerProps = {
   request: string;
@@ -17,22 +30,28 @@ type AgentComposerProps = {
   onSubmit: (event: FormEvent) => void;
   running: boolean;
   canRun: boolean;
-  runMode: RunMode;
-  onRunModeChange: (mode: RunMode) => void;
   continueThreadMemory: boolean;
   onContinueThreadMemoryChange: (value: boolean) => void;
   currentThreadId: string | null;
-  onNewSession: () => void;
+  workspacePicker?: {
+    currentName: string | null;
+    projects: WorkspacePickerProject[];
+    busy?: boolean;
+    onSelect: (workspaceId: string) => void;
+    onOpenFolder?: () => void | Promise<void>;
+  };
   referenceImages: string[];
   onPickImages: () => void;
   onRemoveImage: (index: number) => void;
   maxReferenceImages: number;
   attachedFiles: string[];
-  onAddAttachedFile: () => void;
   onRemoveAttachedFile: (index: number) => void;
   maxAttachedFiles: number;
   approvalStatus: string | null;
-  developImageWarning?: boolean;
+  workspaceAtEnabled?: boolean;
+  recentAttachedPaths?: string[];
+  onPickAttachedPath?: (path: string) => void;
+  onAgentPrefsChange?: () => void;
 };
 
 function SendIcon() {
@@ -49,24 +68,34 @@ export function AgentComposer({
   onSubmit,
   running,
   canRun,
-  runMode,
-  onRunModeChange,
   continueThreadMemory,
   onContinueThreadMemoryChange,
   currentThreadId,
-  onNewSession,
+  workspacePicker,
   referenceImages,
   onPickImages,
   onRemoveImage,
   maxReferenceImages,
   attachedFiles,
-  onAddAttachedFile,
   onRemoveAttachedFile,
   maxAttachedFiles,
   approvalStatus,
-  developImageWarning = false,
+  workspaceAtEnabled = false,
+  recentAttachedPaths = [],
+  onPickAttachedPath,
+  onAgentPrefsChange,
 }: AgentComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const highlightRef = useRef<HTMLDivElement>(null);
+  const suggestAbortRef = useRef<AbortController | null>(null);
+  const [atMention, setAtMention] = useState<{
+    start: number;
+    query: string;
+  } | null>(null);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [activeSuggestIndex, setActiveSuggestIndex] = useState(0);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [atHint, setAtHint] = useState<string | null>(null);
 
   const resize = useCallback(() => {
     const node = textareaRef.current;
@@ -75,11 +104,242 @@ export function AgentComposer({
     node.style.height = `${Math.min(node.scrollHeight, 200)}px`;
   }, []);
 
+  const syncHighlightScroll = useCallback(() => {
+    const node = textareaRef.current;
+    const layer = highlightRef.current;
+    if (!node || !layer) return;
+    layer.scrollTop = node.scrollTop;
+    layer.scrollLeft = node.scrollLeft;
+  }, []);
+
   useEffect(() => {
     resize();
-  }, [request, resize]);
+    syncHighlightScroll();
+  }, [request, resize, syncHighlightScroll]);
+
+  const fetchPathSuggestions = useCallback(
+    async (
+      active: { start: number; query: string },
+      signal: AbortSignal,
+    ): Promise<string[]> => {
+      const params = new URLSearchParams();
+      if (active.query.trim()) params.set("q", active.query.trim());
+      const res = await fetch(`/api/agent/workspace/files?${params}`, {
+        signal,
+      });
+      const data = await res.json();
+      const searched = res.ok && Array.isArray(data.paths) ? data.paths : [];
+      return mergePathSuggestions(active.query, recentAttachedPaths, searched);
+    },
+    [recentAttachedPaths],
+  );
+
+  const refreshAtSuggestions = useCallback(
+    (text: string, cursor: number) => {
+      const active = parseActiveAtQuery(text, cursor);
+      if (!active) {
+        setAtMention(null);
+        setSuggestions([]);
+        setAtHint(null);
+        setLoadingSuggestions(false);
+        return;
+      }
+
+      if (!workspaceAtEnabled || running) {
+        setAtMention(active);
+        setSuggestions([]);
+        setAtHint(
+          !workspaceAtEnabled
+            ? "请先在输入框左下角选择工作区"
+            : null,
+        );
+        setLoadingSuggestions(false);
+        return;
+      }
+
+      setAtHint(null);
+      setAtMention(active);
+      setActiveSuggestIndex(0);
+
+      const recent = mergePathSuggestions(
+        active.query,
+        recentAttachedPaths,
+        [],
+      );
+      setSuggestions(recent);
+
+      suggestAbortRef.current?.abort();
+      const controller = new AbortController();
+      suggestAbortRef.current = controller;
+      setLoadingSuggestions(true);
+
+      void (async () => {
+        try {
+          const merged = await fetchPathSuggestions(active, controller.signal);
+          if (controller.signal.aborted) return;
+          setSuggestions(merged);
+        } catch {
+          if (!controller.signal.aborted) {
+            setSuggestions(recent);
+          }
+        } finally {
+          if (!controller.signal.aborted) {
+            setLoadingSuggestions(false);
+          }
+        }
+      })();
+    },
+    [fetchPathSuggestions, recentAttachedPaths, running, workspaceAtEnabled],
+  );
+
+  const syncAtFromTextarea = useCallback(() => {
+    const node = textareaRef.current;
+    if (!node) return;
+    refreshAtSuggestions(node.value, node.selectionStart ?? node.value.length);
+  }, [refreshAtSuggestions]);
+
+  function pickSuggestion(filePath: string) {
+    const node = textareaRef.current;
+    if (!node || !atMention) return;
+    const { nextText, nextCursor } = insertAtMention(
+      request,
+      atMention.start,
+      node.selectionStart ?? request.length,
+      filePath,
+    );
+    onRequestChange(nextText);
+    setAtMention(null);
+    setSuggestions([]);
+    setAtHint(null);
+    suggestAbortRef.current?.abort();
+    setLoadingSuggestions(false);
+    queueMicrotask(() => {
+      node.focus();
+      node.setSelectionRange(nextCursor, nextCursor);
+      refreshAtSuggestions(nextText, nextCursor);
+    });
+  }
+
+  const openAtFilePicker = useCallback(() => {
+    if (running || attachedFiles.length >= maxAttachedFiles) {
+      return;
+    }
+    const node = textareaRef.current;
+    if (!node) return;
+    const start = node.selectionStart ?? request.length;
+    const end = node.selectionEnd ?? start;
+    const next = `${request.slice(0, start)}@${request.slice(end)}`;
+    const cursor = start + 1;
+    onRequestChange(next);
+    requestAnimationFrame(() => {
+      node.focus();
+      node.setSelectionRange(cursor, cursor);
+      refreshAtSuggestions(next, cursor);
+    });
+  }, [
+    attachedFiles.length,
+    maxAttachedFiles,
+    onRequestChange,
+    refreshAtSuggestions,
+    request,
+    running,
+  ]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    const node = event.currentTarget;
+    const selStart = node.selectionStart ?? 0;
+    const selEnd = node.selectionEnd ?? selStart;
+
+    if (event.key === "Backspace" || event.key === "Delete") {
+      const delRange = resolveMentionDeleteRange(
+        request,
+        selStart,
+        selEnd,
+        event.key,
+      );
+      if (delRange) {
+        event.preventDefault();
+        const { nextText, nextCursor } = removeTextRange(
+          request,
+          delRange.start,
+          delRange.end,
+        );
+        onRequestChange(nextText);
+        setAtMention(null);
+        setSuggestions([]);
+        setAtHint(null);
+        requestAnimationFrame(() => {
+          node.focus();
+          node.setSelectionRange(nextCursor, nextCursor);
+          refreshAtSuggestions(nextText, nextCursor);
+        });
+        return;
+      }
+    }
+
+    if (
+      selStart === selEnd &&
+      !event.shiftKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      (event.key === "ArrowLeft" || event.key === "ArrowRight")
+    ) {
+      const nextCursor = resolveMentionArrowCursor(
+        request,
+        selStart,
+        event.key === "ArrowLeft" ? "left" : "right",
+      );
+      if (nextCursor !== null) {
+        event.preventDefault();
+        requestAnimationFrame(() => {
+          node.focus();
+          node.setSelectionRange(nextCursor, nextCursor);
+          refreshAtSuggestions(request, nextCursor);
+        });
+        return;
+      }
+    }
+
+    if (atMention) {
+      if (suggestions.length > 0) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          setActiveSuggestIndex((index) =>
+            index + 1 >= suggestions.length ? 0 : index + 1,
+          );
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          setActiveSuggestIndex((index) =>
+            index <= 0 ? suggestions.length - 1 : index - 1,
+          );
+          return;
+        }
+        if (event.key === "Tab") {
+          event.preventDefault();
+          const path = suggestions[activeSuggestIndex];
+          if (path) pickSuggestion(path);
+          return;
+        }
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          const path = suggestions[activeSuggestIndex];
+          if (path) pickSuggestion(path);
+          return;
+        }
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setAtMention(null);
+        setSuggestions([]);
+        setAtHint(null);
+        setLoadingSuggestions(false);
+        return;
+      }
+    }
+
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       if (canRun) {
@@ -88,27 +348,35 @@ export function AgentComposer({
     }
   };
 
+  const orphanAttachedFiles = attachedFiles.filter(
+    (filePath) => !requestContainsAtPath(request, filePath),
+  );
+
   return (
     <footer className="shrink-0 border-t border-zinc-200/80 bg-white/90 backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-950/90">
       <div className="mx-auto w-full max-w-3xl px-4 py-3 sm:px-6">
-        {attachedFiles.length > 0 && (
+        {orphanAttachedFiles.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-1.5">
-            {attachedFiles.map((filePath, index) => (
+            {orphanAttachedFiles.map((filePath) => {
+              const index = attachedFiles.indexOf(filePath);
+              return (
               <span
                 key={`${index}-${filePath}`}
-                className="inline-flex max-w-full items-center gap-1 rounded-lg border border-sky-200 bg-sky-50 px-2 py-0.5 font-mono text-[11px] text-sky-800 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-200"
+                className="inline-flex max-w-full items-center gap-1 rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-0.5 font-mono text-[11px] text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400"
+                title={filePath}
               >
-                <span className="truncate">@{filePath}</span>
+                <span className="truncate">{filePath}</span>
                 <button
                   type="button"
                   onClick={() => onRemoveAttachedFile(index)}
-                  className="shrink-0 text-sky-600 hover:text-sky-900 dark:text-sky-300"
+                  className="shrink-0 hover:text-zinc-900 dark:hover:text-zinc-200"
                   aria-label={`移除 ${filePath}`}
                 >
                   ×
                 </button>
               </span>
-            ))}
+              );
+            })}
           </div>
         )}
 
@@ -135,19 +403,97 @@ export function AgentComposer({
         )}
 
         <form onSubmit={onSubmit}>
-          <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm transition focus-within:border-zinc-300 focus-within:ring-2 focus-within:ring-zinc-200/80 dark:border-zinc-700 dark:bg-zinc-900 dark:focus-within:border-zinc-600 dark:focus-within:ring-zinc-800">
-            <textarea
-              ref={textareaRef}
-              value={request}
-              onChange={(e) => onRequestChange(e.target.value)}
-              onKeyDown={onKeyDown}
-              placeholder="接下来做什么…（可用 @src/... 附加文件）"
-              disabled={running}
-              rows={1}
-              className="block max-h-[200px] min-h-[44px] w-full resize-none bg-transparent px-4 py-3 text-[14px] leading-relaxed text-zinc-900 outline-none placeholder:text-zinc-400 disabled:opacity-60 dark:text-zinc-100 dark:placeholder:text-zinc-500"
-            />
+          <div className="relative">
+            {atMention && (
+              <ul
+                className="absolute bottom-full left-0 right-0 z-50 mb-2 max-h-52 overflow-auto rounded-xl border border-zinc-200 bg-white py-1 shadow-xl dark:border-zinc-600 dark:bg-zinc-900"
+                role="listbox"
+              >
+                {atHint && (
+                  <li className="px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
+                    {atHint}
+                  </li>
+                )}
+                {loadingSuggestions && suggestions.length === 0 && !atHint && (
+                  <li className="px-3 py-2 text-[11px] text-zinc-500">加载文件列表…</li>
+                )}
+                {!loadingSuggestions &&
+                  suggestions.length === 0 &&
+                  !atHint && (
+                  <li className="px-3 py-2 text-[11px] text-zinc-500">
+                    继续输入路径筛选
+                  </li>
+                )}
+                {suggestions.map((path, index) => (
+                  <li key={path}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={index === activeSuggestIndex}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        pickSuggestion(path);
+                      }}
+                      className={`flex w-full px-3 py-1.5 text-left font-mono text-[11px] ${
+                        index === activeSuggestIndex
+                          ? "bg-sky-50 text-sky-900 dark:bg-sky-950/50 dark:text-sky-100"
+                          : "text-zinc-700 hover:bg-zinc-50 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                      }`}
+                    >
+                      {path}
+                    </button>
+                  </li>
+                ))}
+                {loadingSuggestions && suggestions.length > 0 && (
+                  <li className="px-3 py-1 text-[10px] text-zinc-400">更新中…</li>
+                )}
+              </ul>
+            )}
+            <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm transition focus-within:border-zinc-300 focus-within:ring-2 focus-within:ring-zinc-200/80 dark:border-zinc-700 dark:bg-zinc-900 dark:focus-within:border-zinc-600 dark:focus-within:ring-zinc-800">
+            <div className="relative max-h-[200px] min-h-[44px] overflow-hidden">
+              {request.trim().length > 0 && (
+                <div
+                  ref={highlightRef}
+                  className="absolute inset-0 z-0 max-h-[200px] overflow-auto"
+                >
+                  <ComposerMentionHighlight text={request} />
+                </div>
+              )}
+              <textarea
+                ref={textareaRef}
+                value={request}
+                onChange={(e) => {
+                  onRequestChange(e.target.value);
+                  refreshAtSuggestions(
+                    e.target.value,
+                    e.target.selectionStart ?? e.target.value.length,
+                  );
+                }}
+                onClick={syncAtFromTextarea}
+                onKeyUp={syncAtFromTextarea}
+                onKeyDown={onKeyDown}
+                onScroll={syncHighlightScroll}
+                placeholder="描述要做的改动…（@ 附加文件，Enter 发送）"
+                disabled={running}
+                rows={1}
+                className={`relative z-10 block max-h-[200px] min-h-[44px] w-full resize-none bg-transparent px-4 py-3 text-[14px] leading-relaxed outline-none caret-zinc-900 selection:bg-sky-200/40 disabled:opacity-60 dark:caret-zinc-100 dark:selection:bg-sky-900/40 ${
+                  request.trim().length > 0
+                    ? "text-transparent placeholder:text-transparent"
+                    : "text-zinc-900 placeholder:text-zinc-400 dark:text-zinc-100 dark:placeholder:text-zinc-500"
+                }`}
+              />
+            </div>
             <div className="flex items-center justify-between gap-2 border-t border-zinc-100 px-2 py-1.5 dark:border-zinc-800">
-              <div className="flex flex-wrap items-center gap-1">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+                {workspacePicker && (
+                  <AgentWorkspacePicker
+                    currentName={workspacePicker.currentName}
+                    projects={workspacePicker.projects}
+                    busy={workspacePicker.busy}
+                    onSelect={workspacePicker.onSelect}
+                    onOpenFolder={workspacePicker.onOpenFolder}
+                  />
+                )}
                 <button
                   type="button"
                   disabled={running || referenceImages.length >= maxReferenceImages}
@@ -157,64 +503,24 @@ export function AgentComposer({
                 >
                   ＋
                 </button>
-                {runMode === "loop" && (
-                  <button
-                    type="button"
-                    disabled={running || attachedFiles.length >= maxAttachedFiles}
-                    onClick={onAddAttachedFile}
-                    className="rounded-lg px-2 py-1 text-[12px] font-medium text-sky-600 transition hover:bg-sky-50 hover:text-sky-800 disabled:opacity-40 dark:text-sky-400 dark:hover:bg-sky-950/40"
-                    title="附加文件路径"
-                  >
-                    @
-                  </button>
-                )}
-                {runMode === "loop" && (
-                  <label className="flex cursor-pointer items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">
-                    <input
-                      type="checkbox"
-                      checked={continueThreadMemory}
-                      onChange={(e) => onContinueThreadMemoryChange(e.target.checked)}
-                      disabled={running}
-                      className="rounded border-zinc-300"
-                    />
-                    延续记忆
-                  </label>
-                )}
-                <div className="flex rounded-lg border border-zinc-200 p-0.5 text-[11px] dark:border-zinc-700">
-                  <button
-                    type="button"
-                    onClick={() => onRunModeChange("loop")}
-                    disabled={running}
-                    className={`rounded-md px-2 py-0.5 ${
-                      runMode === "loop"
-                        ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950"
-                        : "text-zinc-500"
-                    }`}
-                  >
-                    Loop
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onRunModeChange("develop")}
-                    disabled={running}
-                    className={`rounded-md px-2 py-0.5 ${
-                      runMode === "develop"
-                        ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950"
-                        : "text-zinc-500"
-                    }`}
-                  >
-                    闭环
-                  </button>
-                </div>
-                {!running && (
-                  <button
-                    type="button"
-                    onClick={onNewSession}
-                    className="rounded-lg px-2 py-1 text-[11px] text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                  >
-                    新会话
-                  </button>
-                )}
+                <button
+                  type="button"
+                  disabled={
+                    running || attachedFiles.length >= maxAttachedFiles
+                  }
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    openAtFilePicker();
+                  }}
+                  className="rounded-lg px-2 py-1 text-[12px] font-medium text-sky-600 transition hover:bg-sky-50 hover:text-sky-800 disabled:opacity-40 dark:text-sky-400 dark:hover:bg-sky-950/40"
+                  title="附加文件 @（↑↓ 选择，Enter/Tab 确认）"
+                >
+                  @
+                </button>
+                <AgentAgentSettings
+                  disabled={running}
+                  onPrefsChange={onAgentPrefsChange}
+                />
               </div>
               <button
                 type="submit"
@@ -229,19 +535,11 @@ export function AgentComposer({
                 )}
               </button>
             </div>
+            </div>
           </div>
         </form>
 
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-500">
-          {runMode === "develop" && <AgentRunModeHint mode={runMode} />}
-          {currentThreadId && continueThreadMemory && runMode === "loop" && (
-            <span className="font-mono">thread:{currentThreadId.slice(0, 10)}…</span>
-          )}
-          {developImageWarning && (
-            <span className="text-amber-600 dark:text-amber-400">
-              闭环暂不支持附图
-            </span>
-          )}
           {approvalStatus && (
             <span className="text-emerald-600 dark:text-emerald-400">{approvalStatus}</span>
           )}

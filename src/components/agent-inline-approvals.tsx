@@ -173,7 +173,7 @@ function CompactApprovalCard({
             onClick={() => onApproveAndExecute(approval)}
             className="rounded-md bg-blue-600 px-2 py-1 text-[10px] font-medium text-white disabled:opacity-50"
           >
-            批准并执行
+            接受
           </button>
         )}
         {!approval.details && (

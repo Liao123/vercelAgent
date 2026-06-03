@@ -12,11 +12,13 @@ export type PostExecuteVerificationViewModel = {
 type PostExecuteVerificationViewProps = {
   verification: PostExecuteVerificationViewModel;
   compact?: boolean;
+  onFixLint?: () => void;
 };
 
 export function PostExecuteVerificationView({
   verification,
   compact = false,
+  onFixLint,
 }: PostExecuteVerificationViewProps) {
   if (!verification.triggered) return null;
 
@@ -43,6 +45,15 @@ export function PostExecuteVerificationView({
               {item.output || item.command}
             </pre>
           ))}
+      {!verification.success && onFixLint && (
+        <button
+          type="button"
+          onClick={onFixLint}
+          className="mt-2 w-full rounded-md border border-red-300 bg-white px-2 py-1.5 text-[11px] font-medium text-red-800 hover:bg-red-50 dark:border-red-800 dark:bg-red-950 dark:text-red-100 dark:hover:bg-red-900"
+        >
+          根据验证结果再修一轮
+        </button>
+      )}
     </div>
   );
 }

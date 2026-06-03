@@ -54,7 +54,7 @@ export function groupNarrativeIntoSteps(
 
   for (const event of events) {
     if (event.type === "reflection.updated") {
-      const at =
+      const at: string =
         event.at ??
         (current?.actions.length
           ? eventTimestamp(current.actions[current.actions.length - 1]!.event) ??

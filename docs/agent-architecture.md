@@ -891,9 +891,9 @@ browser.inspect
 | 4 | 上下文管理和压缩 | **已完成** | 分层 Memory、Token Budget、Loop 压缩+pinned facts、Thread 滚动记忆（A015–A017、A051–A053、A058–A059、A068）。 |
 | 5 | 代码索引和中文定位 | **部分完成** | 轻量索引 + 中文定位 + UI import 树（A018–A019、A072）；**进行中** A073–A078 准确度（layout 上下文、prepare 门禁、jsx 引用）；**未做** SQLite、向量检索。 |
 | 6 | 开发闭环 | **部分完成** | `/api/agent/develop` 固定流水线已跑通（A021），**日常主路径为 Agent Loop**（A028）；develop 不再投入（D018）；自动修复验证错误仍弱。 |
-| 7 | 内置浏览器与 DevTools | **部分完成** | iframe 浏览器 + `browser.open` 已可用（A022）；**未做** CDP 深度读取、DOM/样式/截图/console/network（A023 deferred）。 |
+| 7 | 内置浏览器与 DevTools | **部分完成** | iframe + `browser.open`（A022）；桌面 WebView 文本快照 + `browser.inspect`（A023 MVP）；**未做** CDP 深度。 |
 | 8 | 设计解析与页面生成 | **暂缓** | demo → design spec → 代码生成主链路未启动（A024 deferred）。 |
-| 9 | Electron 桌面端 | **暂缓** | 主链路 Web 版已可用；系统目录选择器、WebView/CDP 集成留待立项（A025 deferred）。 |
+| 9 | Electron 桌面端 | **进行中** | 壳、选文件夹、`build:desktop` / `pack:desktop`、WebView 预览（A025）；自动更新/签名待做。 |
 
 **当前产品焦点（阶段 1–4 + Loop 主链路）**：
 

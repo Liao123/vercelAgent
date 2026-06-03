@@ -5,6 +5,8 @@ import {
   collectTurnFileChanges,
   type TurnFileChangeSummary,
 } from "@/lib/approval-file-changes";
+import { postExecuteVerificationFromTurnEvents } from "@/lib/post-execute-verification";
+import type { PostExecuteVerification } from "@/agent/verification";
 
 export type AgentChangeChip = {
   id: string;
@@ -31,6 +33,8 @@ export type AgentTurnFeed = {
   highlights: AgentEvent[];
   changeChips: AgentChangeChip[];
   fileChanges: TurnFileChangeSummary | null;
+  /** 写盘后的 lint/typecheck/build 结果（来自 verification.completed） */
+  postExecuteVerification: PostExecuteVerification | null;
   workedStats: {
     toolCount: number;
     reflectionCount: number;
@@ -280,6 +284,9 @@ export function groupEventsIntoTurns(events: AgentEvent[]): AgentTurnFeed[] {
       highlights,
       changeChips: collectChangeChips(current.events),
       fileChanges: collectTurnFileChanges(current.events),
+      postExecuteVerification: postExecuteVerificationFromTurnEvents(
+        current.events,
+      ),
       workedStats: countWorkedStats(worked),
     });
     current = null;

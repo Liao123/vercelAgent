@@ -18,6 +18,7 @@ const DEFAULT_IGNORED_DIRS = new Set([
   ".agent-traces",
   "node_modules",
   "dist",
+  "dist-desktop",
   "build",
   "coverage",
 ]);
@@ -170,6 +171,128 @@ export async function searchText(
   }
 
   return rankSearchMatchesForUiIntent(query, matches);
+}
+
+/** @ 联想：按路径片段匹配文件名（仅文本类扩展名）。 */
+export async function suggestFilePaths(
+  rootPath: string,
+  query: string,
+  maxResults = 24,
+): Promise<string[]> {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [];
+
+  const results: string[] = [];
+  let visited = 0;
+  const maxVisited = 12_000;
+
+  async function visit(directory: string): Promise<void> {
+    if (results.length >= maxResults || visited >= maxVisited) return;
+    visited += 1;
+
+    let entries;
+    try {
+      entries = await fs.readdir(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (results.length >= maxResults || visited >= maxVisited) return;
+      if (DEFAULT_IGNORED_DIRS.has(entry.name)) continue;
+
+      const absolutePath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(absolutePath);
+        continue;
+      }
+
+      const ext = path.extname(entry.name).toLowerCase();
+      if (!TEXT_EXTENSIONS.has(ext)) continue;
+
+      const relative = toWorkspaceRelative(rootPath, absolutePath);
+      const normalized = relative.replaceAll("\\", "/").toLowerCase();
+      if (
+        normalized.includes(needle) ||
+        entry.name.toLowerCase().includes(needle)
+      ) {
+        results.push(relative.replaceAll("\\", "/"));
+      }
+    }
+  }
+
+  await visit(resolveInsideWorkspace(rootPath, "."));
+  return sortPathSuggestions(results, needle);
+}
+
+function sortPathSuggestions(results: string[], needle: string): string[] {
+  return [...new Set(results)].sort((a, b) => {
+    const aName = a.split("/").pop() ?? a;
+    const bName = b.split("/").pop() ?? b;
+    const aExact = aName.toLowerCase() === needle ? 1 : 0;
+    const bExact = bName.toLowerCase() === needle ? 1 : 0;
+    if (aExact !== bExact) return bExact - aExact;
+    const aStarts = aName.toLowerCase().startsWith(needle) ? 1 : 0;
+    const bStarts = bName.toLowerCase().startsWith(needle) ? 1 : 0;
+    if (aStarts !== bStarts) return bStarts - aStarts;
+    return a.length - b.length;
+  });
+}
+
+/** @ 刚弹出时（无筛选词）展示的常用路径。 */
+export async function listWorkspaceFileHints(
+  rootPath: string,
+  maxResults = 32,
+): Promise<string[]> {
+  const results: string[] = [];
+  const maxDepth = 8;
+
+  async function visit(directory: string, depth: number): Promise<void> {
+    if (results.length >= maxResults || depth > maxDepth) return;
+
+    let entries;
+    try {
+      entries = await fs.readdir(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    entries.sort((a, b) => {
+      if (a.isDirectory() !== b.isDirectory()) {
+        return a.isDirectory() ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name);
+    });
+
+    for (const entry of entries) {
+      if (results.length >= maxResults) return;
+      if (DEFAULT_IGNORED_DIRS.has(entry.name)) continue;
+
+      const absolutePath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(absolutePath, depth + 1);
+        continue;
+      }
+
+      const ext = path.extname(entry.name).toLowerCase();
+      if (!TEXT_EXTENSIONS.has(ext)) continue;
+      results.push(toWorkspaceRelative(rootPath, absolutePath).replaceAll("\\", "/"));
+    }
+  }
+
+  await visit(resolveInsideWorkspace(rootPath, "."), 0);
+  return results
+    .sort((a, b) => composerHintRank(a) - composerHintRank(b))
+    .slice(0, maxResults);
+}
+
+function composerHintRank(filePath: string): number {
+  const normalized = filePath.replaceAll("\\", "/");
+  if (normalized.startsWith("src/")) return 0;
+  if (normalized.startsWith("docs/")) return 10;
+  if (normalized.startsWith("scripts/")) return 20;
+  if (normalized === "package.json") return 5;
+  return 100 + normalized.length;
 }
 
 function searchPathRank(filePath: string): number {

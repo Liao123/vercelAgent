@@ -21,7 +21,6 @@ import {
 } from "@/agent/memory/thread-meta-store";
 import { listTraces, updateTraceThread } from "@/agent/trace/trace-store";
 import { resolveThreadIdFromTrace } from "@/agent/memory/agent-thread-index";
-import { listHiddenWorkspaceIds } from "@/agent/workspace/workspace-sidebar-store";
 import { getCurrentWorkspace } from "@/agent/workspace";
 
 export const dynamic = "force-dynamic";
@@ -50,7 +49,7 @@ export async function GET(request: Request) {
         traces,
         memories: listAllThreadMemories(),
         metas: listAllThreadMetas(),
-        hiddenWorkspaceIds: listHiddenWorkspaceIds(),
+        currentWorkspaceId: workspace.id,
       });
       return Response.json({
         currentWorkspaceId: workspace.id,

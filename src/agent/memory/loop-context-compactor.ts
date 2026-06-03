@@ -34,6 +34,15 @@ import {
   SECTION_FILE_SNIPPETS_ZH,
   type PinnedFileSnippet,
 } from "@/agent/memory/loop-files-read-pin";
+import type { UiPrepareHint } from "@/agent/core/ui-prepare-nudge";
+import {
+  extractPrepareHintFromMessages,
+  formatPinnedPrepareHintBlock,
+  mergePrepareHints,
+  parsePinnedPrepareHintFromBlock,
+  SECTION_PREPARE_HINT,
+  SECTION_PREPARE_HINT_ZH,
+} from "@/agent/memory/loop-prepare-hint-pin";
 import type { ModelProvider } from "@/agent/model/types";
 import type { AgentMessage } from "@/agent/types";
 import { newId, nowIso } from "@/agent/types";
@@ -87,6 +96,7 @@ export type ParsedCompactedMemory = {
   summaryBody: string;
   changedFiles: string[];
   pinnedFileSnippets: PinnedFileSnippet[];
+  pinnedPrepareHint: UiPrepareHint | null;
 };
 
 function messageText(message: AgentMessage): string {
@@ -381,6 +391,11 @@ export function parseCompactedMemory(content: string): ParsedCompactedMemory | n
     SECTION_FILE_SNIPPETS_ZH,
     SECTION_FILE_SNIPPETS,
   );
+  const prepareHintStart = findSectionStart(
+    content,
+    SECTION_PREPARE_HINT_ZH,
+    SECTION_PREPARE_HINT,
+  );
   const summaryStart = findSectionStart(content, SECTION_SUMMARY_ZH, SECTION_SUMMARY);
   const changedStart = findSectionStart(content, SECTION_CHANGED_ZH, SECTION_CHANGED);
 
@@ -409,6 +424,12 @@ export function parseCompactedMemory(content: string): ParsedCompactedMemory | n
         ? SECTION_FILE_SNIPPETS_ZH.length
         : SECTION_FILE_SNIPPETS.length
       : 0;
+  const prepareHintHeaderLen =
+    prepareHintStart >= 0
+      ? content.startsWith(SECTION_PREPARE_HINT_ZH, prepareHintStart)
+        ? SECTION_PREPARE_HINT_ZH.length
+        : SECTION_PREPARE_HINT.length
+      : 0;
 
   const pinnedBlock =
     pinnedStart >= 0 && summaryStart > pinnedStart
@@ -418,8 +439,24 @@ export function parseCompactedMemory(content: string): ParsedCompactedMemory | n
         ).trim()
       : "";
   const snippetsBlock =
-    snippetsStart >= 0 && summaryStart > snippetsStart
-      ? content.slice(snippetsStart + snippetsHeaderLen, summaryStart).trim()
+    snippetsStart >= 0 &&
+    (prepareHintStart > snippetsStart || summaryStart > snippetsStart)
+      ? content
+          .slice(
+            snippetsStart + snippetsHeaderLen,
+            prepareHintStart > snippetsStart
+              ? prepareHintStart
+              : summaryStart > snippetsStart
+                ? summaryStart
+                : undefined,
+          )
+          .trim()
+      : "";
+  const prepareHintBlock =
+    prepareHintStart >= 0 && summaryStart > prepareHintStart
+      ? content
+          .slice(prepareHintStart + prepareHintHeaderLen, summaryStart)
+          .trim()
       : "";
   const summaryBody =
     summaryStart >= 0
@@ -445,6 +482,7 @@ export function parseCompactedMemory(content: string): ParsedCompactedMemory | n
     summaryBody,
     changedFiles,
     pinnedFileSnippets: parsePinnedFileSnippetsFromBlock(snippetsBlock),
+    pinnedPrepareHint: parsePinnedPrepareHintFromBlock(prepareHintBlock),
   };
 }
 
@@ -455,6 +493,7 @@ export function buildStructuredCompactedMemory(input: {
   summaryBody: string;
   changedFiles: string[];
   pinnedFileSnippets?: PinnedFileSnippet[];
+  pinnedPrepareHint?: UiPrepareHint | null;
 }): string {
   const changedLines =
     input.changedFiles.length > 0
@@ -462,6 +501,9 @@ export function buildStructuredCompactedMemory(input: {
       : ["- none"];
   const snippetBlock = formatPinnedFileSnippetsBlock(
     input.pinnedFileSnippets ?? [],
+  );
+  const prepareHintBlock = formatPinnedPrepareHintBlock(
+    input.pinnedPrepareHint ?? null,
   );
 
   return [
@@ -474,6 +516,9 @@ export function buildStructuredCompactedMemory(input: {
     "",
     SECTION_FILE_SNIPPETS_ZH,
     snippetBlock,
+    "",
+    SECTION_PREPARE_HINT_ZH,
+    prepareHintBlock,
     "",
     SECTION_SUMMARY_ZH,
     input.summaryBody.trim(),
@@ -620,6 +665,8 @@ export async function compactAgentLoopMessages(input: {
   compactRound?: number;
   /** 运行态 filesRead，用于钉住片段时优先最近读取的文件 */
   filesReadPaths?: string[];
+  /** 运行态 prepareHint（A084），压缩后仍写入滚动记忆 */
+  prepareHint?: UiPrepareHint | null;
 }): Promise<LoopContextCompactResult> {
   const messages = [...input.messages];
   const estimatedTokensBefore = estimateMessagesTokens(messages);
@@ -693,6 +740,14 @@ export async function compactAgentLoopMessages(input: {
     evictedSnippets,
   );
 
+  const pinnedPrepareHint = mergePrepareHints(
+    priorMemory?.pinnedPrepareHint ?? null,
+    mergePrepareHints(
+      extractPrepareHintFromMessages([...head, ...middle, ...tail]),
+      input.prepareHint ?? null,
+    ),
+  );
+
   let method: LoopContextCompactMethod = "deterministic";
   const compressed = compressContext({
     scope: "task",
@@ -721,6 +776,7 @@ export async function compactAgentLoopMessages(input: {
         summaryBody,
         changedFiles,
         pinnedFileSnippets,
+        pinnedPrepareHint,
       }),
     },
     ...tail,
@@ -764,6 +820,7 @@ export async function compactAgentLoopMessages(input: {
     summaryBody,
     changedFiles,
     pinnedFileSnippets,
+    pinnedPrepareHint,
   });
 
   const memoryMessage: AgentMessage = {

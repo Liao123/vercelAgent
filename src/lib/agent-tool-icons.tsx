@@ -33,7 +33,7 @@ export function agentToolIcon(toolName?: string): ReactNode {
     );
   }
 
-  if (toolName === "browser.open") {
+  if (toolName === "browser.open" || toolName === "browser.inspect") {
     return (
       <svg viewBox="0 0 16 16" className={className} fill="currentColor" aria-hidden>
         <circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" strokeWidth="1.2" />

@@ -52,7 +52,7 @@ export function assertPrepareGate(input: PrepareGateInput): void {
     }
 
     if (runState.disambiguation) {
-      const unread = runState.disambiguation.mustReadPaths.filter(
+      const unread = (runState.disambiguation.mustReadPaths ?? []).filter(
         (path) => !read.has(normalizeWorkspacePath(path)),
       );
       if (unread.length > 0) {

@@ -2,6 +2,8 @@
 
 更新时间：2026-06-01
 
+> **接续开发入口**：[`docs/agent-handoff.md`](agent-handoff.md)（2026-06-01 收工：Cursor UI、Loop 反思、hook 报错）。
+
 本文档用于记录开发智能体项目的工作项、当前状态、验收标准和执行记录。后续每完成一个工作项，都必须更新本文档。
 
 ## 状态说明
@@ -82,9 +84,9 @@ MVP 阶段对照表见 [`docs/agent-architecture.md` §20](agent-architecture.md
 | A020 | done | 增加验证工具 | 支持 lint/build/test 等项目验证命令。 |
 | A021 | done | 跑通开发闭环 | 需求 -> 定位文件 -> 计划 -> 修改 -> 验证 -> 总结。 |
 | A022 | done | 增加内置浏览器 UI | 产品内可以打开目标网址或本地页面，AI 可以触发打开指定 URL。 |
-| A023 | deferred | Chrome DevTools 深度读取 | DOM、元素宽高、样式、console、network、design spec 等能力先暂缓。 |
+| A023 | partial | 桌面 WebView 快照 + `browser.inspect` | Electron `<webview>`、`/api/agent/browser/snapshot`、Loop 工具已接；CDP/console/network/DOM 深度仍 deferred。 |
 | A024 | deferred | 页面生成/复刻流程 | demo URL + 素材 + design spec -> 修改代码 -> 浏览器验证，先暂缓。 |
-| A025 | deferred | Electron 桌面端 | 主链路稳定后再做，不作为当前阶段目标。 |
+| A025 | in_progress | Electron 桌面端 | 壳、选文件夹、`pack-desktop.mjs`、首次设置条（`.env.local` + 工作区）、WebView；见 `docs/agent-electron.md`。 |
 | A026 | done | Trace Store 持久化 | Trace 不再只存在内存 Map，支持 SQLite 或文件落盘，重启后可恢复。 |
 | A027 | done | Workspace 项目选择 | 支持用户选择或配置项目路径，而不是固定使用 Next.js 进程 cwd。 |
 | A028 | done | 真正 Agent Loop | 模型能基于事件和工具结果循环推理，而不是只跑固定开发闭环。 |
@@ -122,7 +124,7 @@ MVP 阶段对照表见 [`docs/agent-architecture.md` §20](agent-architecture.md
 | A060 | done | E2E 体验修复 | 大文件小改动审批 diff 围绕变更行截取；启动自动读取 Workspace；中栏隐藏历史「已批准待执行」；内联审批区分历史/本次；活动流空态提示恢复 Trace。 |
 | A061 | done | 左侧栏按项目分组会话 | `GET /api/agent/threads?grouped=projects`；项目（Workspace 文件夹名）下展示最近 5 条会话 + 相对时间；点击会话恢复该会话最近一次 Trace；移除独立「任务」列表；路径区标题改为「工作区」。 |
 | A062 | done | 只读 Loop 反思修复 | `isExplicitReadOnlyRequest` 排除「不要修改」等；`scripts/validate-loop-state.ts` + `npm run validate:loop-state`；活动流空态改为「项目 → 会话」。 |
-| A063 | done | 侧栏会话与项目管理 | 左栏「新会话」；会话悬停「继续/命名/删除」；`thread-meta.hidden` + `DELETE /api/agent/threads`；项目悬停「移除」+ `workspace-sidebar.json` + `DELETE/PATCH /api/agent/workspace`。 |
+| A063 | done | 侧栏会话与项目管理 | 左栏「新会话」；会话悬停「继续/命名/删除」；`thread-meta.hidden` + `DELETE /api/agent/threads`；项目按路径去重，当前工作区常显（已移除「隐藏项目」）。 |
 | A064 | done | 黄金路径试用脚本 | `scripts/golden-path-trial.mjs`：设 workspace → Loop → 批准 → execute → 校验磁盘；已在 `D:\案例\aiproject` 验证通过。 |
 | A065 | done | 恢复 Trace 体验修复 | 恢复会话时 `mergeApprovalLists` 优先已批准/已执行状态并拉取 `/api/agent/approvals`；点击会话不再预填底栏输入（仅「继续」预填）；「新会话」清空输入框。 |
 | A066 | done | 结构化 Git 状态 + Codex 风格展示 | `git.status` 返回 `{ dirty, branch, ahead, behind, files[] }`；`workspace.git` 结构化；活动流/ Git 审批用 `GitStatusView`；`npm run validate:git-status`。 |
@@ -395,7 +397,7 @@ MVP 阶段对照表见 [`docs/agent-architecture.md` §20](agent-architecture.md
 
 ## 接续收工（2026-06-01）
 
-**阶段结论**：准确度路线图 **A073–A082 全部交付**；离线 `npm run validate:agent` 全绿；在线 UI 黄金路径 **`trial:golden-path-ui` 默认模式 PASSED**（定位 composer 正确，prepare 链路仍靠 recovery 兜底）。
+**阶段结论**：准确度路线图 **A073–A084 全部交付**；离线 `npm run validate:agent` 全绿；在线 UI 黄金路径 **`trial:golden-path-ui` 默认与 `--strict` 均 PASSED**（模型自主 `file.replace.prepare`，少依赖 recovery）。
 
 **本批交付摘要**：
 
@@ -404,6 +406,9 @@ MVP 阶段对照表见 [`docs/agent-architecture.md` §20](agent-architecture.md
 | A080 | 压缩 pin 文件片段 + Composer `@` 附加；`validate:attached-pin` |
 | A081 | 离线黄金路径全链路；`validate:golden-path` |
 | A082 | 在线 triple E2E；`trial:golden-path-ui`（dry-run 默认） |
+| A083 | UI prepare nudge + recovery 跳过；`validate:ui-prepare-nudge` |
+| A084 | 压缩钉住 prepare 候选；`validate:prepare-hint-compaction` |
+| A085 | 消歧先读完 + 延续会话恢复 prepareHint；`validate:disambiguation-*` / `thread-prepare-hint` |
 | 修复 | 消歧搜索 scope；recovery 英文 token 过滤；试用文案 |
 
 **黄金路径三层验证**：
@@ -411,7 +416,7 @@ MVP 阶段对照表见 [`docs/agent-architecture.md` §20](agent-architecture.md
 ```text
 npm run validate:golden-path     # 离线，无模型，CI 友好
 npm run trial:golden-path-ui     # 在线，需 dev + .env.local 模型
-node scripts/golden-path-ui-trial.mjs --strict   # 强制模型 prepare（当前常 FAIL）
+node scripts/golden-path-ui-trial.mjs --strict   # 强制模型 prepare（A083 后应 PASS）
 node scripts/golden-path-trial.mjs "D:\案例\aiproject"   # 外部项目改 index.html（A064）
 ```
 
@@ -421,17 +426,57 @@ node scripts/golden-path-trial.mjs "D:\案例\aiproject"   # 外部项目改 ind
 | --- | --- |
 | triple → composer 定位 | 通过 |
 | trace + read + 审批目标 | 通过 |
-| 模型自主 `file.replace.prepare` | **未稳定**（常走 `edit.recovery`） |
+| 模型自主 `file.replace.prepare` | A083 前常走 recovery；**A083 后 `--strict` 实测 PASS** |
 | 写盘 | dry-run 已 reject，composer 未改 |
 
-**启动续作**：`npm run dev`（3000）→ workspace 指向 vec-next → `npm run trial:golden-path-ui` 或浏览器三栏手动测「去掉闭环」。
+**A083 实机结论（2026-06-01 接续）**：
 
-## 下一步建议（优先级）
+| 项 | 结果 |
+| --- | --- |
+| `validate:ui-prepare-nudge` | 通过 |
+| `trial:golden-path-ui --strict` | **PASSED**（tools: trace → read → prepare，无 recovery） |
+| 机制 | read composer 后 `prepareHint` + checkpoint nudge；证据齐备时 `skipRecovery` |
 
-1. **A083 候选（回家可接续）**：模型在 read composer 后**稳定调用 `file.replace.prepare`**，减少 `edit.recovery` 兜底；可试 `--strict` 回归、加强 checkpoint/reflect、或 recovery 在已 trace+read 时延后/禁用。
-2. **日常验证**：改 agent 相关代码后跑 `npm run validate:agent`；动 Loop/定位后加跑 `npm run validate:golden-path`。
-3. **在线试用**：`npm run trial:golden-path-ui`（默认）；需要测写盘再加 `--execute`（会改 composer）。
-4. **暂缓**：文件树、编辑器、Electron、Chrome DevTools 深度读取、开发闭环增强。
+**启动续作**：`npm run dev`（3000）→ `npm run trial:golden-path-ui` 或 `--strict` 回归。
+
+## 接续收工（2026-06-01 · Cursor 对齐）
+
+**状态**：代码已合入工作区；**待你本地**清 `.next` + `npm run dev` 后做新会话实机验收。
+
+**摘要**：
+
+| 范围 | 内容 |
+| --- | --- |
+| 审查 UI | 上下布局、横向标签、默认不选中；Git diff 回退 |
+| 设置 | Composer ⚙：自动写盘 / strict / lint 自动再修（后两者默认策略见 handoff） |
+| Loop | 清除无关任务的 post-execute checkpoint；修正 runtime 反思文案 |
+| 修复 | `AgentSessionSidebar` bridge hook；命名空间导入 |
+
+**详细步骤与待办**：见 [`docs/agent-handoff.md`](agent-handoff.md)。
+
+---
+
+## 下一步计划（已排期，见 `docs/agent-plan-next.md`）
+
+| ID | 状态 | 内容 |
+| --- | --- | --- |
+| A085 / A085.1 | done | 消歧先读完、thread 恢复 prepareHint；recovery 仅 prepare 尝试后禁用 |
+| 计划文档 | — | 见 [`docs/agent-plan-next.md`](agent-plan-next.md) |
+| A086 | done | 执行后 lint 失败写入 Loop checkpoint；`validate:post-execute-loop-feedback` |
+| A087 | done | 主循环后末轮 prepare 助推；`validate:final-prepare-nudge` |
+| A088 | done | 右侧 Tab「文件」+ workspace tree API |
+| A089 | done | `strictPrepare` 禁 recovery；`validate:strict-prepare` |
+| A091–A092 | done | 命令审批中栏底部条；文件审批仅右侧审查 |
+| A093 | done | 可选自动应用文件变更（localStorage，低/中风险文件） |
+| A090 | done | lint 失败预填再 Loop + 可选自动重跑；`validate:lint-reloop` |
+| A094 | done | 审查区编辑器式全高 diff + 布局偏好；`validate:review-diff-prefs` |
+| A095 | done | 左栏 strictPrepare 开关对齐 Loop API；`validate:strict-prepare-prefs` |
+| A096–A101 | done | Cursor 差距盘点；去闭环/Agent 设置；右栏审查 Tab |
+| A102–A105 | done | 中栏应用更改；lint UX；Composer @ 联想；`validate:cursor-shell-ui` / `validate:composer-at` |
+| A025 Electron | in_progress | 桌面壳与选文件夹已接入；CDP/WebView 仍 deferred |
+| 开发闭环 develop | dev only | `?dev=1` 顶部面板，主路径仍为 Loop |
+
+**日常验证**：`npm run validate:agent`；在线 `npm run trial:golden-path-ui`（`--strict` 记录通过率即可）。
 
 ## 接续收工（2026-05-29）
 

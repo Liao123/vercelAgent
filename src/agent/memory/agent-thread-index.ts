@@ -5,6 +5,10 @@ import type { ThreadMetaRecord } from "@/agent/memory/thread-meta-store";
 import type { ThreadMemoryRecord } from "@/agent/memory/thread-memory-store";
 import type { TraceRecord } from "@/agent/trace/trace-store";
 import type { AgentEvent } from "@/agent/types";
+import {
+  normalizeWorkspaceKey,
+  workspaceIdsEqual,
+} from "@/lib/workspace-path";
 
 export type AgentThreadListItem = {
   threadId: string;
@@ -71,7 +75,7 @@ export function buildAgentThreadList(input: {
 }): AgentThreadListItem[] {
   const metaById = new Map(
     (input.metas ?? [])
-      .filter((meta) => meta.workspaceId === input.workspaceId)
+      .filter((meta) => workspaceIdsEqual(meta.workspaceId, input.workspaceId))
       .map((meta) => [meta.threadId, meta]),
   );
   const byThread = new Map<
@@ -90,7 +94,7 @@ export function buildAgentThreadList(input: {
   >();
 
   for (const memory of input.memories) {
-    if (memory.workspaceId !== input.workspaceId) continue;
+    if (!workspaceIdsEqual(memory.workspaceId, input.workspaceId)) continue;
     byThread.set(memory.threadId, {
       workspaceId: memory.workspaceId,
       title: null,
@@ -222,28 +226,68 @@ function collectWorkspaceIds(input: {
   return [...ids];
 }
 
+function workspaceKeysFromInput(input: {
+  traces: TraceRecord[];
+  memories: ThreadMemoryRecord[];
+  metas: ThreadMetaRecord[];
+  currentWorkspaceId?: string | null;
+}): Map<string, string> {
+  const canonicalByKey = new Map<string, string>();
+
+  const register = (workspaceId: string) => {
+    const key = normalizeWorkspaceKey(workspaceId);
+    if (!canonicalByKey.has(key)) {
+      canonicalByKey.set(key, workspaceId);
+    }
+  };
+
+  for (const memory of input.memories) register(memory.workspaceId);
+  for (const meta of input.metas) register(meta.workspaceId);
+  for (const trace of input.traces) {
+    const workspaceId = trace.task?.workspaceId;
+    if (workspaceId) register(workspaceId);
+  }
+  if (input.currentWorkspaceId?.trim()) {
+    const key = normalizeWorkspaceKey(input.currentWorkspaceId);
+    canonicalByKey.set(key, input.currentWorkspaceId);
+  }
+
+  return canonicalByKey;
+}
+
+function belongsToWorkspaceKey(
+  workspaceId: string,
+  key: string,
+): boolean {
+  return normalizeWorkspaceKey(workspaceId) === key;
+}
+
 export function buildAgentProjectSidebar(input: {
   traces: TraceRecord[];
   memories: ThreadMemoryRecord[];
   metas: ThreadMetaRecord[];
   recentThreadsPerProject?: number;
-  hiddenWorkspaceIds?: string[];
+  /** 当前打开的工作区：无会话时也显示在侧栏（对齐 Cursor 当前文件夹） */
+  currentWorkspaceId?: string | null;
 }): AgentProjectSidebarItem[] {
   const limit = input.recentThreadsPerProject ?? DEFAULT_RECENT_THREADS_PER_PROJECT;
-  const hidden = new Set(input.hiddenWorkspaceIds ?? []);
-  const workspaceIds = collectWorkspaceIds(input).filter(
-    (workspaceId) => !hidden.has(workspaceId),
-  );
+  const canonicalByKey = workspaceKeysFromInput(input);
 
-  const projects = workspaceIds.map((workspaceId) => {
+  const projects = [...canonicalByKey.entries()].map(([key, workspaceId]) => {
     const traces = input.traces.filter(
-      (trace) => trace.task?.workspaceId === workspaceId,
+      (trace) =>
+        trace.task?.workspaceId &&
+        belongsToWorkspaceKey(trace.task.workspaceId, key),
     );
     const threads = buildAgentThreadList({
       workspaceId,
       traces,
-      memories: input.memories,
-      metas: input.metas,
+      memories: input.memories.filter((memory) =>
+        belongsToWorkspaceKey(memory.workspaceId, key),
+      ),
+      metas: input.metas.filter((meta) =>
+        belongsToWorkspaceKey(meta.workspaceId, key),
+      ),
     });
     const recentThreads = threads.slice(0, limit);
     const updatedAt =

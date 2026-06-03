@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState, type MouseEvent } from "react";
-import { useAgentWorkspaceBridge } from "@/components/agent-workspace-bridge";
+import * as AgentWorkspaceBridge from "@/components/agent-workspace-bridge";
 import type { AgentEvent } from "@/agent/types";
 import { resolveThreadIdFromEvents } from "@/lib/agent-feed";
+import { ChevronIcon } from "@/components/chevron-icon";
+import { workspaceIdsEqual } from "@/lib/workspace-path";
 type AgentThreadListItem = {
   threadId: string;
   title: string;
@@ -16,18 +18,12 @@ type AgentThreadListItem = {
   lastUserRequest: string | null;
 };
 
-type AgentProjectSidebarItem = {
+export type AgentProjectSidebarItem = {
   workspaceId: string;
   name: string;
   updatedAt: string;
   threadCount: number;
   threads: AgentThreadListItem[];
-};
-
-export type ContinueThreadPayload = {
-  threadId: string;
-  title: string;
-  lastUserRequest: string | null;
 };
 
 type TraceListItem = {
@@ -95,8 +91,12 @@ type AgentSessionSidebarProps = {
   currentThreadId: string | null;
   refreshKey?: number;
   onSelectThread: (threadId: string | null) => void;
-  onContinueThread?: (payload: ContinueThreadPayload) => void;
-  onNewSession?: () => void;
+  /** 顶部「新建 Agent」：空白新聊天 + 可选工作区 */
+  onNewAgent?: () => void;
+  /** 项目行悬停 ＋：在该工作区下开新会话 */
+  onNewSessionInProject?: (project: AgentProjectSidebarItem) => void;
+  /** 点击项目名称：切换当前工作区 */
+  onActivateProject?: (project: AgentProjectSidebarItem) => void;
   onThreadDeleted?: (threadId: string) => void;
   onSessionsChanged?: () => void;
 };
@@ -106,12 +106,13 @@ export function AgentSessionSidebar({
   currentThreadId,
   refreshKey = 0,
   onSelectThread,
-  onContinueThread,
-  onNewSession,
+  onNewAgent,
+  onNewSessionInProject,
+  onActivateProject,
   onThreadDeleted,
   onSessionsChanged,
 }: AgentSessionSidebarProps) {
-  const bridge = useAgentWorkspaceBridge();
+  const bridge = AgentWorkspaceBridge.useAgentWorkspaceBridge();
   const [projects, setProjects] = useState<AgentProjectSidebarItem[]>([]);
   const [currentWorkspaceId, setCurrentWorkspaceId] = useState<string | null>(
     null,
@@ -121,25 +122,25 @@ export function AgentSessionSidebar({
   const [restoringId, setRestoringId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyThreadId, setBusyThreadId] = useState<string | null>(null);
-  const [renamingThreadId, setRenamingThreadId] = useState<string | null>(null);
-  const [renameDraft, setRenameDraft] = useState("");
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(
     () => new Set(),
   );
-  const [hiddenWorkspaceIds, setHiddenWorkspaceIds] = useState<string[]>([]);
-  const [showHiddenProjects, setShowHiddenProjects] = useState(false);
+  const [threadContextMenu, setThreadContextMenu] = useState<{
+    project: AgentProjectSidebarItem;
+    thread: AgentThreadListItem;
+    x: number;
+    y: number;
+  } | null>(null);
 
   async function reloadLists() {
     setLoading(true);
     try {
-      const [projectsRes, tracesRes, hiddenRes] = await Promise.all([
+      const [projectsRes, tracesRes] = await Promise.all([
         fetch("/api/agent/threads?grouped=projects"),
         fetch("/api/agent/traces"),
-        fetch("/api/agent/workspace?sidebar=hidden"),
       ]);
       const projectsData = await projectsRes.json();
       const tracesData = await tracesRes.json();
-      const hiddenData = await hiddenRes.json();
       const nextProjects =
         projectsRes.ok && Array.isArray(projectsData.projects)
           ? (projectsData.projects as AgentProjectSidebarItem[])
@@ -152,11 +153,6 @@ export function AgentSessionSidebar({
       );
       setTraces(
         tracesRes.ok && Array.isArray(tracesData.traces) ? tracesData.traces : [],
-      );
-      setHiddenWorkspaceIds(
-        hiddenRes.ok && Array.isArray(hiddenData.hiddenWorkspaceIds)
-          ? hiddenData.hiddenWorkspaceIds
-          : [],
       );
       setExpandedProjects((prev) => {
         const next = new Set(prev);
@@ -179,44 +175,40 @@ export function AgentSessionSidebar({
     (async () => {
       setLoading(true);
       try {
-        const [projectsRes, tracesRes, hiddenRes] = await Promise.all([
+        const [projectsRes, tracesRes] = await Promise.all([
           fetch("/api/agent/threads?grouped=projects"),
           fetch("/api/agent/traces"),
-          fetch("/api/agent/workspace?sidebar=hidden"),
         ]);
         const projectsData = await projectsRes.json();
         const tracesData = await tracesRes.json();
-        const hiddenData = await hiddenRes.json();
-        if (cancelled) return;
-        const nextProjects =
-          projectsRes.ok && Array.isArray(projectsData.projects)
-            ? (projectsData.projects as AgentProjectSidebarItem[])
-            : [];
-        setProjects(nextProjects);
-        setCurrentWorkspaceId(
-          typeof projectsData.currentWorkspaceId === "string"
-            ? projectsData.currentWorkspaceId
-            : null,
-        );
-        setTraces(
-          tracesRes.ok && Array.isArray(tracesData.traces)
-            ? tracesData.traces
-            : [],
-        );
-        setHiddenWorkspaceIds(
-          hiddenRes.ok && Array.isArray(hiddenData.hiddenWorkspaceIds)
-            ? hiddenData.hiddenWorkspaceIds
-            : [],
-        );
-        const wsId = projectsData.currentWorkspaceId as string | undefined;
-        setExpandedProjects(() => {
-          const next = new Set<string>();
-          if (wsId) next.add(wsId);
-          else if (nextProjects[0]) next.add(nextProjects[0].workspaceId);
-          return next;
-        });
+        if (!cancelled) {
+          const nextProjects =
+            projectsRes.ok && Array.isArray(projectsData.projects)
+              ? (projectsData.projects as AgentProjectSidebarItem[])
+              : [];
+          setProjects(nextProjects);
+          setCurrentWorkspaceId(
+            typeof projectsData.currentWorkspaceId === "string"
+              ? projectsData.currentWorkspaceId
+              : null,
+          );
+          setTraces(
+            tracesRes.ok && Array.isArray(tracesData.traces)
+              ? tracesData.traces
+              : [],
+          );
+          const wsId = projectsData.currentWorkspaceId as string | undefined;
+          setExpandedProjects(() => {
+            const next = new Set<string>();
+            if (wsId) next.add(wsId);
+            else if (nextProjects[0]) next.add(nextProjects[0].workspaceId);
+            return next;
+          });
+        }
+      } catch {
+        if (!cancelled) setProjects([]);
       } finally {
-        if (!cancelled) setLoading(false);
+        setLoading(false);
       }
     })();
 
@@ -285,7 +277,9 @@ export function AgentSessionSidebar({
     setActionError(null);
     onSelectThread(thread.threadId);
     const threadTraces = (tracesByThread.get(thread.threadId) ?? []).filter(
-      (item) => item.task?.workspaceId === project.workspaceId,
+      (item) =>
+        item.task?.workspaceId != null &&
+        workspaceIdsEqual(item.task.workspaceId, project.workspaceId),
     );
     const latest = threadTraces[0];
     if (latest) {
@@ -293,58 +287,24 @@ export function AgentSessionSidebar({
     }
   }
 
-  function handleContinueThread(
-    thread: AgentThreadListItem,
-    e: MouseEvent,
-  ) {
-    e.stopPropagation();
-    setActionError(null);
-    onSelectThread(thread.threadId);
-    onContinueThread?.({
-      threadId: thread.threadId,
-      title: thread.title,
-      lastUserRequest: thread.lastUserRequest,
-    });
-  }
-
-  function startRenameThread(thread: AgentThreadListItem, e: MouseEvent) {
-    e.stopPropagation();
-    setRenamingThreadId(thread.threadId);
-    setRenameDraft(thread.title);
-  }
-
-  async function submitRenameThread(threadId: string) {
-    const title = renameDraft.trim();
-    if (!title) {
-      setRenamingThreadId(null);
-      return;
-    }
-
-    setBusyThreadId(threadId);
-    setActionError(null);
-    try {
-      const res = await fetch("/api/agent/threads", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ threadId, title }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "重命名失败");
-      setRenamingThreadId(null);
-      await reloadLists();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : "重命名失败");
-    } finally {
-      setBusyThreadId(null);
-    }
-  }
+  useEffect(() => {
+    if (!threadContextMenu) return;
+    const close = () => setThreadContextMenu(null);
+    window.addEventListener("click", close);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [threadContextMenu]);
 
   async function deleteThread(
     project: AgentProjectSidebarItem,
     thread: AgentThreadListItem,
-    e: MouseEvent,
+    e?: MouseEvent,
   ) {
-    e.stopPropagation();
+    e?.stopPropagation();
+    setThreadContextMenu(null);
     const confirmed = window.confirm(
       `从侧栏删除会话「${thread.title}」？\n\n将清除该会话的滚动记忆，并从左侧列表隐藏。历史 Trace 文件仍保留在本地。`,
     );
@@ -373,80 +333,61 @@ export function AgentSessionSidebar({
     }
   }
 
-  function workspaceDisplayName(workspaceId: string): string {
-    const normalized = workspaceId.replace(/\\/g, "/").replace(/\/+$/, "");
-    const base = normalized.split("/").pop();
-    return base && base.length > 0 ? base : workspaceId;
+  function ensureProjectExpanded(workspaceId: string) {
+    setExpandedProjects((prev) => {
+      const next = new Set(prev);
+      next.add(workspaceId);
+      return next;
+    });
   }
 
-  async function removeProject(
+  function handleActivateProject(
     project: AgentProjectSidebarItem,
     e: MouseEvent,
   ) {
     e.stopPropagation();
-    const confirmed = window.confirm(
-      `从左侧移除项目「${project.name}」？\n\n不会删除磁盘上的文件夹，也不会删除 Trace；之后仍可在上方「工作区」输入路径打开该项目。`,
-    );
-    if (!confirmed) return;
-
-    setActionError(null);
-    try {
-      const params = new URLSearchParams({ workspaceId: project.workspaceId });
-      const res = await fetch(`/api/agent/workspace?${params}`, {
-        method: "DELETE",
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "移除失败");
-      await reloadLists();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : "移除失败");
-    }
+    ensureProjectExpanded(project.workspaceId);
+    onActivateProject?.(project);
   }
 
-  async function restoreHiddenProject(workspaceId: string) {
-    setActionError(null);
-    try {
-      const res = await fetch("/api/agent/workspace", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspaceId, action: "show" }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "恢复失败");
-      await reloadLists();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : "恢复失败");
-    }
+  function handleNewSessionInProject(
+    project: AgentProjectSidebarItem,
+    e: MouseEvent,
+  ) {
+    e.stopPropagation();
+    ensureProjectExpanded(project.workspaceId);
+    onNewSessionInProject?.(project);
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col border-t border-zinc-200 dark:border-zinc-800">
-      <div className="flex items-center justify-between gap-1 px-2 py-1.5">
-        <p className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-          项目
-        </p>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {onNewSession && (
-            <button
-              type="button"
-              onClick={onNewSession}
-              className="rounded bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-blue-700"
-              title="开始新会话（不延续当前会话记忆）"
-            >
-              新会话
-            </button>
-          )}
+    <div className="flex min-h-0 flex-1 flex-col">
+      {onNewAgent && (
+        <div className="shrink-0 border-b border-zinc-200 p-2 dark:border-zinc-800">
           <button
             type="button"
-            onClick={() => void reloadLists()}
-            className="text-[10px] text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300"
+            onClick={onNewAgent}
+            className="flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-[12px] font-medium text-zinc-800 shadow-sm transition hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+            title="新建 Agent（Ctrl+N）"
           >
-            刷新
+            新建 Agent
           </button>
         </div>
+      )}
+
+      <div className="flex items-center justify-between gap-1 px-2 py-2">
+        <p className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+          Workspaces
+        </p>
+        <button
+          type="button"
+          onClick={() => void reloadLists()}
+          className="text-[10px] text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300"
+        >
+          刷新
+        </button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto px-1 pb-2">
+      <div className="min-h-0 flex-1 overflow-auto px-1.5 pb-2">
         {actionError && (
           <p className="mb-1 rounded px-2 py-1 text-[10px] text-red-600 dark:text-red-400">
             {actionError}
@@ -459,64 +400,74 @@ export function AgentSessionSidebar({
         )}
         {!loading && projects.length === 0 && (
           <p className="px-2 py-4 text-center text-[11px] leading-relaxed text-zinc-500">
-            运行任务后，会按项目显示最近会话
+            点击「新建 Agent」选择工作区；有历史后项目会列在此处
           </p>
         )}
 
         {projects.map((project) => {
           const isExpanded = expandedProjects.has(project.workspaceId);
           const isCurrentWorkspace =
-            currentWorkspaceId === project.workspaceId;
+            currentWorkspaceId != null &&
+            workspaceIdsEqual(currentWorkspaceId, project.workspaceId);
           const hiddenCount = Math.max(
             0,
             project.threadCount - project.threads.length,
           );
 
           return (
-            <div key={project.workspaceId} className="group/project relative mb-1">
-              <button
-                type="button"
-                onClick={() => toggleProject(project.workspaceId)}
-                className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 pr-10 text-left transition ${
+            <div key={project.workspaceId} className="group/project mb-1">
+              <div
+                className={`flex items-center gap-0.5 rounded-lg px-1 py-0.5 transition ${
                   isCurrentWorkspace
-                    ? "bg-zinc-100 dark:bg-zinc-800/80"
-                    : "hover:bg-zinc-100 dark:hover:bg-zinc-800/80"
+                    ? "bg-zinc-200/70 dark:bg-zinc-800"
+                    : "hover:bg-zinc-100 dark:hover:bg-zinc-800/60"
                 }`}
               >
-                <span
-                  className={`shrink-0 text-[10px] text-zinc-400 transition ${
-                    isExpanded ? "rotate-90" : ""
-                  }`}
-                  aria-hidden
+                <button
+                  type="button"
+                  aria-expanded={isExpanded}
+                  onClick={() => toggleProject(project.workspaceId)}
+                  className="shrink-0 rounded p-1 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
+                  title={isExpanded ? "收起会话" : "展开会话"}
                 >
-                  ▶
-                </span>
-                <span className="text-[11px]" aria-hidden>
-                  📁
-                </span>
-                <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-zinc-800 dark:text-zinc-200">
-                  {project.name}
-                </span>
-                {isCurrentWorkspace && (
-                  <span className="shrink-0 rounded bg-blue-100 px-1 py-0.5 text-[9px] text-blue-700 dark:bg-blue-950 dark:text-blue-300">
-                    当前
+                  <ChevronIcon expanded={isExpanded} className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => handleActivateProject(project, e)}
+                  className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md py-1.5 pl-0.5 pr-1 text-left"
+                  title={
+                    isCurrentWorkspace
+                      ? "当前工作区"
+                      : `切换到 ${project.name}`
+                  }
+                >
+                  <span className="text-[11px] opacity-80" aria-hidden>
+                    📁
                   </span>
+                  <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-zinc-800 dark:text-zinc-200">
+                    {project.name}
+                  </span>
+                </button>
+                {onNewSessionInProject && (
+                  <button
+                    type="button"
+                    onClick={(e) => handleNewSessionInProject(project, e)}
+                    className="mr-0.5 shrink-0 rounded-md p-1 text-zinc-500 opacity-0 transition hover:bg-zinc-200/80 hover:text-zinc-800 group-hover/project:opacity-100 dark:hover:bg-zinc-700 dark:hover:text-zinc-100"
+                    title={`在「${project.name}」下新建会话`}
+                  >
+                    <span className="text-[14px] leading-none" aria-hidden>
+                      +
+                    </span>
+                  </button>
                 )}
-              </button>
-              <button
-                type="button"
-                title="从左侧项目列表移除"
-                onClick={(e) => void removeProject(project, e)}
-                className="absolute right-1 top-1 hidden rounded bg-red-600 px-1.5 py-0.5 text-[9px] text-white hover:bg-red-700 group-hover/project:inline-flex"
-              >
-                移除
-              </button>
+              </div>
 
               {isExpanded && (
-                <div className="ml-3 border-l border-zinc-200 pl-1 dark:border-zinc-700">
+                <div className="ml-4 mt-0.5 space-y-0.5 border-l border-zinc-200/80 pl-2 dark:border-zinc-700">
                   {project.threads.length === 0 && (
-                    <p className="px-2 py-1.5 text-[10px] text-zinc-500">
-                      暂无会话
+                    <p className="px-1 py-1.5 text-[10px] text-zinc-500">
+                      暂无会话 — 点击项目名右侧 ＋ 新建
                     </p>
                   )}
                   {project.threads.map((thread) => {
@@ -530,96 +481,39 @@ export function AgentSessionSidebar({
                     return (
                       <div
                         key={thread.threadId}
-                        className={`group relative mb-0.5 rounded-md ${
+                        className={`rounded-md ${
                           isActive
-                            ? "bg-blue-100/80 dark:bg-blue-950/40"
+                            ? "bg-zinc-200/90 dark:bg-zinc-800"
                             : "hover:bg-zinc-100 dark:hover:bg-zinc-800/80"
                         }`}
                       >
-                        {renamingThreadId === thread.threadId ? (
-                          <form
-                            className="px-2 py-1.5"
-                            onSubmit={(e) => {
-                              e.preventDefault();
-                              void submitRenameThread(thread.threadId);
-                            }}
-                          >
-                            <input
-                              autoFocus
-                              value={renameDraft}
-                              onChange={(e) => setRenameDraft(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Escape") {
-                                  setRenamingThreadId(null);
-                                }
-                              }}
-                              className="w-full rounded border border-blue-400 bg-white px-1.5 py-0.5 text-[11px] dark:border-blue-600 dark:bg-zinc-950"
-                            />
-                            <div className="mt-1 flex gap-1">
-                              <button
-                                type="submit"
-                                className="rounded bg-blue-600 px-1.5 py-0.5 text-[9px] text-white"
-                              >
-                                保存
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setRenamingThreadId(null)}
-                                className="rounded bg-zinc-200 px-1.5 py-0.5 text-[9px] dark:bg-zinc-700"
-                              >
-                                取消
-                              </button>
-                            </div>
-                          </form>
-                        ) : (
-                          <button
-                            type="button"
-                            disabled={isBusy || restoringId != null}
-                            onClick={() => handleSelectSession(project, thread)}
-                            className="flex w-full items-start justify-between gap-2 px-2 py-1.5 pr-1 text-left"
-                          >
-                            <span className="min-w-0 flex-1">
-                              <span className="line-clamp-2 text-[11px] text-zinc-800 dark:text-zinc-200">
-                                {thread.title}
-                              </span>
-                            </span>
-                            <span className="shrink-0 text-[10px] text-zinc-500">
-                              {formatRelativeTime(thread.updatedAt)}
-                            </span>
-                          </button>
-                        )}
-
-                        {renamingThreadId !== thread.threadId && (
-                          <div className="absolute right-0 top-0.5 hidden flex-col gap-0.5 group-hover:flex">
-                            <button
-                              type="button"
-                              title="在此会话继续"
-                              disabled={isBusy}
-                              onClick={(e) => handleContinueThread(thread, e)}
-                              className="rounded bg-blue-600 px-1 py-0.5 text-[9px] text-white"
-                            >
-                              继续
-                            </button>
-                            <button
-                              type="button"
-                              title="重命名"
-                              disabled={isBusy}
-                              onClick={(e) => startRenameThread(thread, e)}
-                              className="rounded bg-zinc-200 px-1 py-0.5 text-[9px] dark:bg-zinc-700"
-                            >
-                              命名
-                            </button>
-                            <button
-                              type="button"
-                              title="从侧栏删除会话（清除滚动记忆）"
-                              disabled={isBusy}
-                              onClick={(e) => void deleteThread(project, thread, e)}
-                              className="rounded bg-red-600 px-1 py-0.5 text-[9px] text-white hover:bg-red-700"
-                            >
-                              删除
-                            </button>
-                          </div>
-                        )}
+                        <button
+                          type="button"
+                          disabled={isBusy || restoringId != null}
+                          onClick={() => handleSelectSession(project, thread)}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setThreadContextMenu({
+                              project,
+                              thread,
+                              x: e.clientX,
+                              y: e.clientY,
+                            });
+                          }}
+                          className="flex w-full items-center gap-2 px-2 py-1.5 text-left"
+                        >
+                          <span
+                            className="h-1 w-1 shrink-0 rounded-full bg-zinc-400"
+                            aria-hidden
+                          />
+                          <span className="min-w-0 flex-1 truncate text-[11px] text-zinc-700 dark:text-zinc-300">
+                            {thread.title}
+                          </span>
+                          <span className="shrink-0 text-[9px] text-zinc-400">
+                            {formatRelativeTime(thread.updatedAt)}
+                          </span>
+                        </button>
 
                         {isCurrentTask && (
                           <p className="px-2 pb-1 text-[9px] text-emerald-600 dark:text-emerald-400">
@@ -630,8 +524,8 @@ export function AgentSessionSidebar({
                     );
                   })}
                   {hiddenCount > 0 && (
-                    <p className="px-2 py-1 text-[10px] text-zinc-400">
-                      另有 {hiddenCount} 个会话未显示
+                    <p className="px-1 py-1 text-[10px] text-zinc-400">
+                      另有 {hiddenCount} 个会话
                     </p>
                   )}
                 </div>
@@ -639,40 +533,41 @@ export function AgentSessionSidebar({
             </div>
           );
         })}
-        {hiddenWorkspaceIds.length > 0 && (
-          <div className="mt-2 border-t border-zinc-200 px-2 pt-2 dark:border-zinc-800">
+      </div>
+
+      {threadContextMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            aria-hidden
+            onClick={() => setThreadContextMenu(null)}
+          />
+          <div
+            className="fixed z-50 min-w-[8rem] rounded-lg border border-zinc-200 bg-white py-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
+            style={{
+              left: threadContextMenu.x,
+              top: threadContextMenu.y,
+            }}
+            role="menu"
+            onClick={(e) => e.stopPropagation()}
+          >
             <button
               type="button"
-              onClick={() => setShowHiddenProjects((value) => !value)}
-              className="text-[10px] text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300"
+              role="menuitem"
+              disabled={busyThreadId === threadContextMenu.thread.threadId}
+              onClick={() =>
+                void deleteThread(
+                  threadContextMenu.project,
+                  threadContextMenu.thread,
+                )
+              }
+              className="block w-full px-3 py-1.5 text-left text-[11px] text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
             >
-              {showHiddenProjects ? "收起" : "显示"}已隐藏项目（
-              {hiddenWorkspaceIds.length}）
+              删除会话
             </button>
-            {showHiddenProjects && (
-              <ul className="mt-1 space-y-1">
-                {hiddenWorkspaceIds.map((workspaceId) => (
-                  <li
-                    key={workspaceId}
-                    className="flex items-center justify-between gap-2 rounded bg-zinc-100 px-2 py-1 dark:bg-zinc-800/80"
-                  >
-                    <span className="min-w-0 truncate text-[10px] text-zinc-600 dark:text-zinc-400">
-                      {workspaceDisplayName(workspaceId)}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => void restoreHiddenProject(workspaceId)}
-                      className="shrink-0 text-[10px] text-blue-600 hover:underline dark:text-blue-400"
-                    >
-                      恢复
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
           </div>
-        )}
-      </div>
+        </>
+      )}
     </div>
   );
 }

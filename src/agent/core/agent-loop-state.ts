@@ -17,6 +17,22 @@ export type AgentLoopRunState = {
   lastToolError?: string;
   lastPrepareError?: string;
   reflectionRounds: number;
+  /** UI 任务读完推荐文件后的 exact search 候选（A083） */
+  prepareHint?: {
+    path: string;
+    suggestedSearchLines: string[];
+  };
+  /** 上一轮审批执行后 lint/typecheck 失败摘要（A086） */
+  postExecuteFeedback?: {
+    summary: string;
+    failedCommand?: string;
+    outputSnippet?: string;
+    changedPaths: string[];
+    approvalId?: string;
+    taskId?: string;
+  };
+  /** A089：试用/调试时禁止 edit.recovery */
+  strictPrepare?: boolean;
 };
 
 export function createAgentLoopRunState(userRequest: string): AgentLoopRunState {
@@ -97,11 +113,30 @@ export function recordToolCall(
     result &&
     typeof result === "object"
   ) {
-    const disambiguation = (result as {
-      disambiguation?: AgentLoopRunState["disambiguation"];
+    const raw = (result as {
+      disambiguation?: {
+        label?: string;
+        primaryLabel?: string;
+        mustReadPaths?: string[];
+        recommendedPath?: string;
+        selectionRationale?: string;
+        summary?: string;
+      };
     }).disambiguation;
-    if (disambiguation) {
-      state.disambiguation = disambiguation;
+    if (raw && typeof raw.recommendedPath === "string") {
+      state.disambiguation = {
+        label:
+          (typeof raw.label === "string" && raw.label) ||
+          (typeof raw.primaryLabel === "string" && raw.primaryLabel) ||
+          "",
+        mustReadPaths: Array.isArray(raw.mustReadPaths) ? raw.mustReadPaths : [],
+        recommendedPath: raw.recommendedPath,
+        selectionRationale:
+          (typeof raw.selectionRationale === "string" &&
+            raw.selectionRationale) ||
+          (typeof raw.summary === "string" && raw.summary) ||
+          "",
+      };
     }
   }
 
@@ -140,6 +175,11 @@ import {
   hasUiLocationEvidence,
   isUiLocationQuery,
 } from "@/agent/core/prepare-gate";
+import {
+  buildUiDisambiguationReadNudgeBlock,
+  buildUiPrepareNudgeBlock,
+} from "@/agent/core/ui-prepare-nudge";
+import { formatPostExecuteFeedbackBlock } from "@/agent/verification/post-execute-verify";
 
 export function buildRuntimeCheckpoint(state: AgentLoopRunState): string {
   const lines = [
@@ -151,22 +191,19 @@ export function buildRuntimeCheckpoint(state: AgentLoopRunState): string {
     `Files read: ${state.filesRead.length > 0 ? state.filesRead.join(", ") : "(none yet)"}`,
   ];
 
-  if (state.disambiguation) {
-    const unread = state.disambiguation.mustReadPaths.filter(
-      (path) => !state.filesRead.includes(path),
-    );
+  if (state.postExecuteFeedback) {
+    lines.push(formatPostExecuteFeedbackBlock(state.postExecuteFeedback));
+  }
+
+  const disambiguationNudge = buildUiDisambiguationReadNudgeBlock(state);
+  if (disambiguationNudge) {
+    lines.push(disambiguationNudge);
+  } else if (state.disambiguation) {
     lines.push(
       `UI disambiguation (${state.disambiguation.label}): recommend ${state.disambiguation.recommendedPath}.`,
       `Rationale: ${state.disambiguation.selectionRationale}`,
-      `Must file.read all candidates before prepare: ${state.disambiguation.mustReadPaths.join(", ")}.`,
+      "All disambiguation candidates read. In reflect, briefly explain why you chose the recommended file over alternatives before prepare.",
     );
-    if (unread.length > 0) {
-      lines.push(`Still unread: ${unread.join(", ")}.`);
-    } else {
-      lines.push(
-        "All disambiguation candidates read. In reflect, briefly explain why you chose the recommended file over alternatives before prepare.",
-      );
-    }
   }
 
   if (state.lastToolError) {
@@ -177,6 +214,11 @@ export function buildRuntimeCheckpoint(state: AgentLoopRunState): string {
       `Last prepare issue: ${state.lastPrepareError}`,
       "If search text was not found, you likely guessed from Chinese phrasing. Use file.read again and copy an exact substring, or file.search for a short literal.",
     );
+  }
+
+  const prepareNudge = buildUiPrepareNudgeBlock(state);
+  if (prepareNudge) {
+    lines.push(prepareNudge);
   }
 
   if (isExplicitReadOnlyRequest(state.userRequest)) {

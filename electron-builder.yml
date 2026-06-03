@@ -1,0 +1,29 @@
+appId: com.vec.agent
+productName: vec Agent
+copyright: Copyright © vec-next
+directories:
+  output: dist-desktop
+  buildResources: electron/build-resources
+files:
+  - electron/**/*
+  - package.json
+asarUnpack:
+  - electron/preload.cjs
+extraResources:
+  - from: .next/standalone
+    to: standalone
+    filter:
+      - "**/*"
+win:
+  target:
+    - portable
+  artifactName: "${productName}-${version}-win-${arch}.${ext}"
+  signAndEditExecutable: false
+mac:
+  target:
+    - dmg
+  artifactName: "${productName}-${version}-mac-${arch}.${ext}"
+linux:
+  target:
+    - AppImage
+  artifactName: "${productName}-${version}-linux-${arch}.${ext}"

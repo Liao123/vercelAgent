@@ -21,6 +21,7 @@ import {
 import {
   changedPathsFromFileMutation,
   changedPathsFromPatch,
+  clearStoredPostExecuteVerification,
   persistPostExecuteVerification,
   runPostExecuteVerification,
   type PostExecuteVerification,
@@ -90,11 +91,15 @@ async function attachPostExecuteVerification(input: {
     input.changedPaths,
   );
   if (verification.triggered) {
-    await persistPostExecuteVerification(input.rootPath, {
-      taskId: input.taskId,
-      approvalId: input.approvalId,
-      verification,
-    });
+    if (verification.success) {
+      await clearStoredPostExecuteVerification(input.rootPath);
+    } else {
+      await persistPostExecuteVerification(input.rootPath, {
+        taskId: input.taskId,
+        approvalId: input.approvalId,
+        verification,
+      });
+    }
   }
   return verification;
 }

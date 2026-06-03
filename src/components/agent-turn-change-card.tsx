@@ -4,13 +4,21 @@ import { useState } from "react";
 import {
   type TurnFileChangeSummary,
 } from "@/lib/approval-file-changes";
+import { PostExecuteVerificationView } from "@/components/post-execute-verification-view";
+import type { PostExecuteVerification } from "@/agent/verification";
 
 const PRIMARY_COUNT = 3;
 
 type AgentTurnChangeCardProps = {
   summary: TurnFileChangeSummary;
   onReview?: (approvalId: string, filePath?: string) => void;
+  onApply?: (approvalId: string) => void;
   onReject?: (approvalId: string) => void;
+  applyBusy?: boolean;
+  /** 三栏模式：写盘在审查区/自动完成，中栏不重复「接受」按钮（对齐 Cursor 直接改） */
+  showInlineActions?: boolean;
+  postExecuteVerification?: PostExecuteVerification | null;
+  onFixLint?: () => void;
 };
 
 function DiffStats({
@@ -76,7 +84,12 @@ function FileRow({
 export function AgentTurnChangeCard({
   summary,
   onReview,
+  onApply,
   onReject,
+  applyBusy = false,
+  showInlineActions = true,
+  postExecuteVerification = null,
+  onFixLint,
 }: AgentTurnChangeCardProps) {
   const [showAll, setShowAll] = useState(false);
   const { files, totalAdditions, totalDeletions, approvalId, status } = summary;
@@ -101,24 +114,31 @@ export function AgentTurnChangeCard({
             />
           </p>
         </div>
-        {isPending && approvalId && (
+        {isPending && approvalId && !showInlineActions && (
+          <p className="shrink-0 text-[11px] text-zinc-500">
+            请在右侧审查查看
+          </p>
+        )}
+        {isPending && approvalId && showInlineActions && (
           <div className="flex shrink-0 items-center gap-2">
             {onReject && (
               <button
                 type="button"
+                disabled={applyBusy}
                 onClick={() => onReject(approvalId)}
-                className="rounded-lg border border-zinc-200 px-3 py-1.5 text-[12px] text-zinc-600 transition hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                className="rounded-lg border border-zinc-200 px-3 py-1.5 text-[12px] text-zinc-600 transition hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-zinc-800"
               >
-                撤销
+                拒绝
               </button>
             )}
-            {onReview && (
+            {onApply && (
               <button
                 type="button"
-                onClick={() => onReview(approvalId)}
-                className="rounded-lg bg-zinc-900 px-3 py-1.5 text-[12px] font-medium text-white transition hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950"
+                disabled={applyBusy}
+                onClick={() => onApply(approvalId)}
+                className="rounded-lg bg-blue-600 px-3 py-1.5 text-[12px] font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
               >
-                审核
+                {applyBusy ? "接受中…" : "接受"}
               </button>
             )}
           </div>
@@ -159,6 +179,16 @@ export function AgentTurnChangeCard({
         >
           收起
         </button>
+      )}
+
+      {postExecuteVerification?.triggered && (
+        <div className="border-t border-zinc-100 px-3 py-2 dark:border-zinc-800">
+          <PostExecuteVerificationView
+            verification={postExecuteVerification}
+            compact
+            onFixLint={onFixLint}
+          />
+        </div>
       )}
     </article>
   );

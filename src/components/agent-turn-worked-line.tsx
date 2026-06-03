@@ -6,6 +6,7 @@ import { formatCompactionMeta } from "@/lib/compaction-labels";
 import { GitStatusView } from "@/components/git-status-view";
 import { type GitStatusSnapshot } from "@/lib/git-status";
 import { formatPatchToolResultSummary } from "@/lib/patch-summary";
+import { ChevronIcon } from "@/components/chevron-icon";
 import { agentToolIcon } from "@/lib/agent-tool-icons";
 
 const TOOL_LABELS: Record<string, string> = {
@@ -21,6 +22,7 @@ const TOOL_LABELS: Record<string, string> = {
   "git.status": "Git 状态",
   "git.diff": "Git diff",
   "browser.open": "打开浏览器",
+  "browser.inspect": "读取浏览器快照",
   "file.mutation.prepare": "准备文件变更",
   "file.replace.prepare": "准备文本替换",
   "git.mutation.prepare": "准备 Git 操作",
@@ -57,14 +59,7 @@ function summarizeToolResult(result: unknown): string | null {
 
 function Chevron({ open }: { open: boolean }) {
   return (
-    <svg
-      viewBox="0 0 16 16"
-      aria-hidden
-      className={`h-3.5 w-3.5 shrink-0 text-zinc-400 transition ${open ? "rotate-90" : ""}`}
-      fill="currentColor"
-    >
-      <path d="M6 4l4 4-4 4V4z" />
-    </svg>
+    <ChevronIcon expanded={open} className="h-4 w-4 text-zinc-400" />
   );
 }
 
