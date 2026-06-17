@@ -153,7 +153,7 @@ export function AgentTurnChangeCard({
               additions={file.additions}
               deletions={file.deletions}
               onClick={
-                isPending && approvalId && onReview
+                approvalId && onReview
                   ? () => onReview(approvalId, file.path)
                   : undefined
               }

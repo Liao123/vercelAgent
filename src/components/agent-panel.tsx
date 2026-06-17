@@ -1582,20 +1582,31 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     );
   }, [layout, reviewFileKey, reviewDisplay.files]);
 
-  const handleTreeSelectPath = useCallback(
+  const openReviewForPath = useCallback(
     (path: string) => {
-      attachPathFromTree(path, { appendToRequest: false });
-      if (layout !== "triple" || pendingReviewCount === 0) return;
+      if (layout !== "triple") return false;
       const norm = normalizeRepoPath(path);
       const match = reviewDisplay.files.find(
         (file) => normalizeRepoPath(file.path) === norm,
       );
-      if (match) {
-        setReviewFileKey(match.fileKey);
-        setRightRailTab("review");
+      if (!match) return false;
+      setReviewFileKey(match.fileKey);
+      setRightRailTab("review");
+      if (reviewDisplay.approvalId) {
+        setFocusedApprovalId(reviewDisplay.approvalId);
       }
+      return true;
     },
-    [layout, pendingReviewCount, reviewDisplay.files],
+    [layout, reviewDisplay],
+  );
+
+  const handleTreeSelectPath = useCallback(
+    (path: string) => {
+      attachPathFromTree(path, { appendToRequest: false });
+      if (layout !== "triple" || reviewDisplay.files.length === 0) return;
+      openReviewForPath(path);
+    },
+    [layout, reviewDisplay.files.length, openReviewForPath],
   );
 
   useEffect(() => {

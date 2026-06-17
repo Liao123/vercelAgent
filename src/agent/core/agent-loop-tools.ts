@@ -679,7 +679,7 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
   {
     name: "browser.inspect",
     description:
-      "Read the latest in-app browser preview snapshot (title, text excerpt, url). Call browser.open first, then inspect after the page loads.",
+      "Read the latest in-app browser preview snapshot (title, text excerpt, url, console messages, DOM outline). Call browser.open first, then inspect after the page loads.",
     args: {},
     async execute() {
       const [target, snapshot] = await Promise.all([

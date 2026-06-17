@@ -160,3 +160,47 @@ export function listApprovals(options?: {
     summarizeApprovalForList(approval) as ApprovalRecord,
   );
 }
+
+export function compactApprovalHistory(options?: {
+  keepFullDetailCount?: number;
+}): {
+  total: number;
+  compacted: number;
+  bytesBefore: number;
+  bytesAfter: number;
+} {
+  loadApprovalsFromDisk();
+  const keepFull = Math.max(1, options?.keepFullDetailCount ?? 25);
+  const sorted = [...approvals.values()].sort((a, b) =>
+    b.createdAt.localeCompare(a.createdAt),
+  );
+  const bytesBefore = Buffer.byteLength(JSON.stringify(sorted), "utf8");
+  let compacted = 0;
+
+  sorted.forEach((approval, index) => {
+    if (index < keepFull || !approval.details) return;
+    const summarized = summarizeApprovalForList(approval);
+    if (!summarized.details) return;
+    const before = Buffer.byteLength(JSON.stringify(approval.details), "utf8");
+    const after = Buffer.byteLength(JSON.stringify(summarized.details), "utf8");
+    if (after >= before) return;
+    approvals.set(approval.id, {
+      ...approval,
+      details: summarized.details as ApprovalDetails,
+    });
+    compacted += 1;
+  });
+
+  if (compacted > 0) {
+    persistApprovalsToDisk();
+  }
+
+  const afterList = [...approvals.values()];
+  const bytesAfter = Buffer.byteLength(JSON.stringify(afterList), "utf8");
+  return {
+    total: sorted.length,
+    compacted,
+    bytesBefore,
+    bytesAfter,
+  };
+}

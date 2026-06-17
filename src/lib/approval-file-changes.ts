@@ -193,13 +193,20 @@ export function collectTurnFileChanges(
   return pending;
 }
 
-function isReviewableFileApproval(approval: {
-  status: string;
-  execution?: { status: "succeeded" | "failed" };
-}): boolean {
+function isReviewableFileApproval(
+  approval: {
+    taskId: string;
+    status: string;
+    execution?: { status: "succeeded" | "failed" };
+  },
+  currentTaskId?: string | null,
+): boolean {
   if (approval.status === "pending") return true;
   if (approval.status === "approved") {
-    return approval.execution?.status !== "succeeded";
+    if (approval.execution?.status === "succeeded") {
+      return Boolean(currentTaskId && approval.taskId === currentTaskId);
+    }
+    return true;
   }
   return false;
 }
@@ -216,7 +223,7 @@ function listReviewableFileApprovals(
 ): typeof approvals {
   const withFiles = approvals.filter(
     (a) =>
-      isReviewableFileApproval(a) &&
+      isReviewableFileApproval(a, currentTaskId) &&
       extractFileChangesFromDetails(a.details).length > 0,
   );
   if (!currentTaskId) return withFiles;
@@ -255,8 +262,8 @@ export function collectReviewFileChanges(
   }
 
   if (focusedApprovalId) {
-    const focused = candidates.find((a) => a.id === focusedApprovalId);
-    if (focused) {
+    const focused = approvals.find((a) => a.id === focusedApprovalId);
+    if (focused && extractFileChangesFromDetails(focused.details).length > 0) {
       const files = sortByChangeSize(
         extractFileChangesFromDetails(focused.details),
       );

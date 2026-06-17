@@ -11,6 +11,15 @@ export async function POST(request: Request) {
     title?: string | null;
     textPreview?: string | null;
     source?: "webview" | "iframe";
+    consoleMessages?: Array<{
+      level: "debug" | "info" | "warning" | "error";
+      message: string;
+      line?: number;
+      sourceId?: string;
+    }>;
+    domOutline?: string | null;
+    pageErrors?: string[];
+    loadError?: string | null;
   };
   try {
     body = await request.json();
@@ -28,6 +37,10 @@ export async function POST(request: Request) {
       title: body.title ?? null,
       textPreview: body.textPreview ?? null,
       source: body.source === "iframe" ? "iframe" : "webview",
+      consoleMessages: body.consoleMessages,
+      domOutline: body.domOutline ?? null,
+      pageErrors: body.pageErrors,
+      loadError: body.loadError ?? null,
     });
     return Response.json({ snapshot });
   } catch (error) {

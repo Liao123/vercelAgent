@@ -156,7 +156,7 @@ export function BrowserPanel({ embedded = false }: { embedded?: boolean }) {
               embedded={embedded}
               onSnapshot={() => {
                 setFrameFailed(false);
-                setMessage("已捕获页面快照（可供 browser.inspect）。");
+                setMessage("已捕获页面快照（含 console / DOM 大纲，可供 browser.inspect）。");
               }}
               onFail={() => setFrameFailed(true)}
             />

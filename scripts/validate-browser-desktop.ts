@@ -25,6 +25,14 @@ async function main(): Promise<void> {
     webview.includes("/api/agent/browser/snapshot"),
     "webview posts snapshot",
   );
+  assert.ok(
+    webview.includes("console-message"),
+    "webview listens for console messages",
+  );
+  assert.ok(
+    webview.includes("browser-webview-probe"),
+    "webview uses CDP-lite probe scripts",
+  );
 
   const tools = await read("src/agent/core/agent-loop-tools.ts");
   assert.ok(tools.includes('"browser.inspect"'), "browser.inspect tool");

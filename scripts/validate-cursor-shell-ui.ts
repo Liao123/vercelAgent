@@ -35,6 +35,7 @@ async function main(): Promise<void> {
   assert.ok(tree.includes("highlightPath"), "file tree supports review highlight");
   assert.ok(panel.includes("treeHighlightPath"), "panel wires review to tree");
   assert.ok(panel.includes("handleTreeSelectPath"), "tree click syncs review");
+  assert.ok(panel.includes("openReviewForPath"), "tree opens review for changed files");
   assert.ok(reviewPanel.includes("onRevealInTree"), "review double-click reveals in tree");
 
   const workspace = await read("src/components/agent-workspace.tsx");
@@ -92,7 +93,14 @@ async function main(): Promise<void> {
     reviewPanel.includes("点击上方文件查看 diff"),
     "review diff not auto-selected",
   );
-  assert.ok(panel.includes("applyApprovalFromTurn"), "panel wires inline apply");
+  assert.ok(
+    changeCard.includes("onReview") || changeCard.includes("onReviewApproval"),
+    "turn card wires review callback",
+  );
+  assert.ok(
+    !changeCard.includes("isPending && approvalId && onReview"),
+    "turn card file rows open review after apply",
+  );
   assert.ok(
     panel.includes("打开文件夹") || panel.includes("pickWorkspaceFolder"),
     "desktop open folder in workspace picker",

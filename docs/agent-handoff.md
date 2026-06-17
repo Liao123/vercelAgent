@@ -92,9 +92,9 @@ npm run trial:golden-path-sidebar      # 有模型时
 | 优先级 | 内容 |
 | --- | --- |
 | P0 | done | 侧栏加号 + 浏览器自动写盘/lint/再修 + approvals API 瘦身 + scoped lint |
-| P1 | Electron 浏览器 Tab CDP（A025 deferred） |
+| P1 | Electron CDP-lite done（console/DOM/页面错误）；全量 network/截图仍 deferred |
 | P2 | @ 提及带当前编辑器选区（需桌面/IDE） |
-| P2 | 审查区与打开文件联动（单 tab 预览）——部分已在 `validate:cursor-shell-ui` 断言 |
+| ~~P2~~ | ~~审查区与打开文件联动~~ → **A107 done** |
 
 **明确不做**：「接受当前文件」（Cursor 也无此操作）；保持整批接受 / 自动写盘。
 

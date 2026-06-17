@@ -71,11 +71,12 @@ npm run validate:agent-dev-mode
 ## 内置浏览器（A023 MVP）
 
 - 桌面壳：`webviewTag` + `BrowserWebview`（`src/components/browser-webview.tsx`）
-- 页面 `dom-ready` 后 POST `/api/agent/browser/snapshot`（标题 + 正文摘要）
-- Agent 工具：`browser.open` → 加载预览；`browser.inspect` → 读取最近快照
+- 页面 `dom-ready` 后 POST `/api/agent/browser/snapshot`（标题 + 正文摘要 + **console / DOM 大纲 / 页面错误**）
+- Agent 工具：`browser.open` → 加载预览；`browser.inspect` → 读取最近快照（含 CDP-lite 字段）
 
 ```bash
 npm run validate:browser-desktop
+npm run validate:browser-cdp-lite
 ```
 
 Web 版仍用 iframe；部分站点禁止嵌入，请用桌面版或新标签打开。
@@ -96,4 +97,4 @@ npm run trial:server-check:run
 ## 后续
 
 - 代码签名 / 自动更新
-- CDP 深度（console/network/DOM/截图）
+- CDP 深度（network HAR、截图、元素 query）——console/DOM/页面错误已 MVP（`validate:browser-cdp-lite`）

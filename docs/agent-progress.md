@@ -145,6 +145,7 @@ MVP 阶段对照表见 [`docs/agent-architecture.md` §20](agent-architecture.md
 | A081 | done | 黄金路径全链路 validate | `validate-golden-path-accuracy.ts` 串联 trace/消歧/jsx/attach/门禁/evidence；接入 `validate:agent`。 |
 | A082 | done | UI 黄金路径在线试用 | `golden-path-ui-trial.mjs`：Loop 传 `uiContext.layout=triple`；校验 trace/locate、read composer、审批目标；默认 dry-run；`--strict`/`--execute`；实机 PASSED（2026-06-01）。 |
 | A106 | done | 侧栏加号黄金路径 | 离线 validate + 在线 `trial:golden-path-sidebar` PASSED（2026-06-17） |
+| A107 | done | 审查区文件联动 | 已执行审批保留 diff；树/中栏跳转审查；`prune:approvals` |
 
 **准确度路线图（Cursor/Codex 对照）**：详见 [`docs/agent-accuracy-roadmap.md`](agent-accuracy-roadmap.md)。A073–A082 已全部完成；离线黄金路径现以 **A106 侧栏加号** 为准。
 
@@ -162,6 +163,8 @@ MVP 阶段对照表见 [`docs/agent-architecture.md` §20](agent-architecture.md
 - **验证**：`npm run validate:agent` 全绿（~90s）。
 - **P0 API（2026-06-17 续）**：`GET /api/agent/approvals` 列表瘦身（summary + limit=50，~1MB→~77KB）；`GET /api/agent/approvals/[id]` 按需 hydrate；`validate:approval-list-api`。
 - **写后 scoped lint（2026-06-17 续）**：`runScopedLintCommand` 仅 lint 变更路径；写后链移除全仓 build；在线 `--strict --execute` postExecute 通过。
+- **A107 审查联动（2026-06-17 续）**：当前任务已执行审批保留 diff；中栏变更卡/文件树点击跳转审查 Tab；`validate:review-file-linkage`；`npm run prune:approvals` 压缩历史快照。
+- **A025 CDP-lite（2026-06-17 续）**：WebView `console-message` + DOM 大纲 + 页面错误注入；`browser.inspect` 可读；`validate:browser-cdp-lite`。
 
 ### 2026-06-01（续 11）
 
