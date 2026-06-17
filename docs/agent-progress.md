@@ -164,7 +164,7 @@ MVP 阶段对照表见 [`docs/agent-architecture.md` §20](agent-architecture.md
 - **P0 API（2026-06-17 续）**：`GET /api/agent/approvals` 列表瘦身（summary + limit=50，~1MB→~77KB）；`GET /api/agent/approvals/[id]` 按需 hydrate；`validate:approval-list-api`。
 - **写后 scoped lint（2026-06-17 续）**：`runScopedLintCommand` 仅 lint 变更路径；写后链移除全仓 build；在线 `--strict --execute` postExecute 通过。
 - **A107 审查联动（2026-06-17 续）**：当前任务已执行审批保留 diff；中栏变更卡/文件树点击跳转审查 Tab；`validate:review-file-linkage`；`npm run prune:approvals` 压缩历史快照。
-- **A025 CDP-lite（2026-06-17 续）**：WebView `console-message` + DOM 大纲 + 页面错误注入；`browser.inspect` 可读；`validate:browser-cdp-lite`。
+- **A025 CDP-lite（2026-06-17 续）**：network + `browser.query` + WebView 截图 + **HAR-lite**（`.agent-state/browser-network.har.json`）；`GET /api/agent/browser/screenshot`、`GET /api/agent/browser/har`；`browser.inspect` 返回 `harLog`。
 
 ### 2026-06-01（续 11）
 

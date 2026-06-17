@@ -156,7 +156,7 @@ export function BrowserPanel({ embedded = false }: { embedded?: boolean }) {
               embedded={embedded}
               onSnapshot={() => {
                 setFrameFailed(false);
-                setMessage("已捕获页面快照（含 console / DOM 大纲，可供 browser.inspect）。");
+                setMessage("已捕获页面快照（console / DOM / network / HAR / 截图，可供 browser.inspect）。");
               }}
               onFail={() => setFrameFailed(true)}
             />
@@ -179,16 +179,28 @@ export function BrowserPanel({ embedded = false }: { embedded?: boolean }) {
       </div>
 
       {target && (
-        <div className="flex items-center justify-between gap-3 text-xs text-zinc-500">
+        <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-500">
           <span className="min-w-0 truncate">{target.url}</span>
-          <a
-            href={target.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="shrink-0 underline underline-offset-2"
-          >
-            新标签打开
-          </a>
+          <div className="flex shrink-0 items-center gap-3">
+            {desktopBrowser && (
+              <a
+                href="/api/agent/browser/screenshot"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline underline-offset-2"
+              >
+                最新截图
+              </a>
+            )}
+            <a
+              href={target.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline underline-offset-2"
+            >
+              新标签打开
+            </a>
+          </div>
         </div>
       )}
       {frameFailed && (

@@ -33,9 +33,25 @@ async function main(): Promise<void> {
     webview.includes("browser-webview-probe"),
     "webview uses CDP-lite probe scripts",
   );
+  assert.ok(
+    webview.includes("BROWSER_HAR_COLLECT_SCRIPT"),
+    "webview collects HAR-lite entries",
+  );
+  assert.ok(
+    webview.includes("captureWebviewScreenshot"),
+    "webview captures page screenshot",
+  );
+
+  const harRoute = await read("src/app/api/agent/browser/har/route.ts");
+  assert.ok(
+    harRoute.includes("getPersistedBrowserHarLog"),
+    "browser HAR GET API",
+  );
 
   const tools = await read("src/agent/core/agent-loop-tools.ts");
   assert.ok(tools.includes('"browser.inspect"'), "browser.inspect tool");
+  assert.ok(tools.includes('"browser.query"'), "browser.query tool");
+  assert.ok(tools.includes("getPersistedBrowserHarLog"), "browser.inspect includes HAR");
 
   const snapshotRoute = await read(
     "src/app/api/agent/browser/snapshot/route.ts",

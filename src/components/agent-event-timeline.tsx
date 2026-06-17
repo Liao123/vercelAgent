@@ -31,6 +31,7 @@ function toolLabel(name: string): string {
     "git.diff": "Git diff",
     "browser.open": "打开浏览器",
     "browser.inspect": "读取浏览器快照",
+    "browser.query": "查询页面元素",
     "file.mutation.prepare": "准备文件变更",
     "file.replace.prepare": "准备文本替换",
     "git.mutation.prepare": "准备 Git 操作",

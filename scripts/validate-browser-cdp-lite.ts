@@ -1,24 +1,51 @@
 /**
- * A025 CDP-lite：WebView console / DOM 大纲 / 页面错误采集。
+ * A025 CDP-lite：network/HAR + browser.query 队列 + 截图落盘。
  */
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import {
+  getBrowserQueryResult,
+  queueBrowserQuery,
+  saveBrowserQueryResult,
+  waitForBrowserQueryResult,
+} from "../src/agent/browser/browser-query";
+import {
+  getPersistedBrowserHarLog,
+  normalizeHarEntries,
+} from "../src/agent/browser/browser-har";
 import { saveBrowserPageSnapshot } from "../src/agent/browser/browser-snapshot";
 import {
-  BROWSER_DOM_OUTLINE_SCRIPT,
+  BROWSER_HAR_COLLECT_SCRIPT,
   BROWSER_PROBE_INJECT,
+  buildBrowserQueryScript,
   mapWebviewConsoleLevel,
 } from "../src/lib/browser-webview-probe";
 
 async function main(): Promise<void> {
   assert.equal(mapWebviewConsoleLevel(3), "error");
-  assert.equal(mapWebviewConsoleLevel(2), "warning");
-  assert.equal(mapWebviewConsoleLevel(0), "debug");
+  assert.ok(BROWSER_PROBE_INJECT.includes("__vecBrowserProbe.network"));
+  assert.ok(BROWSER_HAR_COLLECT_SCRIPT.includes("getEntriesByType"));
+  assert.ok(buildBrowserQueryScript("button", 5).includes("querySelectorAll"));
 
-  assert.ok(BROWSER_PROBE_INJECT.includes("__vecBrowserProbe"));
-  assert.ok(BROWSER_DOM_OUTLINE_SCRIPT.includes("querySelectorAll"));
+  const normalized = normalizeHarEntries([
+    {
+      url: "http://127.0.0.1:3000/api/x",
+      method: "GET",
+      kind: "fetch",
+      status: 404,
+      durationMs: 12,
+    },
+    {
+      url: "http://127.0.0.1:3000/api/x",
+      method: "GET",
+      kind: "fetch",
+      status: 404,
+      durationMs: 12,
+    },
+  ]);
+  assert.equal(normalized.length, 1);
 
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "vec-browser-cdp-"));
   const prev = process.cwd();
@@ -30,23 +57,61 @@ async function main(): Promise<void> {
       title: "test",
       textPreview: "hello",
       source: "webview",
-      consoleMessages: [
-        { level: "error", message: "boom", line: 1, sourceId: "app.js" },
+      harEntries: [
+        {
+          url: "http://127.0.0.1:3000/api/x",
+          method: "POST",
+          kind: "fetch",
+          status: 500,
+          durationMs: 42,
+          error: "HTTP 500",
+        },
       ],
-      domOutline: "button: Submit",
-      pageErrors: ["TypeError: x"],
-      loadError: null,
+      screenshotJpegBase64: Buffer.from("fake-jpeg").toString("base64"),
+      screenshotWidth: 800,
+      screenshotHeight: 600,
     });
-    assert.equal(saved.consoleMessages?.length, 1);
-    assert.equal(saved.domOutline, "button: Submit");
-    assert.equal(saved.pageErrors?.[0], "TypeError: x");
+    assert.equal(saved.networkEvents?.length, 1);
+    assert.ok(saved.harLog?.filePath.includes("browser-network.har.json"));
+    assert.equal(saved.harLog?.entryCount, 1);
+    assert.equal(saved.harLog?.failedCount, 1);
+    assert.ok(saved.screenshot?.filePath.includes("browser-screenshot.jpg"));
+    assert.ok(saved.screenshot!.bytes > 0);
 
-    const raw = await fs.readFile(
-      path.join(root, ".agent-state/browser-snapshot.json"),
-      "utf8",
-    );
-    assert.ok(raw.includes("consoleMessages"));
-    assert.ok(raw.includes("domOutline"));
+    const har = await getPersistedBrowserHarLog();
+    assert.equal(har?.entries.length, 1);
+    assert.equal(har?.entries[0]?.method, "POST");
+
+    const pending = await queueBrowserQuery({
+      selector: "button.primary",
+      maxResults: 8,
+    });
+    assert.equal(pending.selector, "button.primary");
+
+    await saveBrowserQueryResult({
+      selector: pending.selector,
+      matches: [
+        {
+          tag: "button",
+          id: "go",
+          className: "primary",
+          text: "Submit",
+          rect: { x: 1, y: 2, w: 80, h: 32 },
+        },
+      ],
+      completedAt: new Date().toISOString(),
+      url: "http://127.0.0.1:3000/",
+    });
+
+    const result = await getBrowserQueryResult();
+    assert.equal(result?.matches.length, 1);
+
+    const waited = await waitForBrowserQueryResult({
+      selector: pending.selector,
+      queuedAt: "1970-01-01T00:00:00.000Z",
+      timeoutMs: 100,
+    });
+    assert.ok(waited);
   } finally {
     process.chdir(prev);
     await fs.rm(root, { recursive: true, force: true });

@@ -71,8 +71,9 @@ npm run validate:agent-dev-mode
 ## 内置浏览器（A023 MVP）
 
 - 桌面壳：`webviewTag` + `BrowserWebview`（`src/components/browser-webview.tsx`）
-- 页面 `dom-ready` 后 POST `/api/agent/browser/snapshot`（标题 + 正文摘要 + **console / DOM 大纲 / 页面错误**）
-- Agent 工具：`browser.open` → 加载预览；`browser.inspect` → 读取最近快照（含 CDP-lite 字段）
+- 页面 `dom-ready` 后 POST `/api/agent/browser/snapshot`（标题 + 正文 + console + DOM + **network/HAR-lite** + 截图）
+- Agent 工具：`browser.open` → 预览；`browser.inspect` → 快照（含 `harLog`）；**`browser.query`** → CSS 选择器查 DOM（桌面 WebView）
+- HAR 完整条目：`GET /api/agent/browser/har`；截图：`GET /api/agent/browser/screenshot`
 
 ```bash
 npm run validate:browser-desktop
@@ -96,5 +97,4 @@ npm run trial:server-check:run
 
 ## 后续
 
-- 代码签名 / 自动更新
-- CDP 深度（network HAR、截图、元素 query）——console/DOM/页面错误已 MVP（`validate:browser-cdp-lite`）
+- 完整 CDP HAR（非 lite）/ 签名 / 自动更新

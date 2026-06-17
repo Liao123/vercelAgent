@@ -20,6 +20,18 @@ export async function POST(request: Request) {
     domOutline?: string | null;
     pageErrors?: string[];
     loadError?: string | null;
+    networkEvents?: Array<{
+      url: string;
+      kind: "resource" | "fetch" | "xhr";
+      status?: number | null;
+      durationMs?: number;
+      size?: number;
+      error?: string | null;
+    }>;
+    harEntries?: unknown[];
+    screenshotJpegBase64?: string | null;
+    screenshotWidth?: number;
+    screenshotHeight?: number;
   };
   try {
     body = await request.json();
@@ -41,6 +53,11 @@ export async function POST(request: Request) {
       domOutline: body.domOutline ?? null,
       pageErrors: body.pageErrors,
       loadError: body.loadError ?? null,
+      networkEvents: body.networkEvents,
+      harEntries: body.harEntries,
+      screenshotJpegBase64: body.screenshotJpegBase64,
+      screenshotWidth: body.screenshotWidth,
+      screenshotHeight: body.screenshotHeight,
     });
     return Response.json({ snapshot });
   } catch (error) {

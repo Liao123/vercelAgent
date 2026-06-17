@@ -2,12 +2,16 @@
 
 import { useEffect, useRef, type RefObject } from "react";
 import type { BrowserConsoleMessage } from "@/agent/browser/browser-snapshot";
+import type { BrowserQueryMatch } from "@/agent/browser/browser-query";
 import {
   BROWSER_DOM_OUTLINE_SCRIPT,
+  BROWSER_HAR_COLLECT_SCRIPT,
   BROWSER_PROBE_INJECT,
   BROWSER_PROBE_READ_ERRORS,
+  buildBrowserQueryScript,
   mapWebviewConsoleLevel,
 } from "@/lib/browser-webview-probe";
+import { captureWebviewScreenshot } from "@/lib/browser-webview-screenshot";
 
 type BrowserWebviewProps = {
   url: string;
@@ -20,6 +24,10 @@ type BrowserWebviewProps = {
 type WebviewElement = HTMLElement & {
   executeJavaScript?: (code: string) => Promise<unknown>;
   getURL?: () => string;
+  capturePage?: () => Promise<{
+    getSize: () => { width: number; height: number };
+    toJPEG: (quality: number) => Uint8Array | Buffer;
+  }>;
 };
 
 type ConsoleMessageEvent = Event & {
@@ -37,6 +45,11 @@ async function reportSnapshot(payload: {
   domOutline?: string | null;
   pageErrors?: string[];
   loadError?: string | null;
+  networkEvents?: BrowserNetworkEntry[];
+  harEntries?: unknown[];
+  screenshotJpegBase64?: string | null;
+  screenshotWidth?: number;
+  screenshotHeight?: number;
 }) {
   await fetch("/api/agent/browser/snapshot", {
     method: "POST",
@@ -44,6 +57,33 @@ async function reportSnapshot(payload: {
     body: JSON.stringify({
       ...payload,
       source: "webview",
+    }),
+  });
+}
+
+async function runPendingQuery(wv: WebviewElement, fallbackUrl: string) {
+  if (typeof wv.executeJavaScript !== "function") return;
+
+  const res = await fetch("/api/agent/browser/query");
+  const data = (await res.json()) as {
+    pending?: { selector: string; maxResults: number } | null;
+  };
+  if (!data.pending?.selector) return;
+
+  await wv.executeJavaScript(BROWSER_PROBE_INJECT);
+  const matches = (await wv.executeJavaScript(
+    buildBrowserQueryScript(data.pending.selector, data.pending.maxResults),
+  )) as BrowserQueryMatch[];
+  const currentUrl =
+    typeof wv.getURL === "function" ? wv.getURL() : fallbackUrl;
+
+  await fetch("/api/agent/browser/query", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      selector: data.pending.selector,
+      url: currentUrl,
+      matches: Array.isArray(matches) ? matches : [],
     }),
   });
 }
@@ -88,6 +128,10 @@ export function BrowserWebview({
         const pageErrors = (await wv.executeJavaScript(
           BROWSER_PROBE_READ_ERRORS,
         )) as string[];
+        const harEntries = (await wv.executeJavaScript(
+          BROWSER_HAR_COLLECT_SCRIPT,
+        )) as unknown[];
+        const shot = await captureWebviewScreenshot(wv);
 
         await reportSnapshot({
           url: currentUrl,
@@ -97,7 +141,12 @@ export function BrowserWebview({
           domOutline: domOutline || null,
           pageErrors: Array.isArray(pageErrors) ? pageErrors : [],
           loadError: loadErrorRef.current,
+          harEntries: Array.isArray(harEntries) ? harEntries : [],
+          screenshotJpegBase64: shot?.jpegBase64 ?? null,
+          screenshotWidth: shot?.width,
+          screenshotHeight: shot?.height,
         });
+        await runPendingQuery(wv, currentUrl);
         onSnapshot?.();
       } catch {
         onFail?.();
@@ -129,7 +178,9 @@ export function BrowserWebview({
       };
       loadErrorRef.current =
         detail.errorDescription ??
-        (detail.errorCode != null ? `Load failed (${detail.errorCode})` : "Load failed");
+        (detail.errorCode != null
+          ? `Load failed (${detail.errorCode})`
+          : "Load failed");
       onFail?.();
     };
 
@@ -137,7 +188,13 @@ export function BrowserWebview({
     node.addEventListener("did-fail-load", onDidFailLoad);
     node.addEventListener("console-message", onConsoleMessage as EventListener);
 
+    const queryTimer = window.setInterval(() => {
+      const wv = node as WebviewElement;
+      void runPendingQuery(wv, url);
+    }, 900);
+
     return () => {
+      window.clearInterval(queryTimer);
       node.removeEventListener("dom-ready", onDomReady);
       node.removeEventListener("did-fail-load", onDidFailLoad);
       node.removeEventListener(

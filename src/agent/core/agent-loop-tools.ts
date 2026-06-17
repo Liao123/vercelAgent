@@ -7,9 +7,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
+  getBrowserQueryResult,
+  getPersistedBrowserHarLog,
   getPersistedBrowserPageSnapshot,
   getPersistedBrowserTarget,
   openBrowserUrl,
+  queueBrowserQuery,
+  waitForBrowserQueryResult,
 } from "@/agent/browser";
 import {
   buildProjectIndex,
@@ -61,6 +65,7 @@ export type AgentLoopToolName =
   | "git.diff"
   | "browser.open"
   | "browser.inspect"
+  | "browser.query"
   | "file.replace.prepare"
   | "file.mutation.prepare"
   | "git.mutation.prepare"
@@ -679,20 +684,69 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
   {
     name: "browser.inspect",
     description:
-      "Read the latest in-app browser preview snapshot (title, text excerpt, url, console messages, DOM outline). Call browser.open first, then inspect after the page loads.",
+      "Read the latest in-app browser preview snapshot (title, text, console, DOM outline, network, HAR-lite, screenshot path). Call browser.open first, then inspect after the page loads.",
     args: {},
     async execute() {
-      const [target, snapshot] = await Promise.all([
+      const [target, snapshot, queryResult, harLog] = await Promise.all([
         getPersistedBrowserTarget(),
         getPersistedBrowserPageSnapshot(),
+        getBrowserQueryResult(),
+        getPersistedBrowserHarLog(),
       ]);
       return {
         result: {
           target,
           snapshot,
+          queryResult,
+          harLog,
           hint: snapshot
-            ? "Snapshot from embedded webview/iframe preview."
+            ? "Snapshot from embedded webview/iframe preview. Full HAR at GET /api/agent/browser/har."
             : "No snapshot yet. Use browser.open and wait for preview to load.",
+        },
+      };
+    },
+  },
+  {
+    name: "browser.query",
+    description:
+      "Query DOM elements in the in-app browser preview by CSS selector. Requires browser.open first and desktop WebView (or wait for page load). Returns matching elements with text and bounding rect.",
+    args: {
+      selector: "CSS selector, e.g. button.primary or [data-testid=submit]",
+      maxResults: "Optional max matches (default 12, max 40).",
+    },
+    async execute(args) {
+      const selector = stringArg(args, "selector");
+      const maxResultsRaw = args.maxResults;
+      const maxResults =
+        typeof maxResultsRaw === "number"
+          ? maxResultsRaw
+          : typeof maxResultsRaw === "string"
+            ? Number.parseInt(maxResultsRaw, 10)
+            : undefined;
+
+      const pending = await queueBrowserQuery({ selector, maxResults });
+      const result = await waitForBrowserQueryResult({
+        selector: pending.selector,
+        queuedAt: pending.queuedAt,
+      });
+
+      if (!result) {
+        return {
+          result: {
+            status: "pending",
+            selector: pending.selector,
+            hint: "Query queued. Desktop WebView must be open on the browser tab. Retry browser.query or call browser.inspect.",
+          },
+        };
+      }
+
+      return {
+        result: {
+          status: "ok",
+          selector: result.selector,
+          url: result.url,
+          matchCount: result.matches.length,
+          matches: result.matches,
         },
       };
     },

@@ -5,3 +5,5 @@
  */
 export * from "@/agent/browser/browser-state";
 export * from "@/agent/browser/browser-snapshot";
+export * from "@/agent/browser/browser-query";
+export * from "@/agent/browser/browser-har";

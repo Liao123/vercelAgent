@@ -92,7 +92,7 @@ npm run trial:golden-path-sidebar      # 有模型时
 | 优先级 | 内容 |
 | --- | --- |
 | P0 | done | 侧栏加号 + 浏览器自动写盘/lint/再修 + approvals API 瘦身 + scoped lint |
-| P1 | Electron CDP-lite done（console/DOM/页面错误）；全量 network/截图仍 deferred |
+| P1 | Electron CDP-lite：console/DOM/network/query/截图/**HAR-lite**（`GET /api/agent/browser/har`）；完整 CDP HAR 仍 deferred |
 | P2 | @ 提及带当前编辑器选区（需桌面/IDE） |
 | ~~P2~~ | ~~审查区与打开文件联动~~ → **A107 done** |
 
