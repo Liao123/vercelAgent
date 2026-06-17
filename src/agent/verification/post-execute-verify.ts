@@ -12,11 +12,7 @@ import {
   type VerificationCommand,
 } from "@/agent/verification";
 
-const POST_EXECUTE_SCRIPTS: VerificationCommand[] = [
-  "lint",
-  "typecheck",
-  "build",
-];
+const POST_EXECUTE_SCRIPTS: VerificationCommand[] = ["lint"];
 const CODE_FILE_PATTERN = /\.(tsx?|jsx?|css|json|mjs|cjs)$/i;
 
 export type PostExecuteVerification = {

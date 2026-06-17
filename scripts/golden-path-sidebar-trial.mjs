@@ -201,6 +201,10 @@ async function main() {
     if (pev?.triggered) {
       console.log("   postExecuteVerification:", pev.success ? "passed" : "failed");
       console.log("   postExecute summary:", pev.summary?.slice(0, 120));
+      assertCheck(
+        pev.success,
+        `postExecuteVerification failed: ${pev.summary?.slice(0, 200)}`,
+      );
     }
   } else {
     await fetch(`${BASE}/api/agent/approvals`, {

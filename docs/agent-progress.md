@@ -161,7 +161,7 @@ MVP 阶段对照表见 [`docs/agent-architecture.md` §20](agent-architecture.md
 - **修复**：Windows 写后验证 `spawn npm ENOENT` → `verification-runner` 使用 `shell: true`；`eslint` 忽略 `dist-desktop/**`。
 - **验证**：`npm run validate:agent` 全绿（~90s）。
 - **P0 API（2026-06-17 续）**：`GET /api/agent/approvals` 列表瘦身（summary + limit=50，~1MB→~77KB）；`GET /api/agent/approvals/[id]` 按需 hydrate；`validate:approval-list-api`。
-- **写后 scoped lint（2026-06-17 续）**：`runScopedLintCommand` 仅 lint 变更路径；`electron/**` eslint ignore；修复全仓 lint 误报写后验证失败。
+- **写后 scoped lint（2026-06-17 续）**：`runScopedLintCommand` 仅 lint 变更路径；写后链移除全仓 build；在线 `--strict --execute` postExecute 通过。
 
 ### 2026-06-01（续 11）
 

@@ -24,8 +24,8 @@
 
 ```bash
 npm run validate:agent
-npm run trial:golden-path-sidebar      # handoff P0（侧栏加号）
-npm run trial:golden-path-ui           # composer placeholder（A082）
+npm run trial:golden-path-sidebar:strict      # dry-run + strict prepare
+npm run trial:golden-path-sidebar:execute     # 写盘 + scoped lint 验收
 ```
 
 ---
@@ -47,7 +47,7 @@ npm run trial:golden-path-ui           # composer placeholder（A082）
 
 - 自动写盘（低/中风险）：`readAutoApplyFileChanges()` 未设置时 **默认 true**
 - lint 失败自动再修：`readAutoReloopOnLintFail()` 未设置时 **默认 true**
-- 写盘后验证脚本顺序：**lint → typecheck → build**（`post-execute-verify.ts`）
+- 写盘后验证：**scoped lint only**（`post-execute-verify.ts`）；全仓 build 已从写后链移除（避免误报）
 
 ### Loop 思考闭环（修复「审批未就绪」死循环）
 

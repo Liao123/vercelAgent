@@ -40,6 +40,8 @@
     "trial:semantic-compare": "node scripts/semantic-compact-compare.mjs",
     "trial:golden-path-ui": "node scripts/golden-path-ui-trial.mjs",
     "trial:golden-path-sidebar": "node scripts/golden-path-sidebar-trial.mjs",
+    "trial:golden-path-sidebar:strict": "node scripts/golden-path-sidebar-trial.mjs --strict",
+    "trial:golden-path-sidebar:execute": "node scripts/golden-path-sidebar-trial.mjs --strict --execute",
     "trial:sidebar-p0-lint-reloop": "node scripts/sidebar-p0-lint-reloop.mjs",
     "trial:auto-apply-pending": "node scripts/auto-apply-latest-pending.mjs",
     "trial:server-check": "node scripts/trial-server-check.mjs",
