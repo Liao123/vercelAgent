@@ -84,9 +84,9 @@ MVP 阶段对照表见 [`docs/agent-architecture.md` §20](agent-architecture.md
 | A020 | done | 增加验证工具 | 支持 lint/build/test 等项目验证命令。 |
 | A021 | done | 跑通开发闭环 | 需求 -> 定位文件 -> 计划 -> 修改 -> 验证 -> 总结。 |
 | A022 | done | 增加内置浏览器 UI | 产品内可以打开目标网址或本地页面，AI 可以触发打开指定 URL。 |
-| A023 | partial | 桌面 WebView 快照 + `browser.inspect` | Electron `<webview>`、`/api/agent/browser/snapshot`、Loop 工具已接；CDP/console/network/DOM 深度仍 deferred。 |
+| A023 | done | 桌面 WebView 快照 + `browser.inspect` + CDP-lite | Electron `<webview>`、console/DOM/network/query/截图/HAR-lite。 |
 | A024 | deferred | 页面生成/复刻流程 | demo URL + 素材 + design spec -> 修改代码 -> 浏览器验证，先暂缓。 |
-| A025 | in_progress | Electron 桌面端 | 壳、选文件夹、`pack-desktop.mjs`、首次设置条（`.env.local` + 工作区）、WebView；见 `docs/agent-electron.md`。 |
+| A025 | partial | Electron 桌面端 + CDP-lite | 壳、选文件夹、pack、WebView、CDP-lite 已交付；签名/自动更新/完整 HAR deferred。 |
 | A026 | done | Trace Store 持久化 | Trace 不再只存在内存 Map，支持 SQLite 或文件落盘，重启后可恢复。 |
 | A027 | done | Workspace 项目选择 | 支持用户选择或配置项目路径，而不是固定使用 Next.js 进程 cwd。 |
 | A028 | done | 真正 Agent Loop | 模型能基于事件和工具结果循环推理，而不是只跑固定开发闭环。 |

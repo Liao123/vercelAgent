@@ -6,19 +6,17 @@
 
 ---
 
-## 最新（2026-06-17 · A106）
+## 最新（2026-06-17 · A025 CDP-lite）
 
-**阶段结论**：闭环/Loop 主路径 UI 已移除后，离线黄金路径已迁移为 **侧栏项目行「＋」**；`npm run validate:agent` **全绿**（~90s）。
+**阶段结论**：A106 黄金路径 + A107 审查联动 + **A025 CDP-lite（network/query/截图/HAR）** 已交付；`npm run validate:agent` **全绿**（~87s）。
 
 | 项 | 内容 |
 | --- | --- |
 | **A106** | 消歧 / jsx / prepare 对齐 handoff P0；`scripts/golden-path-fixtures.ts` |
+| **A107** | 审查区文件联动 + `prune:approvals` |
+| **A025** | CDP-lite：console/DOM/页面错误 + network + `browser.query` + 截图 + HAR-lite（`ccd3934`） |
 | 离线 | `validate-golden-path` → `agent-session-sidebar.tsx` L460 `+` |
-| 在线 | `npm run trial:golden-path-sidebar`（新脚本，需 dev + 模型） |
-| 修复 | `validate-electron-shell`、`validate-browser-desktop`；Windows 写后 lint `shell: true` |
-| **P0 UI（2026-06-17）** | 全链路：自动写盘 ✓ → 写后 lint ✓ → 自动再修 ✓ → prepare ✓ → 自动写盘（lint 修复）✓ |
-| **P0 写后验证（2026-06-17）** | lint 仅扫 `changedPaths`（`runScopedLintCommand`）；`electron/**` 加入 eslint ignore |
-| **P0 API（2026-06-17）** | `GET /api/agent/approvals` 列表瘦身（默认 summary + limit=50，~1MB→~77KB）；单条详情 `GET /api/agent/approvals/[id]`；审查聚焦时按需 hydrate |
+| 在线 | `npm run trial:golden-path-sidebar`（需 dev + 模型） |
 
 **回归命令**：
 
@@ -76,9 +74,8 @@ npm run dev
 
 ## 下次第一件事（建议顺序）
 
-1. **（可选）提交本轮**：approvals API 瘦身 + scoped lint + eslint ignore
-2. **在线复验**：`npm run trial:golden-path-sidebar -- --strict`（dev + 模型）
-3. **产品向**：A025 Electron CDP / 审查区与打开文件联动
+1. **在线复验**：`npm run trial:golden-path-sidebar -- --strict`（dev + 模型）
+2. **产品向**：@ 提及带编辑器选区；Electron 签名/自动更新；完整 CDP HAR（非 lite）
 
 ```bash
 npm run validate:agent
@@ -92,9 +89,9 @@ npm run trial:golden-path-sidebar      # 有模型时
 | 优先级 | 内容 |
 | --- | --- |
 | P0 | done | 侧栏加号 + 浏览器自动写盘/lint/再修 + approvals API 瘦身 + scoped lint |
-| P1 | Electron CDP-lite：console/DOM/network/query/截图/**HAR-lite**（`GET /api/agent/browser/har`）；完整 CDP HAR 仍 deferred |
+| P1 | done | Electron CDP-lite（console/DOM/network/query/截图/HAR-lite） |
 | P2 | @ 提及带当前编辑器选区（需桌面/IDE） |
-| ~~P2~~ | ~~审查区与打开文件联动~~ → **A107 done** |
+| P2 | Electron 签名 / 自动更新 / 完整 CDP HAR |
 
 **明确不做**：「接受当前文件」（Cursor 也无此操作）；保持整批接受 / 自动写盘。
 
