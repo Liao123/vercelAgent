@@ -165,6 +165,8 @@ MVP 阶段对照表见 [`docs/agent-architecture.md` §20](agent-architecture.md
 - **写后 scoped lint（2026-06-17 续）**：`runScopedLintCommand` 仅 lint 变更路径；写后链移除全仓 build；在线 `--strict --execute` postExecute 通过。
 - **A107 审查联动（2026-06-17 续）**：当前任务已执行审批保留 diff；中栏变更卡/文件树点击跳转审查 Tab；`validate:review-file-linkage`；`npm run prune:approvals` 压缩历史快照。
 - **A025 CDP-lite（2026-06-17 续）**：network + `browser.query` + WebView 截图 + **HAR-lite**（`.agent-state/browser-network.har.json`）；`GET /api/agent/browser/screenshot`、`GET /api/agent/browser/har`；`browser.inspect` 返回 `harLog`。
+- **A108 审查选区 @（2026-06-17 续）**：审查 diff 选中文本 → `@path#Lx-y`；Loop 预读行切片；`validate:editor-selection`。
+- **A106 在线 strict trial（2026-06-17 续）**：`trial:golden-path-sidebar:strict` PASSED（Node 22 + dev）。
 
 ### 2026-06-01（续 11）
 

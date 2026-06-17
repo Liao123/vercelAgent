@@ -81,8 +81,10 @@ import { describeUiContextForPrompt } from "@/agent/indexer/ui-layout-boost";
 import {
   formatAttachedFilesUserNote,
   mergeAttachedPaths,
+  mergeAttachedSelections,
   parseAtPathsFromRequest,
   preloadAttachedFiles,
+  type EditorSelectionContext,
 } from "@/agent/core/attached-files";
 import type { AgentUiContext } from "@/agent/types";
 
@@ -98,6 +100,8 @@ export type AgentLoopInput = {
   uiContext?: AgentUiContext;
   /** 用户手动附加的文件路径（与 @path 合并预读） */
   attachedPaths?: string[];
+  /** 审查区/编辑器选区（与 @path#Lx-y 合并） */
+  attachedSelections?: EditorSelectionContext[];
   /** 为 true 时禁止 edit.recovery，强制模型走 prepare（与试用 --strict 对齐） */
   strictPrepare?: boolean;
   onEvent?: (event: AgentEvent) => void;
@@ -483,12 +487,16 @@ export async function runAgentLoop(
 
   const now = nowIso();
   const workspace = await getCurrentWorkspace();
-  const { cleanRequest, attachedPaths: parsedAttachedPaths } =
+  const { cleanRequest, attachedPaths: parsedAttachedPaths, attachedSelections: parsedSelections } =
     parseAtPathsFromRequest(input.userRequest);
   const effectiveUserRequest = cleanRequest || input.userRequest;
   const attachedPaths = mergeAttachedPaths(
     input.attachedPaths,
     parsedAttachedPaths,
+  );
+  const attachedSelections = mergeAttachedSelections(
+    input.attachedSelections,
+    parsedSelections,
   );
   const priorThreadMemory = input.threadId
     ? getThreadMemory(input.threadId)
@@ -604,7 +612,9 @@ export async function runAgentLoop(
   }
   const userMessageText = [
     effectiveUserRequest,
-    attachedPaths.length > 0 ? formatAttachedFilesUserNote(attachedPaths) : "",
+    attachedPaths.length > 0
+      ? formatAttachedFilesUserNote(attachedPaths, attachedSelections)
+      : "",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -619,6 +629,7 @@ export async function runAgentLoop(
     const preloaded = await preloadAttachedFiles({
       rootPath: workspace.rootPath,
       paths: attachedPaths,
+      selections: attachedSelections,
     });
     for (const file of preloaded) {
       const result = file.error

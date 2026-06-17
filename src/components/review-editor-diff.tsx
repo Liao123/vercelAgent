@@ -9,6 +9,7 @@ import {
   writeReviewDiffChangesOnly,
   writeReviewDiffLayout,
 } from "@/lib/agent-review-diff-prefs";
+import type { DiffDomSelection } from "@/lib/review-editor-selection";
 
 type ReviewEditorDiffProps = {
   before?: ApprovalContentSnapshot | string;
@@ -17,6 +18,7 @@ type ReviewEditorDiffProps = {
   additions?: number;
   deletions?: number;
   className?: string;
+  onEditorSelectionChange?: (selection: DiffDomSelection | null) => void;
 };
 
 /** 审查区全高 diff：布局/仅变更行偏好持久化，更接近 IDE 内嵌预览。 */
@@ -27,6 +29,7 @@ export function ReviewEditorDiff({
   additions = 0,
   deletions = 0,
   className = "",
+  onEditorSelectionChange,
 }: ReviewEditorDiffProps) {
   const [layout, setLayout] = useState<DiffLayout>(() => readReviewDiffLayout());
   const [changesOnly, setChangesOnly] = useState(() =>
@@ -113,6 +116,7 @@ export function ReviewEditorDiff({
         showLayoutToggle={false}
         fillHeight
         className="min-h-0 flex-1"
+        onEditorSelectionChange={onEditorSelectionChange}
       />
     </div>
   );

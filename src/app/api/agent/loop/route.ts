@@ -18,6 +18,12 @@ export async function POST(request: Request) {
     threadId?: string;
     uiContext?: { layout?: string; activeRoute?: string };
     attachedPaths?: string[];
+    attachedSelections?: Array<{
+      path: string;
+      startLine: number;
+      endLine: number;
+      selectedText?: string;
+    }>;
     strictPrepare?: boolean;
   };
   try {
@@ -71,6 +77,34 @@ export async function POST(request: Request) {
       )
     : undefined;
 
+  const attachedSelections = Array.isArray(body.attachedSelections)
+    ? body.attachedSelections
+        .filter(
+          (item): item is {
+            path: string;
+            startLine: number;
+            endLine: number;
+            selectedText?: string;
+          } =>
+            Boolean(
+              item &&
+                typeof item === "object" &&
+                typeof item.path === "string" &&
+                typeof item.startLine === "number" &&
+                typeof item.endLine === "number",
+            ),
+        )
+        .map((item) => ({
+          path: item.path.trim(),
+          startLine: item.startLine,
+          endLine: item.endLine,
+          selectedText:
+            typeof item.selectedText === "string"
+              ? item.selectedText
+              : undefined,
+        }))
+    : undefined;
+
   void runAgentLoop({
     userRequest: userRequest || "请根据附图完成开发任务。",
     referenceImages:
@@ -80,6 +114,7 @@ export async function POST(request: Request) {
     threadId,
     uiContext,
     attachedPaths,
+    attachedSelections,
     strictPrepare: body.strictPrepare === true,
     onEvent: (event) => writer.emit(event),
   })

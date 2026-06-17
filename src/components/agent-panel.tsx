@@ -57,6 +57,11 @@ import {
 } from "@/lib/desktop-bridge";
 import { useDesktopApp } from "@/lib/use-desktop-app";
 import { extractAtMentionPaths } from "@/lib/composer-at-mention";
+import type { EditorSelectionContext } from "@/agent/core/attached-files";
+import {
+  formatMentionLineRange,
+  type ReviewEditorSelection,
+} from "@/lib/review-editor-selection";
 import { workspaceIdsEqual } from "@/lib/workspace-path";
 import {
   canAutoApplyFileApproval,
@@ -666,6 +671,8 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
   const [pushConfirmId, setPushConfirmId] = useState<string | null>(null);
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
   const [attachedFiles, setAttachedFiles] = useState<string[]>([]);
+  const [reviewEditorSelection, setReviewEditorSelection] =
+    useState<ReviewEditorSelection | null>(null);
   const [recentAttachedPaths, setRecentAttachedPaths] = useState<string[]>([]);
   const [currentThreadId, setCurrentThreadId] = useState<string | null>(null);
   const [continueThreadMemory, setContinueThreadMemory] = useState(true);
@@ -1173,6 +1180,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
       ]),
     ];
     const pathsForLoop = mergedPaths.length > 0 ? mergedPaths : undefined;
+    const attachedSelections = buildAttachedSelections(pathsForLoop);
 
     setEvents([]);
     setError(null);
@@ -1199,6 +1207,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
               : undefined,
           uiContext: { layout, activeRoute: "/" },
           attachedPaths: pathsForLoop,
+          attachedSelections,
           strictPrepare: readStrictPrepareLoop(),
         }),
       });
@@ -1490,6 +1499,38 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     );
   }
 
+  function buildAttachedSelections(
+    paths: string[] | undefined,
+  ): EditorSelectionContext[] | undefined {
+    if (!paths?.length || !reviewEditorSelection) return undefined;
+    const norm = normalizeRepoPath(reviewEditorSelection.path);
+    if (!paths.some((path) => normalizeRepoPath(path) === norm)) {
+      return undefined;
+    }
+    return [
+      {
+        path: reviewEditorSelection.path,
+        startLine: reviewEditorSelection.startLine,
+        endLine: reviewEditorSelection.endLine,
+        selectedText: reviewEditorSelection.selectedText,
+      },
+    ];
+  }
+
+  function mentionTokenForPath(filePath: string): string {
+    const path = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "");
+    if (
+      reviewEditorSelection &&
+      normalizeRepoPath(reviewEditorSelection.path) === normalizeRepoPath(path)
+    ) {
+      return `@${path}${formatMentionLineRange(
+        reviewEditorSelection.startLine,
+        reviewEditorSelection.endLine,
+      )}`;
+    }
+    return `@${path}`;
+  }
+
   function attachPathFromTree(
     filePath: string,
     options?: { appendToRequest?: boolean },
@@ -1503,7 +1544,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     }
     if (options?.appendToRequest === false) return;
     setRequest((prev) => {
-      const token = `@${path}`;
+      const token = mentionTokenForPath(path);
       if (prev.includes(token)) return prev;
       const trimmed = prev.trim();
       return trimmed ? `${trimmed} ${token}` : token;
@@ -1917,6 +1958,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
         attachPathFromTree(path, { appendToRequest: false });
         setRightRailTab("files");
       }}
+      onEditorSelectionChange={setReviewEditorSelection}
     />
   );
 
@@ -2022,6 +2064,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
             onPickAttachedPath={(path) =>
               attachPathFromTree(path, { appendToRequest: false })
             }
+            reviewEditorSelection={reviewEditorSelection}
             onAgentPrefsChange={() => {
               setApprovalStatus(null);
             }}

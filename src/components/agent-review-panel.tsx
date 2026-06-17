@@ -8,6 +8,7 @@ import {
   type FileChangeEntry,
 } from "@/lib/approval-file-changes";
 import type { GitStatusFileEntry } from "@/lib/git-status";
+import type { ReviewEditorSelection } from "@/lib/review-editor-selection";
 import { approvalAnchorId } from "@/lib/approval-anchor";
 import { ReviewEditorDiff } from "@/components/review-editor-diff";
 
@@ -34,6 +35,8 @@ type AgentReviewPanelProps = {
   onRevealInTree?: (path: string) => void;
   /** 选中文件时同步文件树高亮（不切换 Tab） */
   onFileHighlight?: (path: string) => void;
+  /** 审查 diff 内文本选区（供 Composer @ 带行号） */
+  onEditorSelectionChange?: (selection: ReviewEditorSelection | null) => void;
   /** 仅当审批仍为 pending（未自动写盘 / 高风险）时显示；对齐 Cursor 直接改，无按文件接受 */
   reviewActions?: {
     approvalId: string;
@@ -106,7 +109,13 @@ function FileChip({
   );
 }
 
-function GitReviewDiffPane({ path }: { path: string }) {
+function GitReviewDiffPane({
+  path,
+  onEditorSelectionChange,
+}: {
+  path: string;
+  onEditorSelectionChange?: (selection: ReviewEditorSelection | null) => void;
+}) {
   const [before, setBefore] = useState("");
   const [after, setAfter] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -161,14 +170,43 @@ function GitReviewDiffPane({ path }: { path: string }) {
     );
   }
   return (
-    <ReviewEditorDiff before={before} after={after} filePath={path} />
+    <ReviewEditorDiff
+      before={before}
+      after={after}
+      filePath={path}
+      onEditorSelectionChange={(sel) => {
+        if (!sel) {
+          onEditorSelectionChange?.(null);
+          return;
+        }
+        onEditorSelectionChange?.({ path, ...sel });
+      }}
+    />
   );
 }
 
-function ReviewDiffPane({ file }: { file: FileChangeEntry }) {
+function ReviewDiffPane({
+  file,
+  onEditorSelectionChange,
+}: {
+  file: FileChangeEntry;
+  onEditorSelectionChange?: (selection: ReviewEditorSelection | null) => void;
+}) {
   if (file.fileKey.startsWith("git:")) {
-    return <GitReviewDiffPane path={file.path} />;
+    return (
+      <GitReviewDiffPane
+        path={file.path}
+        onEditorSelectionChange={onEditorSelectionChange}
+      />
+    );
   }
+  const relay = (sel: ReviewEditorSelection | null) => {
+    if (!sel) {
+      onEditorSelectionChange?.(null);
+      return;
+    }
+    onEditorSelectionChange?.({ ...sel, path: file.path });
+  };
   if (file.patchFile) {
     return (
       <ReviewEditorDiff
@@ -177,6 +215,13 @@ function ReviewDiffPane({ file }: { file: FileChangeEntry }) {
         filePath={file.path}
         additions={file.additions}
         deletions={file.deletions}
+        onEditorSelectionChange={(sel) => {
+          if (!sel) {
+            relay(null);
+            return;
+          }
+          relay({ path: file.path, ...sel });
+        }}
       />
     );
   }
@@ -188,6 +233,13 @@ function ReviewDiffPane({ file }: { file: FileChangeEntry }) {
         filePath={file.path}
         additions={file.additions}
         deletions={file.deletions}
+        onEditorSelectionChange={(sel) => {
+          if (!sel) {
+            relay(null);
+            return;
+          }
+          relay({ path: file.path, ...sel });
+        }}
       />
     );
   }
@@ -252,6 +304,7 @@ export function AgentReviewPanel({
   onSelectFile,
   onRevealInTree,
   onFileHighlight,
+  onEditorSelectionChange,
   reviewActions = null,
   embedded = false,
 }: AgentReviewPanelProps) {
@@ -280,6 +333,10 @@ export function AgentReviewPanel({
     const exists = review.files.some((f) => f.fileKey === selectedFileKey);
     if (!exists) onSelectFile(null);
   }, [review.files, selectedFileKey, onSelectFile]);
+
+  useEffect(() => {
+    onEditorSelectionChange?.(null);
+  }, [selectedFileKey, onEditorSelectionChange]);
 
   const highlighted = Boolean(
     focusedApprovalId && focusedApprovalId === review.approvalId,
@@ -359,7 +416,10 @@ export function AgentReviewPanel({
 
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             {selectedFile ? (
-              <ReviewDiffPane file={selectedFile} />
+              <ReviewDiffPane
+                file={selectedFile}
+                onEditorSelectionChange={onEditorSelectionChange}
+              />
             ) : (
               <p className="flex flex-1 items-center justify-center px-4 text-center text-[11px] text-zinc-500">
                 点击上方文件查看 diff

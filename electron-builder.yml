@@ -27,3 +27,8 @@ linux:
   target:
     - AppImage
   artifactName: "${productName}-${version}-linux-${arch}.${ext}"
+# 自动更新（未接入）：发布时取消注释并配置 provider
+# publish:
+#   provider: github
+#   owner: your-org
+#   repo: vec-next

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ApprovalContentSnapshot } from "@/agent/types";
 import {
   capDiffRows,
@@ -11,6 +11,10 @@ import {
   type SplitDiffSide,
 } from "@/lib/line-diff";
 import { snapshotDiffText } from "@/lib/snapshot-diff-text";
+import {
+  parseDiffDomSelection,
+  type DiffDomSelection,
+} from "@/lib/review-editor-selection";
 
 export type DiffLayout = "split" | "unified";
 
@@ -31,6 +35,8 @@ type DiffViewProps = {
   showLineNumbers?: boolean;
   /** 填满父级 flex 列，用于右侧审查主区域 */
   fillHeight?: boolean;
+  /** 用户在 diff 中选中文本时回调（审查区 → Composer @ 选区） */
+  onEditorSelectionChange?: (selection: DiffDomSelection | null) => void;
 };
 
 function rowClass(kind: DiffRow["kind"]): string {
@@ -71,11 +77,16 @@ function SplitCell({
   side,
   showLineNumbers,
   lineOffset = 0,
+  lineSelectable = false,
 }: {
   side: SplitDiffSide;
   showLineNumbers: boolean;
   lineOffset?: number;
+  lineSelectable?: boolean;
 }) {
+  const absoluteLine =
+    lineSelectable && side.lineNum != null ? side.lineNum + lineOffset : null;
+
   if (side.kind === "empty") {
     return (
       <div className="grid min-h-[1.35em] grid-cols-[auto_1fr] border-b border-zinc-800/80 bg-zinc-900/40">
@@ -106,7 +117,12 @@ function SplitCell({
               ? "-"
               : "+"}
         </span>
-        <span className="min-w-0 flex-1 whitespace-pre-wrap break-all">
+        <span
+          className="min-w-0 flex-1 whitespace-pre-wrap break-all"
+          {...(absoluteLine != null
+            ? { "data-diff-line": String(absoluteLine) }
+            : {})}
+        >
           {side.text || " "}
         </span>
       </div>
@@ -126,7 +142,9 @@ export function DiffView({
   showLayoutToggle = true,
   showLineNumbers = true,
   fillHeight = false,
+  onEditorSelectionChange,
 }: DiffViewProps) {
+  const scrollRef = useRef<HTMLDivElement>(null);
   const [internalLayout, setInternalLayout] = useState<DiffLayout>(
     controlledLayout ?? defaultLayout,
   );
@@ -141,12 +159,24 @@ export function DiffView({
     onLayoutChange?.(next);
   }
 
+  const reportSelection = useCallback(() => {
+    if (!onEditorSelectionChange || !scrollRef.current) return;
+    onEditorSelectionChange(parseDiffDomSelection(scrollRef.current));
+  }, [onEditorSelectionChange]);
+
   const scrollBodyClass = fillHeight
     ? "min-h-0 flex-1 overflow-auto bg-zinc-950"
     : "max-h-64 overflow-auto bg-zinc-950";
 
-  const { rows, splitRows, truncated, meta, hasBothSides, lineOffsets } =
-    useMemo(() => {
+  const {
+    rows,
+    splitRows,
+    truncated,
+    meta,
+    hasBothSides,
+    lineOffsets,
+    unifiedLineNumbers,
+  } = useMemo(() => {
     const oldSlice = snapshotDiffText(before);
     const newSlice = snapshotDiffText(after);
     const oldText = oldSlice.text;
@@ -161,11 +191,20 @@ export function DiffView({
     const beforeSnap =
       typeof before === "object" && before ? before : undefined;
     const afterSnap = typeof after === "object" && after ? after : undefined;
+    const afterStart = Math.max(0, newSlice.startLine - 1);
+    let afterLine = afterStart + 1;
+    const unifiedLineNumbers = capped.rows.map((row) => {
+      if (row.kind === "delete") return null;
+      const line = afterLine;
+      afterLine += 1;
+      return line;
+    });
     return {
       rows: capped.rows,
       splitRows: cappedSplit.rows,
       truncated: capped.truncated || cappedSplit.truncated,
       hasBothSides: Boolean(oldText || newText),
+      unifiedLineNumbers,
       lineOffsets: {
         left: Math.max(0, oldSlice.startLine - 1),
         right: Math.max(0, newSlice.startLine - 1),
@@ -261,7 +300,12 @@ export function DiffView({
             </span>
             <span className="px-2 py-1">变更后</span>
           </div>
-          <div className={scrollBodyClass}>
+          <div
+            ref={scrollRef}
+            className={scrollBodyClass}
+            onMouseUp={reportSelection}
+            onKeyUp={reportSelection}
+          >
             {splitRows.map((row, index) => (
               <div key={`split-${index}`} className="grid grid-cols-2">
                 <SplitCell
@@ -273,6 +317,7 @@ export function DiffView({
                   side={row.right}
                   showLineNumbers={showLineNumbers}
                   lineOffset={lineOffsets.right}
+                  lineSelectable
                 />
               </div>
             ))}
@@ -286,7 +331,10 @@ export function DiffView({
           }`}
         >
           <div
+            ref={scrollRef}
             className={`${scrollBodyClass} font-mono text-[11px] leading-relaxed`}
+            onMouseUp={reportSelection}
+            onKeyUp={reportSelection}
           >
             {rows.map((row, index) => (
               <div
@@ -296,7 +344,14 @@ export function DiffView({
                 <span className="w-3 shrink-0 select-none opacity-70">
                   {rowPrefix(row.kind)}
                 </span>
-                <span className="min-w-0 flex-1 whitespace-pre-wrap break-all">
+                <span
+                  className="min-w-0 flex-1 whitespace-pre-wrap break-all"
+                  {...(unifiedLineNumbers[index] != null
+                    ? {
+                        "data-diff-line": String(unifiedLineNumbers[index]),
+                      }
+                    : {})}
+                >
                   {row.line || " "}
                 </span>
               </div>

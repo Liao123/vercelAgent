@@ -48,8 +48,14 @@ async function main() {
     "请修改 @src/components/agent-composer.tsx 去掉 Loop 选择",
   );
   assert.deepEqual(parsed.attachedPaths, ["src/components/agent-composer.tsx"]);
+  assert.equal(parsed.attachedSelections.length, 0);
   assert.match(parsed.cleanRequest, /agent-composer\.tsx/);
   assert.doesNotMatch(parsed.cleanRequest, /@/);
+
+  const withLines = parseAtPathsFromRequest(
+    "改 @src/components/agent-composer.tsx#L10-20",
+  );
+  assert.equal(withLines.attachedSelections[0]?.endLine, 20);
 
   const merged = mergeAttachedPaths(
     ["src/components/agent-panel.tsx"],

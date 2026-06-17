@@ -23,6 +23,10 @@ import {
   resolveMentionDeleteRange,
   resolveMentionArrowCursor,
 } from "@/lib/composer-at-mention";
+import {
+  formatMentionLineRange,
+  type ReviewEditorSelection,
+} from "@/lib/review-editor-selection";
 
 type AgentComposerProps = {
   request: string;
@@ -51,6 +55,7 @@ type AgentComposerProps = {
   workspaceAtEnabled?: boolean;
   recentAttachedPaths?: string[];
   onPickAttachedPath?: (path: string) => void;
+  reviewEditorSelection?: ReviewEditorSelection | null;
   onAgentPrefsChange?: () => void;
 };
 
@@ -83,6 +88,7 @@ export function AgentComposer({
   workspaceAtEnabled = false,
   recentAttachedPaths = [],
   onPickAttachedPath,
+  reviewEditorSelection = null,
   onAgentPrefsChange,
 }: AgentComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -201,11 +207,22 @@ export function AgentComposer({
   function pickSuggestion(filePath: string) {
     const node = textareaRef.current;
     if (!node || !atMention) return;
+    let mentionPath = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "");
+    if (
+      reviewEditorSelection &&
+      reviewEditorSelection.path.replaceAll("\\", "/").replace(/^\.\/+/, "") ===
+        mentionPath
+    ) {
+      mentionPath += formatMentionLineRange(
+        reviewEditorSelection.startLine,
+        reviewEditorSelection.endLine,
+      );
+    }
     const { nextText, nextCursor } = insertAtMention(
       request,
       atMention.start,
       node.selectionStart ?? request.length,
-      filePath,
+      mentionPath,
     );
     onRequestChange(nextText);
     setAtMention(null);
@@ -400,6 +417,17 @@ export function AgentComposer({
               </div>
             ))}
           </div>
+        )}
+
+        {reviewEditorSelection && (
+          <p className="mb-2 text-[10px] text-blue-700 dark:text-blue-300">
+            审查选区：{reviewEditorSelection.path} L
+            {reviewEditorSelection.startLine}
+            {reviewEditorSelection.startLine !== reviewEditorSelection.endLine
+              ? `–${reviewEditorSelection.endLine}`
+              : ""}
+            （@ 同路径文件时将附带行号）
+          </p>
         )}
 
         <form onSubmit={onSubmit}>

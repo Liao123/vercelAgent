@@ -1,7 +1,9 @@
+import { splitMentionToken } from "@/lib/review-editor-selection";
+
 const MENTION_PATTERN = /@([^\s@][^\s]*)/g;
 
 export function normalizeMentionPath(raw: string): string {
-  return raw.replaceAll("\\", "/").replace(/^\.\/+/, "");
+  return splitMentionToken(raw.replaceAll("\\", "/").replace(/^\.\/+/, "")).path;
 }
 
 /** 从输入正文解析 @ 文件路径（提交 Loop 时用）。 */

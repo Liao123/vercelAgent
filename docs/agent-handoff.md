@@ -90,8 +90,8 @@ npm run trial:golden-path-sidebar      # 有模型时
 | --- | --- |
 | P0 | done | 侧栏加号 + 浏览器自动写盘/lint/再修 + approvals API 瘦身 + scoped lint |
 | P1 | done | Electron CDP-lite（console/DOM/network/query/截图/HAR-lite） |
-| P2 | @ 提及带当前编辑器选区（需桌面/IDE） |
-| P2 | Electron 签名 / 自动更新 / 完整 CDP HAR |
+| P2 | done | @ 提及带审查区选区（`@path#Lx-y` + 预读切片） |
+| P2 | Electron 签名 / 自动更新 / 完整 CDP HAR | 见 `docs/agent-electron.md` 发布说明；未接入 auto-update |
 
 **明确不做**：「接受当前文件」（Cursor 也无此操作）；保持整批接受 / 自动写盘。
 

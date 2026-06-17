@@ -97,4 +97,25 @@ npm run trial:server-check:run
 
 ## 后续
 
-- 完整 CDP HAR（非 lite）/ 签名 / 自动更新
+### 代码签名（生产发布前）
+
+Windows 默认 `pack:desktop` 关闭签名探测（`CSC_IDENTITY_AUTO_DISCOVERY=false`），本地可打包便携版。正式发布时：
+
+```powershell
+# Windows Authenticode（示例）
+$env:CSC_LINK = "path\to\cert.pfx"
+$env:CSC_KEY_PASSWORD = "..."
+# 移除 pack-desktop.mjs 中的 CSC_IDENTITY_AUTO_DISCOVERY=false 或设为 true
+npm run pack:desktop
+```
+
+macOS 需 Apple Developer 证书 + notarization；`electron-builder.yml` 中 `mac.identity` / `mac.notarize` 按需配置。
+
+### 自动更新（未接入）
+
+`electron-builder.yml` 预留 `publish` 配置位；需 GitHub Releases / S3 等 provider + `electron-updater` 主进程 hook。当前 **未实现** in-app 检查更新。
+
+### 浏览器 CDP
+
+- **HAR-lite** 已交付（fetch/XHR/resource + 落盘）
+- **完整 CDP HAR**（DevTools Network 全量、WebSocket、Cookie）仍 deferred，需 attach CDP 到 `<webview>` 而非注入脚本
