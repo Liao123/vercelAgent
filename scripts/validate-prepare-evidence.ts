@@ -4,24 +4,24 @@ import {
   buildPrepareEvidenceFromSearch,
   buildPrepareEvidenceFromContentChange,
 } from "../src/agent/approval/prepare-evidence";
+import { SIDEBAR_PATH, SIDEBAR_PLUS_LINE } from "./golden-path-fixtures";
 
 async function main(): Promise<void> {
-  const composerPath = "src/components/agent-composer.tsx";
-  const content = await fs.readFile(composerPath, "utf8");
-  const search = "闭环";
+  const content = await fs.readFile(SIDEBAR_PATH, "utf8");
+  const search = SIDEBAR_PLUS_LINE;
 
   const evidence = buildPrepareEvidenceFromSearch({
-    path: composerPath,
+    path: SIDEBAR_PATH,
     content,
     search,
     source: "file.replace.prepare",
   });
 
-  assert.ok(evidence.matchedSnippet.includes(search), "snippet contains search");
+  assert.ok(evidence.matchedSnippet.includes("+"), "snippet contains plus");
   assert.ok(evidence.startLine >= 1, "startLine >= 1");
   assert.ok(evidence.endLine >= evidence.startLine, "endLine >= startLine");
   assert.equal(evidence.searchText, search);
-  assert.equal(evidence.path, composerPath);
+  assert.equal(evidence.path, SIDEBAR_PATH);
 
   const oldContent = "line1\nline2\nTARGET\nline4\n";
   const newContent = "line1\nline2\nCHANGED\nline4\n";
@@ -39,7 +39,7 @@ async function main(): Promise<void> {
   );
 
   console.log("validate-prepare-evidence: passed", {
-    composerLines: `${evidence.startLine}-${evidence.endLine}`,
+    sidebarLines: `${evidence.startLine}-${evidence.endLine}`,
     diffLines: `${diffEvidence!.startLine}-${diffEvidence!.endLine}`,
   });
 }

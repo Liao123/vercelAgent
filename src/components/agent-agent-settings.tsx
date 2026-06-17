@@ -56,17 +56,10 @@ export function AgentAgentSettings({
   onPrefsChange,
 }: AgentAgentSettingsProps) {
   const [open, setOpen] = useState(false);
-  const [autoApply, setAutoApply] = useState(false);
-  const [strictPrepare, setStrictPrepare] = useState(false);
-  const [autoLintReloop, setAutoLintReloop] = useState(false);
+  const [autoApply, setAutoApply] = useState(() => readAutoApplyFileChanges());
+  const [strictPrepare, setStrictPrepare] = useState(() => readStrictPrepareLoop());
+  const [autoLintReloop, setAutoLintReloop] = useState(() => readAutoReloopOnLintFail());
   const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    setAutoApply(readAutoApplyFileChanges());
-    setStrictPrepare(readStrictPrepareLoop());
-    setAutoLintReloop(readAutoReloopOnLintFail());
-  }, [open]);
 
   useEffect(() => {
     if (!open) return;

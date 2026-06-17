@@ -8,6 +8,12 @@ import {
   hasUiLocationEvidence,
   isUiLocationQuery,
 } from "../src/agent/core/prepare-gate";
+import {
+  GOLDEN_DISAMBIGUATION_LABEL,
+  GOLDEN_UI_QUERY,
+  PANEL_PATH,
+  SIDEBAR_PATH,
+} from "./golden-path-fixtures";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {
@@ -24,7 +30,7 @@ function expectGateError(runState: AgentLoopRunState, fn: () => void): string {
   }
 }
 
-const uiQuery = "把首页左边的闭环选择去掉";
+const uiQuery = GOLDEN_UI_QUERY;
 
 assert(isUiLocationQuery(uiQuery), "homepage UI query should match");
 assert(
@@ -49,18 +55,18 @@ unreadState.toolsCalled.push("file.locate");
 const msgNoRead = expectGateError(unreadState, () =>
   assertPrepareGate({
     toolName: "file.replace.prepare",
-    requiredReadPaths: ["src/components/agent-composer.tsx"],
+    requiredReadPaths: [SIDEBAR_PATH],
     runState: unreadState,
   }),
 );
 assert(msgNoRead.includes("file.read"), msgNoRead);
 
 const noLocateState = createAgentLoopRunState(uiQuery);
-noLocateState.filesRead.push("src/components/agent-composer.tsx");
+noLocateState.filesRead.push(SIDEBAR_PATH);
 const msgNoLocate = expectGateError(noLocateState, () =>
   assertPrepareGate({
     toolName: "file.replace.prepare",
-    requiredReadPaths: ["src/components/agent-composer.tsx"],
+    requiredReadPaths: [SIDEBAR_PATH],
     runState: noLocateState,
   }),
 );
@@ -80,29 +86,26 @@ assert(msgAgentCore.includes("agent 运行时"), msgAgentCore);
 
 const okState = createAgentLoopRunState(uiQuery);
 okState.toolsCalled.push("ui.trace_from_page", "file.read");
-okState.filesRead.push("src/components/agent-composer.tsx");
+okState.filesRead.push(SIDEBAR_PATH);
 assertPrepareGate({
   toolName: "file.replace.prepare",
-  requiredReadPaths: ["src/components/agent-composer.tsx"],
+  requiredReadPaths: [SIDEBAR_PATH],
   runState: okState,
 });
 
 const partialDisambigState = createAgentLoopRunState(uiQuery);
 partialDisambigState.toolsCalled.push("file.locate");
 partialDisambigState.disambiguation = {
-  label: "闭环",
-  mustReadPaths: [
-    "src/components/agent-composer.tsx",
-    "src/components/agent-panel.tsx",
-  ],
-  recommendedPath: "src/components/agent-composer.tsx",
-  selectionRationale: "layout=triple 推荐 composer。",
+  label: GOLDEN_DISAMBIGUATION_LABEL,
+  mustReadPaths: [SIDEBAR_PATH, PANEL_PATH],
+  recommendedPath: SIDEBAR_PATH,
+  selectionRationale: "sidebar plus intent",
 };
-partialDisambigState.filesRead.push("src/components/agent-composer.tsx");
+partialDisambigState.filesRead.push(SIDEBAR_PATH);
 const msgPartialDisambig = expectGateError(partialDisambigState, () =>
   assertPrepareGate({
     toolName: "file.replace.prepare",
-    requiredReadPaths: ["src/components/agent-composer.tsx"],
+    requiredReadPaths: [SIDEBAR_PATH],
     runState: partialDisambigState,
   }),
 );

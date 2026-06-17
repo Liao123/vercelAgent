@@ -58,6 +58,13 @@ export function extractUiLabelTokens(query: string): string[] {
 
   if (/闭环/.test(query)) tokens.add("闭环");
   if (/\bloop\b/i.test(query) || /Loop/.test(query)) tokens.add("loop");
+  if (/新建\s*Agent/i.test(query)) tokens.add("新建 Agent");
+  if (
+    /(?:加号|＋|plus)/i.test(query) &&
+    /(?:侧栏|项目|会话|新建|Agent)/i.test(query)
+  ) {
+    tokens.add("新建 Agent");
+  }
 
   return [...tokens].filter((token) => token.length >= 2);
 }
@@ -81,8 +88,9 @@ function scoreUiCandidate(input: {
   matches: LabelLineMatch[];
   uiContext?: AgentUiContext;
   traceSuggestedOrder?: string[];
+  query?: string;
 }): { score: number; reasons: string[] } {
-  const { filePath, matches, uiContext, traceSuggestedOrder } = input;
+  const { filePath, matches, uiContext, traceSuggestedOrder, query } = input;
   const reasons: string[] = [];
   let score = 0;
 
@@ -117,8 +125,20 @@ function scoreUiCandidate(input: {
     reasons.push("agent source (penalty)");
   }
 
+  if (query && /(?:侧栏|加号|＋|项目行|新建会话)/i.test(query)) {
+    if (filePath.includes("agent-session-sidebar")) {
+      score += 24;
+      reasons.push("sidebar intent");
+    }
+  }
+
   for (const match of matches) {
     const line = match.text;
+    if (/^\s*\+\s*$/.test(line.trim()) || />\s*\+\s*</.test(line)) {
+      score += 20;
+      reasons.push(`plus control (L${match.line})`);
+      break;
+    }
     if (/<(?:button|select|input|option|label)/i.test(line)) {
       score += 10;
       reasons.push(`control markup near label (L${match.line})`);
@@ -150,7 +170,11 @@ function buildSelectionRationale(
   ];
 
   if (layout === "triple") {
-    parts.push("当前 layout=triple，RunMode 控件在中栏 agent-composer，不是 default 布局的 agent-panel。");
+    if (group.label === "新建 Agent" && top.filePath.includes("agent-session-sidebar")) {
+      parts.push("侧栏「新建 Agent / 项目行 ＋」在 agent-session-sidebar，不是 agent-panel 里的状态文案。");
+    } else {
+      parts.push("当前 layout=triple，RunMode 控件在中栏 agent-composer，不是 default 布局的 agent-panel。");
+    }
   }
 
   return parts.join(" ");
@@ -161,6 +185,7 @@ function disambiguateLabelGroup(
   matches: SearchMatch[],
   uiContext?: AgentUiContext,
   traceSuggestedOrder?: string[],
+  query?: string,
 ): UiLabelDisambiguation | null {
   const grouped = groupMatchesByPath(matches);
   const surfaceCandidates: LabelMatchCandidate[] = [];
@@ -174,6 +199,7 @@ function disambiguateLabelGroup(
       matches: lineMatches,
       uiContext,
       traceSuggestedOrder,
+      query,
     });
 
     surfaceCandidates.push({
@@ -240,6 +266,7 @@ export async function disambiguateUiLabels(input: {
       matches,
       input.uiContext,
       input.traceSuggestedOrder,
+      input.query,
     );
     if (group) groups.push(group);
   }

@@ -60,7 +60,7 @@ async function main(): Promise<void> {
   assert.ok(checkpoint.includes("Post-execute verification failed"));
   assert.ok(checkpoint.includes("mock lint failure"));
   assert.ok(
-    formatPostExecuteFeedbackBlock(feedback!).includes("npm run lint"),
+    formatPostExecuteFeedbackBlock(feedback!).includes("Failed command: lint"),
   );
 
   await fs.rm(root, { recursive: true, force: true });

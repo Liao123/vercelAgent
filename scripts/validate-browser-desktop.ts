@@ -15,7 +15,10 @@ async function main(): Promise<void> {
 
   const panel = await read("src/components/browser-panel.tsx");
   assert.ok(panel.includes("BrowserWebview"), "browser panel webview");
-  assert.ok(panel.includes("isDesktopApp"), "browser panel desktop gate");
+  assert.ok(
+    panel.includes("useDesktopApp") || panel.includes("isDesktopApp"),
+    "browser panel desktop gate",
+  );
 
   const webview = await read("src/components/browser-webview.tsx");
   assert.ok(

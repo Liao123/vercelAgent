@@ -123,6 +123,13 @@ function scoreJsxMatch(input: {
     reasons.push("control element");
   }
 
+  if (input.uiIntent && input.filePath.includes("agent-session-sidebar")) {
+    if (/onNewSessionInProject/.test(input.lineText) || /^\s*\+\s*$/.test(input.lineText.trim())) {
+      score += 16;
+      reasons.push("sidebar session control");
+    }
+  }
+
   if (input.uiIntent && input.filePath.startsWith("src/agent/core/")) {
     score -= 35;
     reasons.push("agent runtime penalty");
@@ -153,6 +160,16 @@ async function walkJsxFiles(rootPath: string): Promise<string[]> {
   return files;
 }
 
+function resolveJsxSearchTerms(query: string): string[] {
+  const q = query.trim();
+  if (!q) return [];
+  if (/^(?:加号|＋|plus)$/i.test(q)) return ["+"];
+  if (/(?:加号|＋)/.test(q) && /(?:侧栏|项目|会话|新建)/.test(q)) {
+    return ["+", "新建会话"];
+  }
+  return [q];
+}
+
 /** 在 TSX/JSX 中查找可见文案，返回带组件名推断与 UI 路径加权的结果。 */
 export async function findJsxText(input: {
   rootPath: string;
@@ -163,9 +180,9 @@ export async function findJsxText(input: {
   const query = input.query.trim();
   if (!query) return { query, matches: [] };
 
+  const searchTerms = resolveJsxSearchTerms(query);
   const maxResults = input.maxResults ?? 24;
   const uiIntent = isUiLocationQuery(query);
-  const normalizedQuery = query.toLowerCase();
   const matches: JsxTextMatch[] = [];
 
   for (const relativePath of await walkJsxFiles(input.rootPath)) {
@@ -182,9 +199,15 @@ export async function findJsxText(input: {
     const lines = content.split(/\r?\n/);
     for (let index = 0; index < lines.length; index += 1) {
       const lineText = lines[index]!;
-      if (!lineText.toLowerCase().includes(normalizedQuery)) continue;
+      const matchedTerm = searchTerms.find((term) => {
+        if (term === "+") {
+          return /^\s*\+\s*$/.test(lineText.trim()) || />\s*\+\s*</.test(lineText);
+        }
+        return lineText.toLowerCase().includes(term.toLowerCase());
+      });
+      if (!matchedTerm) continue;
 
-      const matchKind = classifyJsxMatchLine(lineText, query);
+      const matchKind = classifyJsxMatchLine(lineText, matchedTerm);
       const { score, reasons } = scoreJsxMatch({
         filePath: relativePath,
         lineText,

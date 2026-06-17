@@ -1,7 +1,5 @@
 /**
  * A085：延续会话时从 thread 滚动记忆恢复 prepareHint。
- *
- * 运行：npm run validate:thread-prepare-hint
  */
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -18,9 +16,13 @@ import {
 import { emptyPinnedFacts } from "../src/agent/memory/loop-pinned-facts";
 import { buildThreadMemoryInjectionMessage } from "../src/agent/memory/thread-memory-store";
 import { resolveInsideWorkspace } from "../src/agent/tools/path-safety";
+import {
+  GOLDEN_UI_CONTEXT,
+  GOLDEN_UI_QUERY,
+  SIDEBAR_PATH,
+} from "./golden-path-fixtures";
 
-const COMPOSER = "src/components/agent-composer.tsx";
-const USER_REQUEST = "继续：把首页左边的闭环/Loop 选择去掉";
+const USER_REQUEST = `继续：${GOLDEN_UI_QUERY}`;
 
 function restorePrepareHintFromThreadMemory(
   runState: ReturnType<typeof createAgentLoopRunState>,
@@ -40,17 +42,23 @@ function restorePrepareHintFromThreadMemory(
 
 async function main(): Promise<void> {
   const content = await fs.readFile(
-    resolveInsideWorkspace(process.cwd(), COMPOSER),
+    resolveInsideWorkspace(process.cwd(), SIDEBAR_PATH),
     "utf8",
   );
 
   const runState = createAgentLoopRunState(USER_REQUEST);
-  recordToolCall(runState, "file.read", { path: COMPOSER, content });
+  runState.disambiguation = {
+    label: "新建 Agent",
+    mustReadPaths: [SIDEBAR_PATH],
+    recommendedPath: SIDEBAR_PATH,
+    selectionRationale: "sidebar plus intent",
+  };
+  recordToolCall(runState, "file.read", { path: SIDEBAR_PATH, content });
   captureUiPrepareHintFromFileRead(
     runState,
-    COMPOSER,
+    SIDEBAR_PATH,
     content,
-    { layout: "triple" },
+    GOLDEN_UI_CONTEXT,
   );
   assert.ok(runState.prepareHint);
 
@@ -58,8 +66,8 @@ async function main(): Promise<void> {
     round: 2,
     method: "deterministic",
     pinnedFacts: emptyPinnedFacts(),
-    summaryBody: "Task1: traced composer, have prepare candidates",
-    changedFiles: [COMPOSER],
+    summaryBody: "Task1: traced sidebar, have prepare candidates",
+    changedFiles: [SIDEBAR_PATH],
     pinnedPrepareHint: runState.prepareHint,
   });
 
@@ -67,7 +75,7 @@ async function main(): Promise<void> {
   assert.equal(freshState.prepareHint, undefined);
 
   restorePrepareHintFromThreadMemory(freshState, memoryContent, USER_REQUEST);
-  assert.equal(freshState.prepareHint?.path, COMPOSER);
+  assert.equal(freshState.prepareHint?.path, SIDEBAR_PATH);
   assert.ok(
     (freshState.prepareHint?.suggestedSearchLines.length ?? 0) >= 1,
   );

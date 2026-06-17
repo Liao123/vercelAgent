@@ -1,6 +1,6 @@
 # Agent 后续计划（排期入口）
 
-更新时间：2026-06-01
+更新时间：2026-06-17
 
 > **下次接着干**：先看 **[`agent-handoff.md`](agent-handoff.md)**（本轮 UI/闭环/报错修复 + 验证清单）。  
 > **与 Cursor/Codex 对齐的单一 backlog**：见 **[`agent-cursor-codex-gap.md`](agent-cursor-codex-gap.md)**（差距表 + A097+ 排期）。  
@@ -16,7 +16,7 @@
 | **差距盘点与校准** | **A096** | done | [`agent-cursor-codex-gap.md`](agent-cursor-codex-gap.md) |
 | 体感对齐 | A097–A101 | done | 去闭环、无 Agent 设置、审查\|文件\|浏览器 Tab |
 | 默认策略 | A102–A103 | done | 中栏「接受」、Composer ⚙、写后验证+自动再修默认开；见 `agent-defaults.md` |
-| **接续（未编号）** | **handoff** | doing | Cursor 审查/设置/Loop 闭环；见 [`agent-handoff.md`](agent-handoff.md) |
+| **handoff 接续** | **done** | A106 + P0 API/UI + 写后 scoped lint（2026-06-17） |
 | 能力增强 | A104–A105 | done | Composer @ 联想、`validate:cursor-shell-ui` |
 | Electron | A025 | in_progress | 桌面壳 + 文件夹选择器；见 `agent-electron.md` |
 

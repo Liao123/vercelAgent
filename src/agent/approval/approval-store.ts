@@ -6,6 +6,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { summarizeApprovalForList } from "@/agent/approval/approval-list-summary";
 import {
   newId,
   nowIso,
@@ -134,9 +135,28 @@ export function recordApprovalExecution(
   return updated;
 }
 
-export function listApprovals(): ApprovalRecord[] {
+export function getApprovalById(
+  approvalId: string,
+): ApprovalRecord | undefined {
   loadApprovalsFromDisk();
-  return [...approvals.values()].sort((a, b) =>
+  return approvals.get(approvalId);
+}
+
+export function listApprovals(options?: {
+  full?: boolean;
+  limit?: number;
+}): ApprovalRecord[] {
+  loadApprovalsFromDisk();
+  let list = [...approvals.values()].sort((a, b) =>
     b.createdAt.localeCompare(a.createdAt),
+  );
+  if (options?.limit != null && options.limit > 0) {
+    list = list.slice(0, options.limit);
+  }
+  if (options?.full) {
+    return list;
+  }
+  return list.map((approval) =>
+    summarizeApprovalForList(approval) as ApprovalRecord,
   );
 }

@@ -1,7 +1,5 @@
 /**
  * A083：UI prepare nudge + recovery 跳过逻辑（无需 LLM）。
- *
- * 运行：npm run validate:ui-prepare-nudge
  */
 import fs from "node:fs/promises";
 import {
@@ -16,8 +14,14 @@ import {
   shouldSkipEditRecoveryForUiPrepare,
 } from "../src/agent/core/ui-prepare-nudge";
 import { resolveInsideWorkspace } from "../src/agent/tools/path-safety";
-
-const COMPOSER = "src/components/agent-composer.tsx";
+import {
+  GOLDEN_DISAMBIGUATION_LABEL,
+  GOLDEN_UI_CONTEXT,
+  GOLDEN_UI_QUERY,
+  PANEL_PATH,
+  SIDEBAR_PATH,
+  SIDEBAR_PLUS_LINE,
+} from "./golden-path-fixtures";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -25,52 +29,59 @@ function assert(condition: boolean, message: string): void {
 
 async function main(): Promise<void> {
   const rootPath = process.cwd();
-  const content = await fs.readFile(
-    resolveInsideWorkspace(rootPath, COMPOSER),
+  const sidebarContent = await fs.readFile(
+    resolveInsideWorkspace(rootPath, SIDEBAR_PATH),
     "utf8",
   );
 
-  const candidates = extractUiLabelSearchCandidates(content);
-  assert(candidates.length >= 1, "should find Loop/闭环 JSX lines");
+  const candidates = extractUiLabelSearchCandidates(sidebarContent, [
+    "新建 Agent",
+  ]);
+  assert(candidates.length >= 1, "should find sidebar JSX lines");
   assert(
-    candidates.some((line) => line.includes("Loop") || line.includes("闭环")),
-    "candidates should include RunMode labels",
+    candidates.some((line) => line.includes("+") || line.includes("新建 Agent")),
+    "candidates should include plus or 新建 Agent labels",
   );
 
-  const state = createAgentLoopRunState("把首页左边的闭环/Loop 选择去掉");
-  state.toolsCalled.push("ui.trace_from_page");
+  const state = createAgentLoopRunState(GOLDEN_UI_QUERY);
+  state.toolsCalled.push("file.locate");
   state.disambiguation = {
-    label: "闭环",
-    mustReadPaths: [COMPOSER, "src/components/agent-panel.tsx"],
-    recommendedPath: COMPOSER,
-    selectionRationale: "triple → composer",
+    label: GOLDEN_DISAMBIGUATION_LABEL,
+    mustReadPaths: [SIDEBAR_PATH, PANEL_PATH],
+    recommendedPath: SIDEBAR_PATH,
+    selectionRationale: "sidebar plus intent",
   };
-  const panelPath = "src/components/agent-panel.tsx";
   const panelContent = await fs.readFile(
-    resolveInsideWorkspace(rootPath, panelPath),
+    resolveInsideWorkspace(rootPath, PANEL_PATH),
     "utf8",
   );
-  recordToolCall(state, "file.read", { path: COMPOSER, content });
-  recordToolCall(state, "file.read", { path: panelPath, content: panelContent });
+  recordToolCall(state, "file.read", { path: SIDEBAR_PATH, content: sidebarContent });
+  recordToolCall(state, "file.read", { path: PANEL_PATH, content: panelContent });
   captureUiPrepareHintFromFileRead(
     state,
-    COMPOSER,
-    content,
-    { layout: "triple", activeRoute: "/" },
+    SIDEBAR_PATH,
+    sidebarContent,
+    GOLDEN_UI_CONTEXT,
   );
 
-  assert(state.prepareHint?.path === COMPOSER, "prepareHint path");
+  assert(state.prepareHint?.path === SIDEBAR_PATH, "prepareHint path");
   assert(
-    isUiPrepareEvidenceReady(state, { layout: "triple" }),
+    state.prepareHint?.suggestedSearchLines.some((line) =>
+      line.includes("+"),
+    ),
+    "prepareHint should include plus line candidate",
+  );
+  assert(
+    isUiPrepareEvidenceReady(state, GOLDEN_UI_CONTEXT),
     "UI prepare evidence should be ready",
   );
   assert(
-    !shouldSkipEditRecoveryForUiPrepare(state, { layout: "triple" }),
+    !shouldSkipEditRecoveryForUiPrepare(state, GOLDEN_UI_CONTEXT),
     "recovery allowed before first prepare attempt",
   );
   state.toolsCalled.push("file.replace.prepare");
   assert(
-    shouldSkipEditRecoveryForUiPrepare(state, { layout: "triple" }),
+    shouldSkipEditRecoveryForUiPrepare(state, GOLDEN_UI_CONTEXT),
     "recovery skipped after prepare attempted with evidence ready",
   );
   state.toolsCalled.pop();
@@ -78,6 +89,10 @@ async function main(): Promise<void> {
   const nudge = buildUiPrepareNudgeBlock(state);
   assert(nudge?.includes("file.replace.prepare"), "nudge should mention prepare");
   assert(nudge?.includes("Candidate 1"), "nudge should list candidates");
+  assert(
+    sidebarContent.includes(SIDEBAR_PLUS_LINE),
+    "fixture plus line should exist on disk",
+  );
 
   console.log("validate-ui-prepare-nudge: passed", {
     candidateCount: candidates.length,

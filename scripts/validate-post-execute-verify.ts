@@ -4,6 +4,7 @@ import {
   changedPathsFromPatch,
   shouldRunPostExecuteVerification,
 } from "../src/agent/verification/post-execute-verify";
+import { filterLintablePaths } from "../src/agent/verification/verification-runner";
 
 assert.equal(
   shouldRunPostExecuteVerification(["src/components/agent-composer.tsx"]),
@@ -30,5 +31,17 @@ const patchPaths = changedPathsFromPatch([
   },
 ]);
 assert.deepEqual(patchPaths, ["src/a.tsx"]);
+
+assert.deepEqual(
+  filterLintablePaths([
+    "src/a.tsx",
+    "README.md",
+    "src/b.ts",
+    "src/c.tsx",
+    "src/a.tsx",
+  ]),
+  ["src/a.tsx", "src/b.ts", "src/c.tsx"],
+);
+assert.deepEqual(filterLintablePaths(["README.md"]), []);
 
 console.log("validate-post-execute-verify: passed");

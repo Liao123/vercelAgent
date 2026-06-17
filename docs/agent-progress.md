@@ -1,8 +1,8 @@
 # 开发智能体项目进度
 
-更新时间：2026-06-01
+更新时间：2026-06-17
 
-> **接续开发入口**：[`docs/agent-handoff.md`](agent-handoff.md)（2026-06-01 收工：Cursor UI、Loop 反思、hook 报错）。
+> **接续开发入口**：[`docs/agent-handoff.md`](agent-handoff.md)（2026-06-17：A106 侧栏加号黄金路径 + validate:agent 全绿）。
 
 本文档用于记录开发智能体项目的工作项、当前状态、验收标准和执行记录。后续每完成一个工作项，都必须更新本文档。
 
@@ -144,10 +144,24 @@ MVP 阶段对照表见 [`docs/agent-architecture.md` §20](agent-architecture.md
 | A080 | done | 压缩 pin + @ 文件 attach | compaction 钉住最近 read 片段；composer `@path` / 手动附加传入 Loop；`validate:attached-pin`。 |
 | A081 | done | 黄金路径全链路 validate | `validate-golden-path-accuracy.ts` 串联 trace/消歧/jsx/attach/门禁/evidence；接入 `validate:agent`。 |
 | A082 | done | UI 黄金路径在线试用 | `golden-path-ui-trial.mjs`：Loop 传 `uiContext.layout=triple`；校验 trace/locate、read composer、审批目标；默认 dry-run；`--strict`/`--execute`；实机 PASSED（2026-06-01）。 |
+| A106 | done | 侧栏加号黄金路径 | 离线 validate + 在线 `trial:golden-path-sidebar` PASSED（2026-06-17） |
 
-**准确度路线图（Cursor/Codex 对照）**：详见 [`docs/agent-accuracy-roadmap.md`](agent-accuracy-roadmap.md)。A073–A082 已全部完成。
+**准确度路线图（Cursor/Codex 对照）**：详见 [`docs/agent-accuracy-roadmap.md`](agent-accuracy-roadmap.md)。A073–A082 已全部完成；离线黄金路径现以 **A106 侧栏加号** 为准。
 
 ## 完成记录
+
+### 2026-06-17
+
+- **A106 已完成**：主界面移除闭环/Loop 后，离线黄金路径从「composer 闭环切换」迁移为 handoff P0「侧栏项目行 ＋」。
+- **fixture**：`scripts/golden-path-fixtures.ts`（`GOLDEN_UI_QUERY`、`SIDEBAR_PATH`、`SIDEBAR_PLUS_LINE`）。
+- **运行时**：`extractUiLabelTokens` 支持「新建 Agent / 加号」；`findJsxText("加号")` 命中侧栏；`extractUiLabelSearchCandidates` 提取 `+` 行。
+- **验证**：`validate-electron-shell`、`validate-browser-desktop` 断言更新；`validate-golden-path` 等 10+ 脚本同步；`validate:attached-pin` 测试数据调优。
+- **在线**：新增 `scripts/golden-path-sidebar-trial.mjs` → `npm run trial:golden-path-sidebar`。
+- **A106 UI 实机（2026-06-17 续）**：lint 再修 API `sidebar-p0-lint-reloop` PASSED → prepare 指向 `agent-agent-settings.tsx`（`setTimeout` 修 setState-in-effect）→ 自动写盘 execute 成功；该文件单文件 eslint 通过，全仓 lint 仍失败（`electron/preload.cjs` 等）。
+- **修复**：Windows 写后验证 `spawn npm ENOENT` → `verification-runner` 使用 `shell: true`；`eslint` 忽略 `dist-desktop/**`。
+- **验证**：`npm run validate:agent` 全绿（~90s）。
+- **P0 API（2026-06-17 续）**：`GET /api/agent/approvals` 列表瘦身（summary + limit=50，~1MB→~77KB）；`GET /api/agent/approvals/[id]` 按需 hydrate；`validate:approval-list-api`。
+- **写后 scoped lint（2026-06-17 续）**：`runScopedLintCommand` 仅 lint 变更路径；`electron/**` eslint ignore；修复全仓 lint 误报写后验证失败。
 
 ### 2026-06-01（续 11）
 

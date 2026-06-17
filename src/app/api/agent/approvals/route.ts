@@ -5,15 +5,32 @@
  */
 import {
   createApprovalRequest,
+  getApprovalById,
   listApprovals,
   resolveApproval,
 } from "@/agent/approval";
+import { summarizeApprovalForList } from "@/agent/approval/approval-list-summary";
 import type { ApprovalDetails } from "@/agent/types";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
-  return Response.json({ approvals: listApprovals() });
+const DEFAULT_LIST_LIMIT = 50;
+
+export async function GET(request: Request) {
+  const url = new URL(request.url);
+  const full = url.searchParams.get("full") === "1";
+  const limitParam = url.searchParams.get("limit");
+  const limit =
+    limitParam == null
+      ? DEFAULT_LIST_LIMIT
+      : Math.max(0, Number.parseInt(limitParam, 10) || 0);
+
+  const approvals = listApprovals({
+    full,
+    limit: limit > 0 ? limit : undefined,
+  });
+
+  return Response.json({ approvals, summary: !full, limit: limit || null });
 }
 
 export async function POST(request: Request) {
@@ -66,5 +83,5 @@ export async function PATCH(request: Request) {
   }
 
   const approval = resolveApproval(body.approvalId, body.status);
-  return Response.json({ approval });
+  return Response.json({ approval: summarizeApprovalForList(approval) });
 }

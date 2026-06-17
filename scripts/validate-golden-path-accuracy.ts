@@ -1,8 +1,7 @@
 /**
  * 黄金路径全链路准确度回归（无需 LLM / dev server）。
  *
- * 用例：triple 布局下「去掉首页左边闭环/Loop 选择」
- * 串联 A072–A080 的定位、消歧、门禁、JSX 引用、@ 附加与证据链。
+ * 用例：triple 布局下「去掉侧栏项目行 ＋ 新建会话按钮」（handoff P0）
  *
  * 运行：npm run validate:golden-path
  */
@@ -24,11 +23,14 @@ import {
   traceUiEntryForQuery,
 } from "../src/agent/indexer";
 import { resolveInsideWorkspace } from "../src/agent/tools/path-safety";
-
-const GOLDEN_QUERY = "把首页左边的闭环/Loop 选择去掉";
-const UI_CONTEXT = { layout: "triple" as const, activeRoute: "/" };
-const COMPOSER = "src/components/agent-composer.tsx";
-const PANEL = "src/components/agent-panel.tsx";
+import {
+  GOLDEN_DISAMBIGUATION_LABEL,
+  GOLDEN_UI_CONTEXT,
+  GOLDEN_UI_QUERY,
+  PANEL_PATH,
+  SIDEBAR_PATH,
+  SIDEBAR_PLUS_LINE,
+} from "./golden-path-fixtures";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -46,46 +48,53 @@ function expectGateError(fn: () => void): string {
 async function main(): Promise<void> {
   const rootPath = process.cwd();
 
-  const trace = await traceUiEntryForQuery(rootPath, GOLDEN_QUERY, UI_CONTEXT);
-  assert(Boolean(trace), "trace should run for homepage UI query");
-  assert(
-    trace!.suggestedReadOrder[0] === COMPOSER,
-    `trace first read should be composer, got ${trace!.suggestedReadOrder[0]}`,
+  const trace = await traceUiEntryForQuery(
+    rootPath,
+    GOLDEN_UI_QUERY,
+    GOLDEN_UI_CONTEXT,
   );
+  assert(Boolean(trace), "trace should run for sidebar UI query");
 
   const disambiguation = await disambiguateUiLabels({
     rootPath,
-    query: GOLDEN_QUERY,
-    uiContext: UI_CONTEXT,
-    traceSuggestedOrder: trace!.suggestedReadOrder,
+    query: GOLDEN_UI_QUERY,
+    uiContext: GOLDEN_UI_CONTEXT,
+    traceSuggestedOrder: [SIDEBAR_PATH, PANEL_PATH],
   });
-  assert(disambiguation.recommendedPath === COMPOSER, "disambiguation recommends composer");
   assert(
-    disambiguation.mustReadPaths.includes(COMPOSER) &&
-      disambiguation.mustReadPaths.includes(PANEL),
-    "mustReadPaths should include composer and panel",
+    disambiguation.hasAmbiguity,
+    "sidebar plus query should disambiguate 新建 Agent",
+  );
+  assert(
+    disambiguation.recommendedPath === SIDEBAR_PATH,
+    "disambiguation recommends sidebar",
+  );
+  assert(
+    disambiguation.mustReadPaths.includes(SIDEBAR_PATH) &&
+      disambiguation.mustReadPaths.includes(PANEL_PATH),
+    "mustReadPaths should include sidebar and panel",
   );
 
   const jsx = await findJsxText({
     rootPath,
-    query: "闭环",
+    query: "加号",
     maxResults: 12,
-    uiContext: UI_CONTEXT,
+    uiContext: GOLDEN_UI_CONTEXT,
   });
-  assert(jsx.matches.length > 0, "jsx.find_text should find 闭环");
+  assert(jsx.matches.length > 0, "jsx.find_text should find plus control");
   const topJsx = jsx.matches[0]!;
   assert(
-    topJsx.filePath === COMPOSER,
-    `jsx top hit should be composer, got ${topJsx.filePath}`,
+    topJsx.filePath === SIDEBAR_PATH,
+    `jsx top hit should be sidebar, got ${topJsx.filePath}`,
   );
   assert(topJsx.line > 0, "jsx match should have line number");
 
   const atParsed = parseAtPathsFromRequest(
-    `请修改 @${COMPOSER} 去掉 Loop/闭环切换`,
+    `请修改 @${SIDEBAR_PATH} 去掉项目行加号`,
   );
   assert(
-    atParsed.attachedPaths.includes(COMPOSER),
-    "@path parser should extract composer",
+    atParsed.attachedPaths.includes(SIDEBAR_PATH),
+    "@path parser should extract sidebar",
   );
   const attachedPaths = mergeAttachedPaths([], atParsed.attachedPaths);
   const preloaded = await preloadAttachedFiles({ rootPath, paths: attachedPaths });
@@ -103,7 +112,7 @@ async function main(): Promise<void> {
   const attachOnlyError = expectGateError(() =>
     assertPrepareGate({
       toolName: "file.replace.prepare",
-      requiredReadPaths: [COMPOSER],
+      requiredReadPaths: [SIDEBAR_PATH],
       runState: attachOnlyState,
     }),
   );
@@ -113,10 +122,10 @@ async function main(): Promise<void> {
     `attach-only should still require UI locate: ${attachOnlyError}`,
   );
 
-  const happyState = createAgentLoopRunState(GOLDEN_QUERY);
-  happyState.toolsCalled.push("ui.trace_from_page");
+  const happyState = createAgentLoopRunState(GOLDEN_UI_QUERY);
+  happyState.toolsCalled.push("file.locate");
   happyState.disambiguation = {
-    label: "闭环",
+    label: GOLDEN_DISAMBIGUATION_LABEL,
     mustReadPaths: disambiguation.mustReadPaths,
     recommendedPath: disambiguation.recommendedPath,
     selectionRationale: disambiguation.selectionRationale ?? "",
@@ -126,33 +135,32 @@ async function main(): Promise<void> {
   }
   assertPrepareGate({
     toolName: "file.replace.prepare",
-    requiredReadPaths: [COMPOSER],
+    requiredReadPaths: [SIDEBAR_PATH],
     runState: happyState,
   });
 
-  const composerContent = await fs.readFile(
-    resolveInsideWorkspace(rootPath, COMPOSER),
+  const sidebarContent = await fs.readFile(
+    resolveInsideWorkspace(rootPath, SIDEBAR_PATH),
     "utf8",
   );
-  const exactSearch = "                    闭环";
   assert(
-    composerContent.includes(exactSearch),
-    "composer should contain exact 闭环 JSX text on disk",
+    sidebarContent.includes(SIDEBAR_PLUS_LINE),
+    "sidebar should contain exact plus JSX text on disk",
   );
   const evidence = buildPrepareEvidenceFromSearch({
-    path: COMPOSER,
-    content: composerContent,
-    search: exactSearch,
+    path: SIDEBAR_PATH,
+    content: sidebarContent,
+    search: SIDEBAR_PLUS_LINE,
     source: "file.replace.prepare",
   });
-  assert(evidence.path === COMPOSER, "evidence path should be composer");
+  assert(evidence.path === SIDEBAR_PATH, "evidence path should be sidebar");
   assert(
-    evidence.startLine >= 190 && evidence.startLine <= 210,
-    `evidence line should be near RunMode UI, got ${evidence.startLine}`,
+    evidence.startLine >= 450 && evidence.startLine <= 470,
+    `evidence line should be near plus button, got ${evidence.startLine}`,
   );
   assert(
-    evidence.matchedSnippet.includes("闭环"),
-    "evidence snippet should include matched label",
+    evidence.matchedSnippet.includes("+"),
+    "evidence snippet should include plus sign",
   );
 
   console.log("validate-golden-path: passed", {

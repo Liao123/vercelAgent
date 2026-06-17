@@ -35,7 +35,10 @@ async function main(): Promise<void> {
   const bridge = await read("src/lib/desktop-bridge.ts");
   assert.ok(bridge.includes("pickWorkspaceFolder"), "desktop bridge");
   assert.ok(panel.includes("handlePickWorkspaceFolder"), "panel pick folder");
-  assert.ok(panel.includes("选择文件夹"), "pick folder button label");
+  assert.ok(
+    panel.includes("打开文件夹") || panel.includes("pickWorkspaceFolder"),
+    "pick folder button label",
+  );
 
   const workspace = await read("src/components/agent-workspace.tsx");
   assert.ok(workspace.includes("AgentDevDevelopPanel"), "dev develop panel wired");

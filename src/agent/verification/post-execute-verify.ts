@@ -7,6 +7,7 @@ import path from "node:path";
 import { nowIso, type VerificationResult } from "@/agent/types";
 import {
   getVerificationPlan,
+  runScopedLintCommand,
   runVerificationCommand,
   type VerificationCommand,
 } from "@/agent/verification";
@@ -77,7 +78,10 @@ export async function runPostExecuteVerification(
 
   const results: VerificationResult[] = [];
   for (const command of plan.available) {
-    const result = await runVerificationCommand(rootPath, command);
+    const result =
+      command === "lint"
+        ? await runScopedLintCommand(rootPath, normalizedPaths)
+        : await runVerificationCommand(rootPath, command);
     results.push({
       ...result,
       output: truncateOutput(result.output),
@@ -211,7 +215,7 @@ export function formatPostExecuteFeedbackBlock(
     `Changed files: ${feedback.changedPaths.join(", ") || "(unknown)"}`,
   ];
   if (feedback.failedCommand) {
-    lines.push(`Failed command: npm run ${feedback.failedCommand}`);
+    lines.push(`Failed command: ${feedback.failedCommand}`);
   }
   if (feedback.outputSnippet?.trim()) {
     lines.push("stderr/stdout excerpt:", feedback.outputSnippet.trim());

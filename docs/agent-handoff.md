@@ -1,12 +1,36 @@
-# Agent 接续备忘（Cursor 对齐 + 闭环修复）
+# Agent 接续备忘（Cursor 对齐 + 黄金路径）
 
-更新时间：2026-06-01
+更新时间：2026-06-17
 
 > 下次开工先读本文，再跑验证命令。聊天上下文不必保留。
 
 ---
 
-## 本轮已完成
+## 最新（2026-06-17 · A106）
+
+**阶段结论**：闭环/Loop 主路径 UI 已移除后，离线黄金路径已迁移为 **侧栏项目行「＋」**；`npm run validate:agent` **全绿**（~90s）。
+
+| 项 | 内容 |
+| --- | --- |
+| **A106** | 消歧 / jsx / prepare 对齐 handoff P0；`scripts/golden-path-fixtures.ts` |
+| 离线 | `validate-golden-path` → `agent-session-sidebar.tsx` L460 `+` |
+| 在线 | `npm run trial:golden-path-sidebar`（新脚本，需 dev + 模型） |
+| 修复 | `validate-electron-shell`、`validate-browser-desktop`；Windows 写后 lint `shell: true` |
+| **P0 UI（2026-06-17）** | 全链路：自动写盘 ✓ → 写后 lint ✓ → 自动再修 ✓ → prepare ✓ → 自动写盘（lint 修复）✓ |
+| **P0 写后验证（2026-06-17）** | lint 仅扫 `changedPaths`（`runScopedLintCommand`）；`electron/**` 加入 eslint ignore |
+| **P0 API（2026-06-17）** | `GET /api/agent/approvals` 列表瘦身（默认 summary + limit=50，~1MB→~77KB）；单条详情 `GET /api/agent/approvals/[id]`；审查聚焦时按需 hydrate |
+
+**回归命令**：
+
+```bash
+npm run validate:agent
+npm run trial:golden-path-sidebar      # handoff P0（侧栏加号）
+npm run trial:golden-path-ui           # composer placeholder（A082）
+```
+
+---
+
+## 本轮已完成（2026-06-01）
 
 ### UI / 三栏（对齐 Cursor）
 
@@ -52,21 +76,14 @@ npm run dev
 
 ## 下次第一件事（建议顺序）
 
-1. **确认页面能开**：首页无 `useAgentWorkspaceBridge` 报错（硬刷新）
-2. **新会话**跑一条纯 UI 任务，例如：「去掉侧栏『新建 Agent』前的加号」
-   - 预期：不被上轮 lint checkpoint 卡住；反思应指向 `file.replace.prepare` 而非反复「审批未就绪」
-3. 回归命令：
+1. **（可选）提交本轮**：approvals API 瘦身 + scoped lint + eslint ignore
+2. **在线复验**：`npm run trial:golden-path-sidebar -- --strict`（dev + 模型）
+3. **产品向**：A025 Electron CDP / 审查区与打开文件联动
 
 ```bash
-npm run validate:cursor-shell-ui
-npm run validate:lint-reloop
-npm run validate:post-execute-loop-feedback
 npm run validate:agent
-# 有模型时：
-npm run trial:golden-path-ui
+npm run trial:golden-path-sidebar      # 有模型时
 ```
-
-4. 若 lint 仍干扰无关任务：检查 `.agent-state/post-execute-verify.json` 是否被清掉；或 Composer ⚙ 关「Lint 失败自动再修」做对比
 
 ---
 
@@ -74,11 +91,10 @@ npm run trial:golden-path-ui
 
 | 优先级 | 内容 |
 | --- | --- |
-| P0 | 实机验收：加号任务 + 自动写盘 + 写后 lint + 自动再修 全链路 |
+| P0 | done | 侧栏加号 + 浏览器自动写盘/lint/再修 + approvals API 瘦身 + scoped lint |
 | P1 | Electron 浏览器 Tab CDP（A025 deferred） |
 | P2 | @ 提及带当前编辑器选区（需桌面/IDE） |
-| P2 | 审查区与打开文件联动（单 tab 预览） |
-| P3 | `agent-progress.md` 台账补 A106+ 正式 ID（本轮未单独立项） |
+| P2 | 审查区与打开文件联动（单 tab 预览）——部分已在 `validate:cursor-shell-ui` 断言 |
 
 **明确不做**：「接受当前文件」（Cursor 也无此操作）；保持整批接受 / 自动写盘。
 

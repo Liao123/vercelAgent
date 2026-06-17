@@ -63,7 +63,10 @@ import {
   readAutoApplyFileChanges,
 } from "@/lib/agent-file-auto-apply";
 import { readStrictPrepareLoop } from "@/lib/agent-strict-prepare";
-import type { PostExecuteVerification } from "@/agent/verification";
+import {
+  approvalDetailsPayloadBytes,
+  needsApprovalDetailsHydration,
+} from "@/agent/approval/approval-list-summary";
 import type { GitStatusSnapshot } from "@/lib/git-status";
 import type {
   AgentEvent,
@@ -195,6 +198,18 @@ function approvalProgressRank(approval: ApprovalRecordView): number {
   return 10;
 }
 
+function mergeApprovalDetails(
+  existing?: ApprovalDetails,
+  incoming?: ApprovalDetails,
+): ApprovalDetails | undefined {
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+  return approvalDetailsPayloadBytes(existing) >=
+    approvalDetailsPayloadBytes(incoming)
+    ? existing
+    : incoming;
+}
+
 function mergeApprovalRecord(
   existing: ApprovalRecordView,
   incoming: ApprovalRecordView,
@@ -211,7 +226,7 @@ function mergeApprovalRecord(
   return normalizeApprovalView({
     ...secondary,
     ...primary,
-    details: primary.details ?? secondary.details,
+    details: mergeApprovalDetails(primary.details, secondary.details),
     execution: primary.execution ?? secondary.execution,
     status: primary.status,
     decidedAt: primary.decidedAt ?? secondary.decidedAt,
@@ -711,6 +726,34 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!focusedApprovalId) return;
+    const approval = approvals.find((item) => item.id === focusedApprovalId);
+    if (!approval || !needsApprovalDetailsHydration(approval.details)) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/agent/approvals/${focusedApprovalId}`);
+        const data = await res.json();
+        if (!res.ok || cancelled || !data.approval) return;
+        setApprovals((current) =>
+          sortApprovals(
+            mergeApprovalLists(current, [
+              data.approval as ApprovalRecordView,
+            ]),
+          ),
+        );
+      } catch {
+        // Review diff stays empty until the user refreshes.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [focusedApprovalId, approvals]);
 
   useEffect(() => {
     if (!running || layout !== "triple") return;

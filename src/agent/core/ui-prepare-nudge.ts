@@ -1,6 +1,7 @@
 /**
  * UI 改代码任务：read 推荐文件后提示模型用 exact search 走 file.replace.prepare（A083）。
  */
+import { extractUiLabelTokens } from "@/agent/indexer/ui-candidate-disambiguator";
 import type { AgentLoopRunState } from "@/agent/core/agent-loop-state";
 import {
   hasUiLocationEvidence,
@@ -22,14 +23,21 @@ function normalizePath(filePath: string): string {
 /** 从 file.read 内容中提取含可见 label 的 JSX 行，供 prepare 的 search 参数。 */
 export function extractUiLabelSearchCandidates(
   content: string,
-  labels: string[] = ["闭环", "Loop"],
+  labels?: string[],
 ): string[] {
+  const resolvedLabels =
+    labels && labels.length > 0 ? labels : ["新建 Agent", "Loop", "闭环"];
   const lines = content.split(/\r?\n/);
   const candidates: string[] = [];
 
   for (const line of lines) {
     const trimmed = line.trimEnd();
     if (!trimmed) continue;
+
+    if (/^\s*\+\s*$/.test(trimmed)) {
+      candidates.push(trimmed);
+      continue;
+    }
 
     // JSX 子节点单独一行：「                    Loop」
     if (/^\s*(?:闭环|Loop)\s*$/.test(trimmed)) {
@@ -42,12 +50,18 @@ export function extractUiLabelSearchCandidates(
       continue;
     }
 
-    const hasLabel = labels.some((label) => trimmed.includes(label));
+    if (/onNewSessionInProject/.test(trimmed) && /<button/i.test(trimmed)) {
+      candidates.push(trimmed);
+      continue;
+    }
+
+    const hasLabel = resolvedLabels.some((label) => trimmed.includes(label));
     if (!hasLabel) continue;
     if (
       /<(?:button|select|input|option|label)|runMode/i.test(trimmed) ||
       />\s*闭环\s*</.test(trimmed) ||
-      />\s*Loop\s*</.test(trimmed)
+      />\s*Loop\s*</.test(trimmed) ||
+      />\s*新建 Agent\s*</.test(trimmed)
     ) {
       candidates.push(trimmed);
     }
@@ -142,7 +156,10 @@ export function captureUiPrepareHintFromFileRead(
   const target = resolveUiEditTargetPath(state, uiContext);
   if (!target || normalizePath(filePath) !== target) return;
 
-  const suggestedSearchLines = extractUiLabelSearchCandidates(content);
+  const suggestedSearchLines = extractUiLabelSearchCandidates(
+    content,
+    extractUiLabelTokens(state.userRequest),
+  );
   if (suggestedSearchLines.length === 0) return;
 
   state.prepareHint = { path: target, suggestedSearchLines };
@@ -156,7 +173,7 @@ export function buildUiPrepareNudgeBlock(state: AgentLoopRunState): string | nul
     "=== UI prepare nudge (exact search required) ===",
     `Target file: ${state.prepareHint.path}`,
     "Copy ONE line below verbatim into file.replace.prepare search (include spaces).",
-    "To remove RunMode UI, replace the whole control line with empty string or delete the button block after reading full context.",
+    "To remove visible UI controls, replace the matched line with empty string or delete the surrounding block after reading full context.",
     "",
     ...state.prepareHint.suggestedSearchLines.map(
       (line, index) => `Candidate ${index + 1}: ${JSON.stringify(line)}`,

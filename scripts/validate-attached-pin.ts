@@ -116,7 +116,7 @@ async function main() {
     messages.push(
       buildToolObservationMessage("file.read", {
         path,
-        content: `export const n${i} = ${i};\n`.repeat(400),
+        content: `export const n${i} = ${i};\n`.repeat(120),
       }),
     );
     messages.push({

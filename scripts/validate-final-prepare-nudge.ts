@@ -14,43 +14,47 @@ import {
 } from "../src/agent/core/agent-loop-state";
 import { captureUiPrepareHintFromFileRead } from "../src/agent/core/ui-prepare-nudge";
 import { resolveInsideWorkspace } from "../src/agent/tools/path-safety";
-
-const COMPOSER = "src/components/agent-composer.tsx";
-const PANEL = "src/components/agent-panel.tsx";
+import {
+  GOLDEN_DISAMBIGUATION_LABEL,
+  GOLDEN_UI_CONTEXT,
+  GOLDEN_UI_QUERY,
+  PANEL_PATH,
+  SIDEBAR_PATH,
+} from "./golden-path-fixtures";
 
 async function main(): Promise<void> {
   const content = await fs.readFile(
-    resolveInsideWorkspace(process.cwd(), COMPOSER),
+    resolveInsideWorkspace(process.cwd(), SIDEBAR_PATH),
     "utf8",
   );
   const panelContent = await fs.readFile(
-    resolveInsideWorkspace(process.cwd(), PANEL),
+    resolveInsideWorkspace(process.cwd(), PANEL_PATH),
     "utf8",
   );
 
-  const state = createAgentLoopRunState("把首页左边的闭环/Loop 选择去掉");
-  state.toolsCalled.push("ui.trace_from_page");
+  const state = createAgentLoopRunState(GOLDEN_UI_QUERY);
+  state.toolsCalled.push("file.locate");
   state.disambiguation = {
-    label: "闭环",
-    mustReadPaths: [COMPOSER, PANEL],
-    recommendedPath: COMPOSER,
-    selectionRationale: "triple → composer",
+    label: GOLDEN_DISAMBIGUATION_LABEL,
+    mustReadPaths: [SIDEBAR_PATH, PANEL_PATH],
+    recommendedPath: SIDEBAR_PATH,
+    selectionRationale: "sidebar plus intent",
   };
-  recordToolCall(state, "file.read", { path: COMPOSER, content });
-  recordToolCall(state, "file.read", { path: PANEL, content: panelContent });
+  recordToolCall(state, "file.read", { path: SIDEBAR_PATH, content });
+  recordToolCall(state, "file.read", { path: PANEL_PATH, content: panelContent });
   captureUiPrepareHintFromFileRead(
     state,
-    COMPOSER,
+    SIDEBAR_PATH,
     content,
-    { layout: "triple" },
+    GOLDEN_UI_CONTEXT,
   );
 
-  assert.ok(shouldRunFinalPrepareNudge(state, { layout: "triple" }));
+  assert.ok(shouldRunFinalPrepareNudge(state, GOLDEN_UI_CONTEXT));
   assert.ok(buildFinalPrepareNudgeUserMessage(state)?.includes("Final prepare round"));
 
   recordToolCall(state, "file.replace.prepare", { error: "search not found" });
   assert.ok(hasAttemptedPrepareTool(state));
-  assert.equal(shouldRunFinalPrepareNudge(state, { layout: "triple" }), false);
+  assert.equal(shouldRunFinalPrepareNudge(state, GOLDEN_UI_CONTEXT), false);
 
   console.log("validate-final-prepare-nudge: passed");
 }
