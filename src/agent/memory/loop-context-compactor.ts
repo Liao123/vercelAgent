@@ -26,6 +26,12 @@ import {
   LOOP_COMPACTION_CONFIG,
 } from "@/agent/memory/loop-compaction-config";
 import {
+  COLLAPSE_TAIL_KEEP,
+  microCompactMiddleObservations,
+  needsEmergencyCollapse,
+  snipLowValueMiddleMessages,
+} from "@/agent/memory/loop-compaction-layers";
+import {
   extractFileReadSnippetsFromMessages,
   formatPinnedFileSnippetsBlock,
   mergePinnedFileSnippets,
@@ -87,6 +93,8 @@ export type LoopContextCompactResult = {
   memoryContent?: string;
   pinnedFacts?: LoopPinnedFacts;
   changedFiles?: string[];
+  /** 本次触发的压缩层（snip / micro / auto / collapse） */
+  layersApplied?: string[];
 };
 
 export type ParsedCompactedMemory = {
@@ -570,7 +578,10 @@ function shouldCompactMessages(input: {
   middleLength: number;
   middleTokens: number;
   hasPriorMemory: boolean;
+  forceCompact?: boolean;
 }): boolean {
+  if (input.forceCompact && input.middleLength >= 1) return true;
+
   const threshold =
     input.maxContext * DEFAULT_TOKEN_BUDGET.compressionThresholdRatio;
 
@@ -667,18 +678,36 @@ export async function compactAgentLoopMessages(input: {
   filesReadPaths?: string[];
   /** 运行态 prepareHint（A084），压缩后仍写入滚动记忆 */
   prepareHint?: UiPrepareHint | null;
+  /** API 超长等紧急场景：跳过阈值直接压缩（Reactive） */
+  forceCompact?: boolean;
 }): Promise<LoopContextCompactResult> {
+  const layersApplied: string[] = [];
   const messages = [...input.messages];
   const estimatedTokensBefore = estimateMessagesTokens(messages);
   const maxContext = getMaxContextTokens(DEFAULT_TOKEN_BUDGET);
 
   const { head, middle: initialMiddle, tail } =
     splitLoopMessagesForCompaction(messages);
-  const middle = [...initialMiddle];
+  let middle = [...initialMiddle];
 
   const headCount = head.length;
   if (messages.length <= headCount + TAIL_KEEP_COUNT + 1) {
     return emptyResult(messages, estimatedTokensBefore);
+  }
+
+  const snip = snipLowValueMiddleMessages(middle);
+  if (snip.removedCount > 0) {
+    middle = snip.messages;
+    layersApplied.push(`snip:${snip.removedCount}`);
+  }
+
+  const microSource =
+    middle.length >= 8 ? middle.slice(0, middle.length - 1) : middle;
+  const micro = microCompactMiddleObservations(microSource);
+  if (micro.compactedCount > 0) {
+    const microTail = middle.length >= 8 ? middle.at(-1)! : null;
+    middle = microTail ? [...micro.messages, microTail] : micro.messages;
+    layersApplied.push(`micro:${micro.compactedCount}`);
   }
 
   let priorMemory: ParsedCompactedMemory | null = null;
@@ -695,15 +724,18 @@ export async function compactAgentLoopMessages(input: {
   const middleTokens = estimateMessagesTokens(middle);
   const hasPriorMemory = priorMemory != null;
 
-  if (
-    !shouldCompactMessages({
-      estimatedTokens: estimatedTokensBefore,
-      maxContext,
-      middleLength: middle.length,
-      middleTokens,
-      hasPriorMemory,
-    })
-  ) {
+  const shouldCompact = shouldCompactMessages({
+    estimatedTokens: estimatedTokensBefore,
+    maxContext,
+    middleLength: middle.length,
+    middleTokens,
+    hasPriorMemory,
+    forceCompact: input.forceCompact,
+  });
+  const mustCompact =
+    shouldCompact || input.forceCompact === true || layersApplied.length > 0;
+
+  if (!mustCompact) {
     return {
       ...emptyResult(messages, estimatedTokensBefore),
       middleMessageCount: middle.length,
@@ -813,7 +845,7 @@ export async function compactAgentLoopMessages(input: {
   }
 
   const round = input.compactRound ?? (priorMemory?.round ?? 0) + 1;
-  const memoryContent = buildStructuredCompactedMemory({
+  let memoryContent = buildStructuredCompactedMemory({
     round,
     method,
     pinnedFacts,
@@ -828,8 +860,45 @@ export async function compactAgentLoopMessages(input: {
     content: memoryContent,
   };
 
-  const nextMessages = [...head, memoryMessage, ...tail];
-  const estimatedTokensAfter = estimateMessagesTokens(nextMessages);
+  let nextMessages = [...head, memoryMessage, ...tail];
+  let estimatedTokensAfter = estimateMessagesTokens(nextMessages);
+
+  if (needsEmergencyCollapse(estimatedTokensAfter, maxContext)) {
+    const collapsedTail = nextMessages.slice(-COLLAPSE_TAIL_KEEP);
+    const collapsedHead = nextMessages.slice(
+      0,
+      Math.min(3, Math.max(0, nextMessages.length - COLLAPSE_TAIL_KEEP)),
+    );
+    const collapseSummary = mergeSummaryBodies(
+      priorMemory?.summaryBody ?? "",
+      [
+        "### Emergency collapse",
+        "Context still over budget after auto-compact. Continue from pinned facts and recent tail only.",
+        `Task: ${input.userRequest.slice(0, 400)}`,
+      ].join("\n\n"),
+    );
+    const collapseMemory = buildStructuredCompactedMemory({
+      round,
+      method: "deterministic",
+      pinnedFacts,
+      summaryBody: collapseSummary,
+      changedFiles,
+      pinnedFileSnippets: pinnedFileSnippets.slice(0, 3),
+      pinnedPrepareHint,
+    });
+    nextMessages = [
+      ...collapsedHead,
+      { role: "user", content: collapseMemory },
+      ...collapsedTail,
+    ];
+    estimatedTokensAfter = estimateMessagesTokens(nextMessages);
+    layersApplied.push("collapse");
+    memoryContent = collapseMemory;
+  }
+
+  if (method !== "none") {
+    layersApplied.push("auto");
+  }
 
   return {
     messages: nextMessages,
@@ -843,6 +912,7 @@ export async function compactAgentLoopMessages(input: {
     memoryContent,
     pinnedFacts,
     changedFiles,
+    layersApplied: layersApplied.length > 0 ? layersApplied : undefined,
   };
 }
 

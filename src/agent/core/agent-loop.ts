@@ -71,6 +71,7 @@ import {
   compactAgentLoopMessages,
   createLoopCompactEventPayload,
 } from "@/agent/memory/loop-context-compactor";
+import { isContextOverflowError } from "@/agent/memory/loop-compaction-layers";
 import {
   buildThreadMemoryInjectionMessage,
   getThreadMemory,
@@ -683,6 +684,7 @@ export async function runAgentLoop(
 
   let modelUnavailable = false;
   let contextCompactRound = 0;
+  let reactiveCompactUsed = false;
 
   for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
     const compactResult = await compactAgentLoopMessages({
@@ -745,32 +747,84 @@ export async function runAgentLoop(
     }
 
     let output;
-    try {
-      const loopModel =
-        input.model ??
-        (agentMessagesHaveImages(messages)
-          ? getApiConfig()?.visionModel
-          : undefined);
+    let modelRetryAfterCompact = false;
+    do {
+      modelRetryAfterCompact = false;
+      try {
+        const loopModel =
+          input.model ??
+          (agentMessagesHaveImages(messages)
+            ? getApiConfig()?.visionModel
+            : undefined);
 
-      output = await provider.generate({
-        messages,
-        model: loopModel,
-        temperature: 0,
-        maxTokens: agentMessagesHaveImages(messages) ? 2000 : 1400,
-        metadata: { taskId: task.id, iteration },
-      });
-    } catch (error) {
-      modelUnavailable = true;
-      summary = `Model call failed: ${fallbackSummary(error)}`;
-      emitReflection(emit, task.id, {
-        understanding: runState.userRequest,
-        blockers: [summary],
-        plannedNext: "运行时将在无模型情况下尝试磁盘恢复。",
-        source: "runtime",
-      });
-      emitPlan({ lastAction: "reflect" });
-      break;
-    }
+        output = await provider.generate({
+          messages,
+          model: loopModel,
+          temperature: 0,
+          maxTokens: agentMessagesHaveImages(messages) ? 2000 : 1400,
+          metadata: { taskId: task.id, iteration },
+        });
+      } catch (error) {
+        if (
+          !reactiveCompactUsed &&
+          isContextOverflowError(error) &&
+          messages.length > 4
+        ) {
+          reactiveCompactUsed = true;
+          const reactiveCompact = await compactAgentLoopMessages({
+            messages,
+            userRequest: effectiveUserRequest,
+            provider,
+            enableSemanticCompact: isSemanticCompactEnabled(),
+            compactRound: contextCompactRound + 1,
+            filesReadPaths: runState.filesRead,
+            prepareHint:
+              runState.prepareHint && !runState.approvalPrepared
+                ? runState.prepareHint
+                : undefined,
+            forceCompact: true,
+          });
+          if (reactiveCompact.method !== "none") {
+            contextCompactRound = reactiveCompact.round;
+            messages.length = 0;
+            messages.push(...reactiveCompact.messages);
+            const payload = createLoopCompactEventPayload(reactiveCompact);
+            if (payload) {
+              emit({
+                type: "context.compacted",
+                taskId: task.id,
+                summaryId: payload.summaryId,
+                method: payload.method,
+                estimatedTokensBefore: payload.estimatedTokensBefore,
+                estimatedTokensAfter: payload.estimatedTokensAfter,
+                round: payload.round,
+                middleMessageCount: payload.middleMessageCount,
+                summaryPreview: payload.summaryPreview,
+                memoryContent: payload.memoryContent,
+                threadId: thread.id,
+                pinnedApprovalCount: payload.pinnedApprovalCount,
+                changedFileCount: payload.changedFileCount,
+              });
+            }
+            modelRetryAfterCompact = true;
+            continue;
+          }
+        }
+
+        modelUnavailable = true;
+        summary = `Model call failed: ${fallbackSummary(error)}`;
+        emitReflection(emit, task.id, {
+          understanding: runState.userRequest,
+          blockers: [summary],
+          plannedNext: "运行时将在无模型情况下尝试磁盘恢复。",
+          source: "runtime",
+        });
+        emitPlan({ lastAction: "reflect" });
+        break;
+      }
+    } while (modelRetryAfterCompact);
+
+    if (modelUnavailable) break;
     emit({
       type: "model.delta",
       taskId: task.id,
