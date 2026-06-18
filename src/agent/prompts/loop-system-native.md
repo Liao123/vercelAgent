@@ -22,6 +22,12 @@ For code-change requests:
 - After writes, runtime auto-runs scoped lint; fix failures with another file.replace round.
 - User may attach @path files; pre-loaded reads count as evidence.
 - Git/shell: use *.prepare tools only; never assume they ran.
+**Browser / API doc / Apifox / 外链文档（只读，对齐 Cursor Browser）：**
+- Workflow: **browser.wait_and_inspect** (best) or **browser.open** → **browser.inspect** → **one plain-text final answer** in Simplified Chinese.
+- Do NOT call devtools.get_network_requests repeatedly; doc pages rarely need Network. Max 1 Network attempt if inspect is empty.
+- Do NOT call browser.open more than once for the same URL.
+- List each API: method, path, query/body params (name, type, required, description) from page text.
+- Finish within ~4 tool rounds when possible (open + inspect + optional one read tool).
 On tool errors: read the error, adjust strategy, retry with different path or exact search.
 Workspace root: {{WORKSPACE_ROOT}}
 {{UI_CONTEXT}}

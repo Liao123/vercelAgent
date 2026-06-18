@@ -16,6 +16,21 @@ import {
   waitForBrowserQueryResult,
 } from "@/agent/browser";
 import {
+  cdpAxTree,
+  cdpBoxModelForSelector,
+  cdpClick,
+  cdpComputedStylesForSelector,
+  cdpConsoleAndExceptions,
+  cdpDomSnapshot,
+  cdpInspectAt,
+  cdpNetworkRequests,
+  cdpScreenshotJpegBase64,
+  cdpType,
+} from "@/agent/devtools/cdp-client";
+import { isCdpBridgeAvailable } from "@/agent/devtools/cdp-bridge-config";
+import { readBrowserNetworkForAgent } from "@/agent/devtools/network-read";
+import { isCdpGuestReady } from "@/agent/devtools/cdp-guest-wait";
+import {
   buildProjectIndex,
   locateFilesForRequest,
   traceUiEntryForQuery,
@@ -67,7 +82,18 @@ export type AgentLoopToolName =
   | "git.diff"
   | "browser.open"
   | "browser.inspect"
+  | "browser.wait_and_inspect"
   | "browser.query"
+  | "devtools.get_screenshot"
+  | "devtools.get_dom_snapshot"
+  | "devtools.get_accessibility_tree"
+  | "devtools.get_console_errors"
+  | "devtools.get_network_requests"
+  | "devtools.click"
+  | "devtools.type"
+  | "devtools.get_box_model"
+  | "devtools.get_computed_style"
+  | "devtools.inspect_element_at"
   | "file.replace.prepare"
   | "file.mutation.prepare"
   | "git.mutation.prepare"
@@ -745,7 +771,7 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
   {
     name: "browser.inspect",
     description:
-      "Read the latest in-app browser preview snapshot (title, text, console, DOM outline, network, HAR-lite, screenshot path). Call browser.open first, then inspect after the page loads.",
+      "Read browser snapshot: title, body text, DOM outline, console, HAR-lite network, screenshot. Best first step after browser.open for doc/API pages (often enough without devtools.get_network_requests).",
     args: {},
     async execute() {
       const [target, snapshot, queryResult, harLog] = await Promise.all([
@@ -763,6 +789,74 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
           hint: snapshot
             ? "Snapshot from embedded webview/iframe preview. Full HAR at GET /api/agent/browser/har."
             : "No snapshot yet. Use browser.open and wait for preview to load.",
+        },
+      };
+    },
+  },
+  {
+    name: "browser.wait_and_inspect",
+    description:
+      "For Apifox/API doc URLs: open (if url given) and poll until WebView snapshot has body text, then return inspect payload. Prefer over open+inspect+network chain.",
+    args: {
+      url: "Optional URL to open first",
+      waitMs: "Max wait for snapshot ms (default 12000)",
+    },
+    async execute(args) {
+      const urlArg = stringArg(args, "url");
+      if (urlArg) {
+        await openBrowserUrl({
+          url: urlArg,
+          requestedBy: "agent",
+        });
+      }
+
+      const waitMsRaw = args.waitMs;
+      const waitMs =
+        typeof waitMsRaw === "number"
+          ? waitMsRaw
+          : typeof waitMsRaw === "string"
+            ? Number.parseInt(waitMsRaw, 10)
+            : 12_000;
+      const waitCap = Math.min(Math.max(waitMs, 2000), 30_000);
+      const started = Date.now();
+      const deadline = started + waitCap;
+
+      let snapshot = await getPersistedBrowserPageSnapshot();
+      while (!snapshot?.textPreview?.trim() && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 500));
+        snapshot = await getPersistedBrowserPageSnapshot();
+      }
+
+      const [target, queryResult, harLog] = await Promise.all([
+        getPersistedBrowserTarget(),
+        getBrowserQueryResult(),
+        getPersistedBrowserHarLog(),
+      ]);
+
+      let accessibilityTree: unknown = null;
+      if (
+        snapshot?.textPreview &&
+        (await isCdpBridgeAvailable()) &&
+        (await isCdpGuestReady())
+      ) {
+        try {
+          accessibilityTree = await cdpAxTree();
+        } catch {
+          /* optional Codex/Cursor parity */
+        }
+      }
+
+      return {
+        result: {
+          target,
+          snapshot,
+          accessibilityTree,
+          queryResult,
+          harLog,
+          waitedMs: Date.now() - started,
+          hint: snapshot?.textPreview
+            ? "Cursor 同级路径：根据 snapshot + accessibilityTree 直接写中文 final，勿再调 Network。"
+            : "Snapshot still empty — ensure dev:desktop and browser tab loaded the page, then retry or use browser.inspect.",
         },
       };
     },
@@ -810,6 +904,194 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
           matches: result.matches,
         },
       };
+    },
+  },
+  {
+    name: "devtools.get_screenshot",
+    description:
+      "Capture JPEG screenshot of the in-app browser via CDP Page.captureScreenshot. Requires desktop app and browser tab with loaded page.",
+    args: {},
+    async execute() {
+      if (!(await isCdpBridgeAvailable())) {
+        return {
+          result: {
+            ok: false,
+            hint: "CDP bridge offline. Run npm run dev:desktop and open URL in browser tab.",
+          },
+        };
+      }
+      const jpegBase64 = await cdpScreenshotJpegBase64();
+      return {
+        result: {
+          ok: Boolean(jpegBase64),
+          format: "jpeg",
+          byteLength: jpegBase64 ? Math.floor((jpegBase64.length * 3) / 4) : 0,
+          jpegBase64Preview: jpegBase64
+            ? `${jpegBase64.slice(0, 48)}…`
+            : null,
+          hint: jpegBase64
+            ? "Full image also in browser.inspect snapshot path when webview posts."
+            : "Screenshot empty.",
+        },
+      };
+    },
+  },
+  {
+    name: "devtools.get_dom_snapshot",
+    description:
+      "CDP DOMSnapshot.captureSnapshot (layout + computed styles). Codex take_snapshot equivalent.",
+    args: {},
+    async execute() {
+      if (!(await isCdpBridgeAvailable())) {
+        return {
+          result: {
+            ok: false,
+            hint: "CDP bridge offline. Use npm run dev:desktop.",
+          },
+        };
+      }
+      const snapshot = await cdpDomSnapshot();
+      return { result: { ok: true, snapshot } };
+    },
+  },
+  {
+    name: "devtools.get_accessibility_tree",
+    description:
+      "CDP Accessibility.getFullAXTree for the in-app browser page.",
+    args: {},
+    async execute() {
+      if (!(await isCdpBridgeAvailable())) {
+        return {
+          result: { ok: false, hint: "CDP bridge offline." },
+        };
+      }
+      const tree = await cdpAxTree();
+      return { result: { ok: true, tree } };
+    },
+  },
+  {
+    name: "devtools.get_console_errors",
+    description:
+      "Read console messages and runtime exceptions from CDP (Log + Runtime).",
+    args: {},
+    async execute() {
+      if (!(await isCdpBridgeAvailable())) {
+        return {
+          result: { ok: false, hint: "CDP bridge offline." },
+        };
+      }
+      const { console, exceptions } = await cdpConsoleAndExceptions();
+      return {
+        result: {
+          ok: true,
+          console,
+          exceptions,
+          errorCount: exceptions.length,
+        },
+      };
+    },
+  },
+  {
+    name: "devtools.get_network_requests",
+    description:
+      "List network requests (CDP Network). Falls back to HAR-lite from browser.inspect. Prefer browser.inspect for Apifox/doc pages.",
+    args: {},
+    async execute() {
+      const result = await readBrowserNetworkForAgent();
+      return { result };
+    },
+  },
+  {
+    name: "devtools.click",
+    description:
+      "Click an element in the in-app browser by CSS selector (CDP Input.dispatchMouseEvent).",
+    args: {
+      selector: "CSS selector for target element",
+    },
+    async execute(args) {
+      const selector = stringArg(args, "selector");
+      if (!(await isCdpBridgeAvailable())) {
+        return {
+          result: { ok: false, hint: "CDP bridge offline." },
+        };
+      }
+      const out = await cdpClick(selector);
+      return { result: out };
+    },
+  },
+  {
+    name: "devtools.type",
+    description:
+      "Type text into a focused input/textarea via CSS selector (focus + CDP Input.insertText).",
+    args: {
+      selector: "CSS selector",
+      text: "Text to insert",
+    },
+    async execute(args) {
+      const selector = stringArg(args, "selector");
+      const text = stringArg(args, "text");
+      if (!(await isCdpBridgeAvailable())) {
+        return {
+          result: { ok: false, hint: "CDP bridge offline." },
+        };
+      }
+      const out = await cdpType(selector, text);
+      return { result: out };
+    },
+  },
+  {
+    name: "devtools.get_box_model",
+    description: "CDP DOM.getBoxModel for element matching CSS selector.",
+    args: {
+      selector: "CSS selector",
+    },
+    async execute(args) {
+      const selector = stringArg(args, "selector");
+      if (!(await isCdpBridgeAvailable())) {
+        return {
+          result: { ok: false, hint: "CDP bridge offline." },
+        };
+      }
+      const boxModel = await cdpBoxModelForSelector(selector);
+      return { result: { ok: true, selector, boxModel } };
+    },
+  },
+  {
+    name: "devtools.get_computed_style",
+    description:
+      "CDP CSS.getComputedStyleForNode for element matching CSS selector.",
+    args: {
+      selector: "CSS selector",
+    },
+    async execute(args) {
+      const selector = stringArg(args, "selector");
+      if (!(await isCdpBridgeAvailable())) {
+        return {
+          result: { ok: false, hint: "CDP bridge offline." },
+        };
+      }
+      const styles = await cdpComputedStylesForSelector(selector, []);
+      return { result: { ok: true, selector, styles } };
+    },
+  },
+  {
+    name: "devtools.inspect_element_at",
+    description:
+      "CDP DOM.getNodeForLocation at viewport coordinates (x, y).",
+    args: {
+      x: "X coordinate in viewport pixels",
+      y: "Y coordinate in viewport pixels",
+    },
+    async execute(args) {
+      const x = numberArg(args, "x");
+      const y = numberArg(args, "y");
+      if (!(await isCdpBridgeAvailable())) {
+        return {
+          result: { ok: false, hint: "CDP bridge offline." },
+        };
+      }
+      const node = await cdpInspectAt(x, y);
+      return { result: { ok: true, x, y, node } };
     },
   },
   {

@@ -36,3 +36,51 @@ export function subscribeWorkspaceFolderFromMenu(
   }
   return window.vecDesktop.onWorkspaceFolderFromMenu(onFolder);
 }
+
+export async function registerBrowserGuest(
+  guestWebContentsId: number,
+): Promise<boolean> {
+  if (!isDesktopApp() || !window.vecDesktop?.registerBrowserGuest) {
+    return false;
+  }
+  try {
+    const result = await window.vecDesktop.registerBrowserGuest(
+      guestWebContentsId,
+    );
+    return Boolean(result?.ok);
+  } catch {
+    return false;
+  }
+}
+
+export async function captureBrowserScreenshotCdp(
+  guestWebContentsId: number,
+): Promise<string | null> {
+  if (!isDesktopApp() || !window.vecDesktop?.captureBrowserScreenshot) {
+    return null;
+  }
+  try {
+    const result = await window.vecDesktop.captureBrowserScreenshot(
+      guestWebContentsId,
+    );
+    return result?.ok && result.jpegBase64 ? result.jpegBase64 : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchBrowserNetworkCdp(
+  guestWebContentsId: number,
+): Promise<unknown[]> {
+  if (!isDesktopApp() || !window.vecDesktop?.getBrowserNetworkLog) {
+    return [];
+  }
+  try {
+    const result = await window.vecDesktop.getBrowserNetworkLog(
+      guestWebContentsId,
+    );
+    return result?.ok && Array.isArray(result.entries) ? result.entries : [];
+  } catch {
+    return [];
+  }
+}

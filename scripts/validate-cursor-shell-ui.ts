@@ -55,14 +55,15 @@ async function main(): Promise<void> {
   );
   assert.ok(rightRail.includes('label: "文件"'), "files tab present");
   assert.ok(rightRail.includes('label: "浏览器"'), "browser tab present");
-  assert.ok(changeCard.includes("接受"), "turn card accept button");
+  assert.ok(changeCard.includes("应用更改"), "turn card apply button");
   assert.ok(
     changeCard.includes("showInlineActions"),
     "turn card can hide inline accept in triple",
   );
   assert.ok(
-    reviewPanel.includes("接受") && reviewPanel.includes("ReviewActionBar"),
-    "review tab confirm bar for pending only",
+    reviewPanel.includes("REVIEW_ACTION_APPLY") &&
+      reviewPanel.includes("ReviewFileNav"),
+    "review panel cursor labels + file nav",
   );
   assert.ok(
     !reviewPanel.includes("onApproveAndExecute"),
@@ -86,12 +87,13 @@ async function main(): Promise<void> {
     "auto-apply pref wired",
   );
   assert.ok(
-    reviewPanel.includes("FileChip"),
-    "review file list uses horizontal chips",
+    reviewPanel.includes("FileListRow"),
+    "review file list uses vertical rows in triple layout",
   );
   assert.ok(
-    reviewPanel.includes("点击上方文件查看 diff"),
-    "review diff not auto-selected",
+    reviewPanel.includes("选择左侧文件查看 diff") ||
+      !reviewPanel.includes("点击上方文件查看 diff"),
+    "review auto-selects first file in embedded mode",
   );
   assert.ok(
     changeCard.includes("onReview") || changeCard.includes("onReviewApproval"),

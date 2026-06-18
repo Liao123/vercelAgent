@@ -6,6 +6,11 @@ import {
 } from "@/lib/approval-file-changes";
 import { PostExecuteVerificationView } from "@/components/post-execute-verification-view";
 import type { PostExecuteVerification } from "@/agent/verification";
+import {
+  TURN_CHANGE_APPLY,
+  TURN_CHANGE_APPLY_BUSY,
+  TURN_CHANGE_DISCARD,
+} from "@/lib/review-empty-hint";
 
 const PRIMARY_COUNT = 3;
 
@@ -72,8 +77,15 @@ function FileRow({
 
   if (onClick) {
     return (
-      <button type="button" onClick={onClick} className={`${rowClass} hover:bg-zinc-50 dark:hover:bg-zinc-800/50`}>
+      <button
+        type="button"
+        onClick={onClick}
+        className={`${rowClass} hover:bg-zinc-50 dark:hover:bg-zinc-800/50`}
+      >
         {content}
+        <span className="shrink-0 text-[10px] text-blue-600 dark:text-blue-400">
+          在审查中查看
+        </span>
       </button>
     );
   }
@@ -116,7 +128,7 @@ export function AgentTurnChangeCard({
         </div>
         {isPending && approvalId && !showInlineActions && (
           <p className="shrink-0 text-[11px] text-zinc-500">
-            请在右侧审查查看
+            右侧审查 · 应用更改
           </p>
         )}
         {isPending && approvalId && showInlineActions && (
@@ -128,7 +140,7 @@ export function AgentTurnChangeCard({
                 onClick={() => onReject(approvalId)}
                 className="rounded-lg border border-zinc-200 px-3 py-1.5 text-[12px] text-zinc-600 transition hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-zinc-800"
               >
-                拒绝
+                {TURN_CHANGE_DISCARD}
               </button>
             )}
             {onApply && (
@@ -138,7 +150,7 @@ export function AgentTurnChangeCard({
                 onClick={() => onApply(approvalId)}
                 className="rounded-lg bg-blue-600 px-3 py-1.5 text-[12px] font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
               >
-                {applyBusy ? "接受中…" : "接受"}
+                {applyBusy ? TURN_CHANGE_APPLY_BUSY : TURN_CHANGE_APPLY}
               </button>
             )}
           </div>

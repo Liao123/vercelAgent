@@ -276,13 +276,14 @@ export function collectReviewFileChanges(
     }
   }
 
-  const byKey = new Map<string, FileChangeEntry>();
+  const byPath = new Map<string, FileChangeEntry>();
   for (const approval of candidates) {
     for (const file of extractFileChangesFromDetails(approval.details)) {
-      byKey.set(file.fileKey, file);
+      const norm = file.path.replaceAll("\\", "/");
+      byPath.set(norm, file);
     }
   }
-  const files = sortByChangeSize([...byKey.values()]);
+  const files = sortByChangeSize([...byPath.values()]);
   const latest = candidates[candidates.length - 1];
   return {
     approvalId: latest.id,

@@ -35,6 +35,8 @@ export type AgentLoopRunState = {
   };
   /** A089：试用/调试时禁止 edit.recovery */
   strictPrepare?: boolean;
+  /** 同一工具连续失败次数（熔断空转） */
+  toolFailureStreak?: { tool: string; error: string; count: number };
 };
 
 export function createAgentLoopRunState(userRequest: string): AgentLoopRunState {
@@ -145,6 +147,14 @@ export function recordToolCall(
   if (error) {
     state.lastToolError = error;
     if (
+      state.toolFailureStreak?.tool === toolName &&
+      state.toolFailureStreak.error === error
+    ) {
+      state.toolFailureStreak.count += 1;
+    } else {
+      state.toolFailureStreak = { tool: toolName, error, count: 1 };
+    }
+    if (
       toolName === "file.replace.prepare" ||
       toolName === "file.mutation.prepare" ||
       toolName === "patch.prepare"
@@ -154,9 +164,19 @@ export function recordToolCall(
     return;
   }
 
+  state.toolFailureStreak = undefined;
+
   if (result && typeof result === "object" && "error" in result) {
     const message = String((result as { error?: unknown }).error);
     state.lastToolError = message;
+    if (
+      state.toolFailureStreak?.tool === toolName &&
+      state.toolFailureStreak.error === message
+    ) {
+      state.toolFailureStreak.count += 1;
+    } else {
+      state.toolFailureStreak = { tool: toolName, error: message, count: 1 };
+    }
     if (
       toolName === "file.replace.prepare" ||
       toolName === "file.mutation.prepare" ||

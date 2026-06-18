@@ -1,0 +1,12 @@
+{
+  "recordedAt": "",
+  "cursorVersion": "",
+  "userRequest": "帮我解析 <apifox-url> 的接口参数…",
+  "toolOrActionSequence": [
+    "示例：打开浏览器 / 读取页面 / 一次中文总结"
+  ],
+  "toolStepCount": 0,
+  "secondsToComplete": 0,
+  "finalSummaryPreview": "",
+  "notes": "从 Cursor 时间线复制步骤，保存为 .agent-state/compare/cursor-browser-doc-notes.json"
+}

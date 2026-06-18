@@ -512,7 +512,11 @@ node scripts/golden-path-trial.mjs "D:\案例\aiproject"   # 外部项目改 ind
 | A125 | done | 工具观测墓碑 stub + 用户锚点；`validate:tombstone-stub` |
 | A126 | done | 爆发段感知 tail；`validate:burst-tail` |
 | A127 | done | UI 展示压缩 layers；`validate:compaction-ui` |
-| A025 Electron | in_progress | 桌面壳与选文件夹已接入；CDP/WebView 仍 deferred |
+| A128 | done | 内置浏览器稳定性：禁同源嵌套、忽略 `-3` 导航、快照失败不误报 |
+| A129 | done | **Codex 式 WebView + CDP**（`browser-cdp.mjs`、截图/Network、Cursor Chrome UI） |
+| A130 | done | **CDP HTTP 桥 + devtools.\***（click/type/DOM/AX/network/console） |
+| A131 | todo | performance trace、多标签、extract_design_spec |
+| A025 Electron | in_progress | 桌面壳；Codex 浏览器 MVP；A130+ DevTools |
 | 开发闭环 develop | dev only | `?dev=1` 顶部面板，主路径仍为 Loop |
 
 **日常验证**：`npm run validate:agent`；在线 `npm run trial:golden-path-ui`（`--strict` 记录通过率即可）。
@@ -578,5 +582,5 @@ node scripts/golden-path-trial.mjs "D:\案例\aiproject"   # 外部项目改 ind
 - A035 smoke 产生的临时文件和测试分支已清理，`tmp/a035-smoke-execute-2.txt` 不存在，`codex/smoke-a035` 分支不存在。
 - A036 首次验证 approval 已被拒绝；用户复测后重新生成并执行了新 approval，首页 `src/app/page.tsx` 已实际移除“鹊桥”。
 - `.agent-state/` 和 `.agent-traces/` 是本地运行状态，不要提交。
-- 当前 Web 内置浏览器只是 iframe 原型，会被外部站点 CSP/X-Frame-Options 限制；这不是明天第一优先级。
+- 当前 Web 版默认 **不用 iframe**；Codex 同级内置浏览器请用 **`npm run dev:desktop`**（WebView + CDP）。
 - 当前 Agent Loop 只允许 prepare 文件/Git 变更；真正 apply 仍需要用户在审批 UI 二次点击执行。

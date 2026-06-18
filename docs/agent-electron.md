@@ -9,11 +9,13 @@
 ```bash
 npm install
 npm run dev          # 终端 A
-npm run electron     # 终端 B
+npm run electron     # 终端 B（若未跑 dev，Windows 会自动新开「vec-next dev」终端）
 
-# 或：
+# 或同终端一键：
 npm run dev:desktop
 ```
+
+`npm run electron` 会先检测 `VEC_DESKTOP_URL`；服务未就绪时 **Windows 会弹出新的 CMD 窗口**（标题 `vec-next dev`）跑 `npm run dev`，再打开桌面壳。仅启动 Electron 进程用 `npm run electron:raw`。若不想弹新窗口、要在当前终端看 Next 日志：`VEC_ELECTRON_DEV_SAME_TERMINAL=1 npm run electron`。
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
@@ -68,19 +70,21 @@ npm run pack:desktop
 npm run validate:agent-dev-mode
 ```
 
-## 内置浏览器（A023 MVP）
+## 内置浏览器（Codex 路线 · A023 / A129）
 
-- 桌面壳：`webviewTag` + `BrowserWebview`（`src/components/browser-webview.tsx`）
-- 页面 `dom-ready` 后 POST `/api/agent/browser/snapshot`（标题 + 正文 + console + DOM + **network/HAR-lite** + 截图）
-- Agent 工具：`browser.open` → 预览；`browser.inspect` → 快照（含 `harLog`）；**`browser.query`** → CSS 选择器查 DOM（桌面 WebView）
-- HAR 完整条目：`GET /api/agent/browser/har`；截图：`GET /api/agent/browser/screenshot`
+- **桌面版 = Codex 同级**：`webviewTag` + Chromium WebView + **CDP**（`electron/browser-cdp.mjs`）
+  - `Page.captureScreenshot` 截图
+  - `Network.*` 采集（与注入 HAR-lite 合并）
+  - Agent：`browser.open` → `browser.inspect` → `browser.query`
+- 右栏 Tab 显示 **Codex 模式** 徽章；支持后退 / 前进 / 刷新
+- **纯网页**：默认引导 `npm run dev:desktop`；可选 iframe 降级（非 Codex 同级）
 
 ```bash
 npm run validate:browser-desktop
 npm run validate:browser-cdp-lite
 ```
 
-Web 版仍用 iframe；部分站点禁止嵌入，请用桌面版或新标签打开。
+Web 版默认 **不提供** Codex 同级能力，仅可选 iframe 降级；**Codex 式内置浏览器请用桌面版**。
 
 ## 验证
 
@@ -115,7 +119,9 @@ macOS 需 Apple Developer 证书 + notarization；`electron-builder.yml` 中 `ma
 
 `electron-builder.yml` 预留 `publish` 配置位；需 GitHub Releases / S3 等 provider + `electron-updater` 主进程 hook。当前 **未实现** in-app 检查更新。
 
-### 浏览器 CDP
+### 浏览器 CDP（A130）
 
-- **HAR-lite** 已交付（fetch/XHR/resource + 落盘）
-- **完整 CDP HAR**（DevTools Network 全量、WebSocket、Cookie）仍 deferred，需 attach CDP 到 `<webview>` 而非注入脚本
+- **HTTP 桥**：`http://127.0.0.1:19229`（`VEC_CDP_BRIDGE_PORT`）；`.agent-state/cdp-bridge.json`
+- **Guest**：WebView 注册 → `.agent-state/browser-cdp-guest.json`
+- **Agent**：`devtools.*`（DOM 快照、AX、console、network、click、type、box model、computed style、坐标探测）
+- **HAR-lite** 仍保留；性能 trace、多标签、Lighthouse 仍 deferred

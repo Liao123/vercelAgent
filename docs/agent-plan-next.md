@@ -18,7 +18,8 @@
 | 默认策略 | A102–A103 | done | 中栏「接受」、Composer ⚙、写后验证+自动再修默认开；见 `agent-defaults.md` |
 | **handoff 接续** | **done** | A106 + P0 API/UI + 写后 scoped lint（2026-06-17） |
 | 能力增强 | A104–A105 | done | Composer @ 联想、`validate:cursor-shell-ui` |
-| Electron | A025 | in_progress | 桌面壳 + 文件夹选择器；见 `agent-electron.md` |
+| Electron | A025 | in_progress | 桌面壳 + Codex WebView；**A130+ CDP/DevTools 对齐** |
+| **Codex 浏览器** | **A130+** | **todo** | 见 `agent-handoff.md` § Codex 浏览器对齐 |
 
 ---
 

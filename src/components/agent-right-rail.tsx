@@ -16,6 +16,9 @@ type AgentRightRailProps = {
   onTabChange: (tab: AgentRightRailTab) => void;
 };
 
+const OFFSCREEN_BROWSER_CLASS =
+  "pointer-events-none fixed left-[-12000px] top-0 z-0 h-[800px] w-[1000px] overflow-hidden opacity-[0.02]";
+
 const TABS: {
   id: AgentRightRailTab;
   label: string;
@@ -127,7 +130,7 @@ export function AgentRightRail({
         })}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden" role="tabpanel">
+      <div className="relative min-h-0 flex-1 overflow-hidden" role="tabpanel">
         {tab === "review" && (
           <div className="flex h-full min-h-0 flex-col">{reviewPanel}</div>
         )}
@@ -149,11 +152,17 @@ export function AgentRightRail({
           </div>
         )}
 
-        {tab === "browser" && (
-          <div className="flex h-full min-h-0 flex-col overflow-auto p-2">
-            <BrowserPanel embedded />
-          </div>
-        )}
+        {/* 始终挂载 WebView，供 Agent CDP；非浏览器 Tab 时离屏渲染 */}
+        <div
+          className={
+            tab === "browser"
+              ? "flex h-full min-h-0 flex-col overflow-hidden"
+              : OFFSCREEN_BROWSER_CLASS
+          }
+          aria-hidden={tab !== "browser"}
+        >
+          <BrowserPanel embedded chromeVisible={tab === "browser"} />
+        </div>
       </div>
     </div>
   );

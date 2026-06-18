@@ -2,11 +2,12 @@
 
 更新时间：2026-06-18
 
-> 下次开工先读本文，再跑 `npm run validate:agent`。
+> 下次开工先读本文，再跑 `npm run validate:agent`。  
+> **内置浏览器 Codex 对齐主路线**：下文 **§ Codex 浏览器 / DevTools 对齐（A130+）**。
 
 ---
 
-## 内核状态（A112–A127 done）
+## 内核状态（A112–A130 done）
 
 | 项 | 说明 |
 | --- | --- |
@@ -24,7 +25,11 @@
 | **A125** | 工具观测墓碑 stub + 用户锚点 |
 | **A126** | 爆发段感知 tail（`AGENT_LOOP_BURST_TAIL_MIN` / `AGENT_LOOP_BURST_TAIL=0` 关闭） |
 | **A127** | UI 展示压缩层 `layersApplied`（时间线 + 底部状态） |
-| **A127** | UI 展示压缩层 `layersApplied`；`validate:compaction-ui` |
+| **A128** | 内置浏览器稳定性（禁同源、`-3` 忽略、快照失败不误报） |
+| **A129** | Codex 式 WebView + Cursor Chrome UI |
+| **A130** | **CDP HTTP 桥** + 10 个 `devtools.*` 工具（与 Codex/chrome-devtools-mcp 同级读+操作） |
+| **A131** | **TaskPlaybook 内核** | `task-playbooks.ts`：browser-doc / ui-visible-edit / file-exact / read-only；通用熔断 + 轮次预算 + 中间区路径展示 |
+| **A132** | **审查 Tab Cursor 对齐** | 应用更改/放弃更改、空态分场景、文件 ←→ 导航、自动选中首个 diff、`cursor-review-notes.template.json` |
 
 **产品**：对齐 Cursor 剪贴板附图；最多 4 张，走现有 `referenceImages` + vision 模型链路。
 
@@ -66,10 +71,68 @@ npm run trial:golden-path-sidebar:strict   # 有模型时
 
 | 优先级 | 内容 |
 | --- | --- |
-| P2 | Electron 签名 / 自动更新 / 完整 CDP |
+| **P0 主任务** | **A130–A139**：内置浏览器 + `devtools.*` 对齐 Codex（见下节） |
+| P2 | Electron 签名 / 自动更新 |
 | 观测 | 实机 `trial:long-thread` 记录 `layersApplied` 是否出现 `collapse` |
 
-**明确不做**：「接受当前文件」；Claude 全量双轨 CONTEXT_COLLAPSE。
+**明确不做**：「接受当前文件」；Claude 全量双轨 CONTEXT_COLLAPSE；首期不移植 chrome-devtools-mcp 全 40+ 工具名（用本项目 `devtools.*` + 同一 CDP 底座）。
+
+---
+
+## Codex 浏览器 / DevTools 对齐（A130+）— **下一主任务**
+
+**目标**：右栏内置浏览器 = Codex App 同级 WebView；Agent 工具 = Codex Developer mode / chrome-devtools-mcp **同等能力**（读 DOM / 样式 / 网络 / console / 截图 / 点击输入 / 性能 trace），走 **Chrome DevTools Protocol**，不用 Playwright 主链路。
+
+### 三层（与 `agent-architecture.md §14` 一致）
+
+```text
+内置浏览器 UI（A129 done）
+  → 用户看页面、地址栏、导航
+
+CDP 工具层（A130+ in_progress）
+  → devtools.* 读 + 操作，底层 CDP
+
+设计解析（A024 deferred）
+  → devtools.extract_design_spec → design spec JSON
+```
+
+### 能力对照（Codex ↔ vec-next）
+
+| Codex / chrome-devtools-mcp | 本项目工具（规划） | 现状 |
+| --- | --- | --- |
+| `navigate_page` / 打开页 | `browser.open` | ✅ |
+| `take_snapshot` / DOM | `devtools.get_dom_snapshot` | ⚠️ `browser.inspect` 仅文本大纲 + query |
+| `take_screenshot` | `devtools.get_screenshot` / `browser.inspect` | ⚠️ CDP 截图有，未独立 tool |
+| `list_console_messages` | `devtools.get_console_errors` | ⚠️ WebView console-message，非 CDP Log |
+| `list_network_requests` | `devtools.get_network_requests` | ⚠️ responseReceived 片段 + HAR-lite |
+| `click` / `fill` / `type_text` | `devtools.click` / `devtools.type` | ❌ |
+| `evaluate_script` | CDP `Runtime.evaluate`（内置于各 read） | ⚠️ 仅 probe 注入 |
+| AX tree | `devtools.get_accessibility_tree` | ❌ |
+| box / computed style | `devtools.get_box_model` / `get_computed_style` | ❌ |
+| 坐标探测 | `devtools.inspect_element_at` | ❌ |
+| `performance_start_trace` | CDP Performance（二期） | ❌ |
+| 多标签 | `list_pages` / `new_page` | ❌ 单页 |
+
+### 实施顺序（建议严格执行）
+
+| ID | 工作项 | 验收 |
+| --- | --- | --- |
+| **A130** | **CDP 会话网关 + devtools.\*** | HTTP 桥 `127.0.0.1:19229`；10 个 devtools 工具；`validate:browser-cdp-gateway` |
+| A131–A138 | 性能 trace / 多标签 / design spec | 见 handoff § Codex 对齐 |
+
+### 技术约束
+
+- **唯一 CDP 附着点**：Electron `<webview>` guest（`electron/browser-cdp.mjs`），与右栏预览 **同一页面**。
+- **桌面必选**：`npm run dev:desktop`；网页版不承诺 Codex 同级。
+- **权限**：外链首次访问可记 trace；高风险交互与 Codex 一样需产品层审批策略（后续）。
+
+### 开工命令
+
+```bash
+npm run validate:agent
+npm run dev:desktop
+# A130 起每阶段加 validate:browser-cdp-*
+```
 
 ---
 

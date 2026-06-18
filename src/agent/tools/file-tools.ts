@@ -59,11 +59,34 @@ export type SearchMatch = {
   text: string;
 };
 
+function isENOENT(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: string }).code === "ENOENT"
+  );
+}
+
 export async function listDirectory(
   rootPath: string,
   relativePath = ".",
 ): Promise<DirectoryEntryInfo[]> {
+  const normalizedRelative = relativePath.replaceAll("\\", "/");
   const absolutePath = resolveInsideWorkspace(rootPath, relativePath);
+
+  try {
+    const stat = await fs.stat(absolutePath);
+    if (!stat.isDirectory()) {
+      throw new Error(`Path is not a directory: ${normalizedRelative}`);
+    }
+  } catch (error) {
+    if (isENOENT(error)) {
+      throw new Error(`Directory not found: ${normalizedRelative}`);
+    }
+    throw error;
+  }
+
   const entries = await fs.readdir(absolutePath, { withFileTypes: true });
 
   return entries

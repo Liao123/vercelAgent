@@ -36,6 +36,17 @@ export type AgentTurnFeed = {
   fileChanges: TurnFileChangeSummary | null;
   /** 写盘后的 lint/typecheck/build 结果（来自 verification.completed） */
   postExecuteVerification: PostExecuteVerification | null;
+  /** 任务剧本（A131） */
+  playbook?: {
+    id: string;
+    title: string;
+    goldenSteps: string[];
+    softMaxToolRounds: number;
+    progressLabel: string;
+    completedCount: number;
+    totalSteps: number;
+    currentStepLabel: string | null;
+  };
   workedStats: {
     toolCount: number;
     reflectionCount: number;
@@ -216,6 +227,45 @@ function resolveTurnSummary(events: AgentEvent[]): {
   return { status: "running" };
 }
 
+function extractPlaybookFromEvents(events: AgentEvent[]): AgentTurnFeed["playbook"] | undefined {
+  const matched = events.find((e) => e.type === "playbook.matched");
+  if (!matched || matched.type !== "playbook.matched") return undefined;
+  const progress = events.filter((e) => e.type === "playbook.progress").pop();
+  const progressEvent =
+    progress && progress.type === "playbook.progress" ? progress : null;
+  return {
+    id: matched.playbookId,
+    title: matched.title,
+    goldenSteps: matched.goldenSteps,
+    softMaxToolRounds: matched.softMaxToolRounds,
+    progressLabel: progressEvent?.progressLabel ?? matched.title,
+    completedCount: progressEvent?.completedCount ?? 0,
+    totalSteps: progressEvent?.totalSteps ?? matched.goldenSteps.length,
+    currentStepLabel: progressEvent?.currentStepLabel ?? null,
+  };
+}
+
+/** 已完成 tool 不再保留 started，避免中间区重复一行。 */
+function filterNarrativeEvents(events: AgentEvent[]): AgentEvent[] {
+  const completedToolIds = new Set<string>();
+  for (const event of events) {
+    if (event.type === "tool.completed") {
+      completedToolIds.add(event.toolCall.id);
+    }
+  }
+
+  const narrative: AgentEvent[] = [];
+  for (const event of events) {
+    if (event.type === "tool.started" && completedToolIds.has(event.toolCall.id)) {
+      continue;
+    }
+    if (NARRATIVE_TYPES.has(event.type)) {
+      narrative.push(event);
+    }
+  }
+  return narrative;
+}
+
 function splitTurnEvents(events: AgentEvent[]): {
   worked: AgentEvent[];
   narrative: AgentEvent[];
@@ -223,9 +273,15 @@ function splitTurnEvents(events: AgentEvent[]): {
   highlights: AgentEvent[];
 } {
   const worked: AgentEvent[] = [];
-  const narrative: AgentEvent[] = [];
+  const narrative = filterNarrativeEvents(events);
   const detail: AgentEvent[] = [];
   const highlights: AgentEvent[] = [];
+  const completedToolIds = new Set<string>();
+  for (const event of events) {
+    if (event.type === "tool.completed") {
+      completedToolIds.add(event.toolCall.id);
+    }
+  }
 
   for (const event of events) {
     if (HIGHLIGHT_TYPES.has(event.type)) {
@@ -241,11 +297,8 @@ function splitTurnEvents(events: AgentEvent[]): {
       } else if (DETAIL_TYPES.has(event.type)) {
         detail.push(event);
       } else if (NARRATIVE_TYPES.has(event.type)) {
-        if (event.type === "tool.started") {
-          // 仅保留尚未完成的 started（运行中）
-          narrative.push(event);
-        } else {
-          narrative.push(event);
+        if (event.type === "tool.started" && completedToolIds.has(event.toolCall.id)) {
+          continue;
         }
         worked.push(event);
       } else {
@@ -290,6 +343,7 @@ export function groupEventsIntoTurns(events: AgentEvent[]): AgentTurnFeed[] {
       postExecuteVerification: postExecuteVerificationFromTurnEvents(
         current.events,
       ),
+      playbook: extractPlaybookFromEvents(current.events),
       workedStats: countWorkedStats(worked),
     });
     current = null;

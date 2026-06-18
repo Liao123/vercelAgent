@@ -43,7 +43,7 @@ function UserBubble({
           >
             {images.map((src, index) => (
               <a
-                key={`${index}-${src.slice(0, 32)}`}
+                key={`user-img-${index}`}
                 href={src}
                 target="_blank"
                 rel="noreferrer"
@@ -150,6 +150,7 @@ export function AgentTurnBlock({
             turnStartedAt={turn.createdAt}
             turnEndedAt={turn.completedAt}
             liveThinking={liveThinking}
+            playbook={turn.playbook}
           />
         )}
 

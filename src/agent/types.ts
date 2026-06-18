@@ -341,6 +341,28 @@ export type AgentEvent =
   | { type: "trace.linked"; taskId: string; traceId: string }
   | { type: "turn.created"; turnId: string; turn: Turn }
   | { type: "plan.updated"; taskId: string; plan: AgentPlan }
+  | {
+      type: "playbook.matched";
+      taskId: string;
+      playbookId: string;
+      title: string;
+      matchReason: string;
+      goldenSteps: string[];
+      softMaxToolRounds: number;
+      at?: string;
+    }
+  | {
+      type: "playbook.progress";
+      taskId: string;
+      playbookId: string;
+      title: string;
+      progressLabel: string;
+      completedCount: number;
+      totalSteps: number;
+      currentStepLabel: string | null;
+      completedStepIds: string[];
+      at?: string;
+    }
   | { type: "model.delta"; taskId: string; text: string }
   | { type: "tool.started"; taskId: string; toolCall: ToolCallRecord }
   | {

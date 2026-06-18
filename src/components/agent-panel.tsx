@@ -48,6 +48,7 @@ import {
   extractFileChangesFromApproval,
 } from "@/lib/approval-file-changes";
 import { normalizeRepoPath } from "@/lib/git-tree-decoration";
+import { workspaceRelativePath } from "@/lib/workspace-tree-paths";
 import { extractPostExecuteVerification } from "@/lib/post-execute-verification";
 import { PostExecuteVerificationView } from "@/components/post-execute-verification-view";
 import { readReviewDiffLayout } from "@/lib/agent-review-diff-prefs";
@@ -1279,7 +1280,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
                 void approveAndExecute(nextApproval);
               } else {
                 setApprovalStatus(
-                  "已收到文件变更，请在右侧「审查」Tab 查看 diff 并点击「接受」。",
+                  "已收到文件变更，请在右侧「审查」查看 diff 并点击「应用更改」。",
                 );
                 if (layout === "triple") {
                   setRightRailTab("review");
@@ -1293,6 +1294,15 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
             setApprovalStatus(
               `上下文已压缩（第 ${parsed.round ?? "?"} 轮 · ${formatCompactMethod(parsed.method)}${layers ? ` · ${layers}` : ""}）`,
             );
+          }
+          if (parsed.type === "tool.completed") {
+            const toolName = parsed.toolCall?.toolName;
+            if (
+              layout === "triple" &&
+              (toolName === "browser.open" || toolName === "devtools.get_network_requests")
+            ) {
+              setRightRailTab("browser");
+            }
           }
           if (parsed.type === "task.failed") {
             setError(parsed.error);
@@ -1563,6 +1573,13 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     return `@${path}`;
   }
 
+  function rememberPathForMention(filePath: string) {
+    const path = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "");
+    if (!path) return;
+    noteRecentPath(path);
+  }
+
+  /** 将路径写入输入框 @ 提及并纳入下一轮 Loop（需用户主动 @ 或等同操作）。 */
   function attachPathFromTree(
     filePath: string,
     options?: { appendToRequest?: boolean },
@@ -1571,10 +1588,10 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     const path = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "");
     if (!path) return;
     noteRecentPath(path);
+    if (!options?.appendToRequest) return;
     if (!attachedFiles.includes(path)) {
       setAttachedFiles((prev) => [...prev, path].slice(0, MAX_ATTACHED_FILES));
     }
-    if (options?.appendToRequest === false) return;
     setRequest((prev) => {
       const token = mentionTokenForPath(path);
       if (prev.includes(token)) return prev;
@@ -1649,11 +1666,12 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
 
   const reviewHighlightPath = useMemo(() => {
     if (layout !== "triple" || !reviewFileKey) return null;
-    return (
-      reviewDisplay.files.find((file) => file.fileKey === reviewFileKey)
-        ?.path ?? null
-    );
-  }, [layout, reviewFileKey, reviewDisplay.files]);
+    const path =
+      reviewDisplay.files.find((file) => file.fileKey === reviewFileKey)?.path ??
+      null;
+    if (!path) return null;
+    return workspaceRelativePath(path, workspace?.rootPath);
+  }, [layout, reviewFileKey, reviewDisplay.files, workspace?.rootPath]);
 
   const openReviewForPath = useCallback(
     (path: string) => {
@@ -1675,7 +1693,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
 
   const handleTreeSelectPath = useCallback(
     (path: string) => {
-      attachPathFromTree(path, { appendToRequest: false });
+      rememberPathForMention(path);
       if (layout !== "triple" || reviewDisplay.files.length === 0) return;
       openReviewForPath(path);
     },
@@ -1735,9 +1753,9 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
           {loadingApprovals ? "刷新中" : "刷新"}
         </button>
       </div>
-      {!reviewCompact && (
+          {!reviewCompact && (
         <p className="text-[11px] leading-relaxed text-zinc-500">
-          确认 diff 后在审查 Tab 点「接受」。
+          确认 diff 后在审查 Tab 点「应用更改」。
         </p>
       )}
       <div
@@ -1968,6 +1986,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
       gitFiles={workspace?.git?.files}
       selectedFileKey={reviewFileKey}
       onSelectFile={setReviewFileKey}
+      autoApplyEnabled={readAutoApplyFileChanges()}
       reviewActions={
         reviewPendingApproval
           ? {
@@ -1978,16 +1997,14 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
             }
           : null
       }
-      onFileHighlight={(path) => {
-        attachPathFromTree(path, { appendToRequest: false });
-      }}
       onRevealInTree={(path) => {
-        const norm = normalizeRepoPath(path);
+        const rel = workspaceRelativePath(path, workspace?.rootPath);
+        const norm = normalizeRepoPath(rel);
         const match = reviewDisplay.files.find(
           (file) => normalizeRepoPath(file.path) === norm,
         );
         if (match) setReviewFileKey(match.fileKey);
-        attachPathFromTree(path, { appendToRequest: false });
+        rememberPathForMention(rel);
         setRightRailTab("files");
       }}
       onEditorSelectionChange={setReviewEditorSelection}
@@ -2097,9 +2114,6 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
             approvalStatus={approvalStatus}
             workspaceAtEnabled={Boolean(workspace?.rootPath)}
             recentAttachedPaths={recentAttachedPaths}
-            onPickAttachedPath={(path) =>
-              attachPathFromTree(path, { appendToRequest: false })
-            }
             reviewEditorSelection={reviewEditorSelection}
             onAgentPrefsChange={() => {
               setApprovalStatus(null);

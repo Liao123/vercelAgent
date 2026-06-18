@@ -10,6 +10,7 @@ import {
   type ReasoningStep,
 } from "@/lib/agent-reasoning-steps";
 import { ChevronIcon } from "@/components/chevron-icon";
+import { TurnPlaybookStrip } from "@/components/agent-turn-playbook";
 import { formatPatchToolResultSummary } from "@/lib/patch-summary";
 import { agentToolFileName, agentToolIcon } from "@/lib/agent-tool-icons";
 
@@ -27,7 +28,18 @@ const TOOL_LABELS: Record<string, string> = {
   "git.diff": "Git diff",
   "browser.open": "打开浏览器",
   "browser.inspect": "读取浏览器快照",
+  "browser.wait_and_inspect": "等待并读取页面",
   "browser.query": "查询页面元素",
+  "devtools.get_screenshot": "CDP 截图",
+  "devtools.get_dom_snapshot": "DOM 快照",
+  "devtools.get_accessibility_tree": "无障碍树",
+  "devtools.get_console_errors": "Console",
+  "devtools.get_network_requests": "Network",
+  "devtools.click": "页面点击",
+  "devtools.type": "页面输入",
+  "devtools.get_box_model": "盒模型",
+  "devtools.get_computed_style": "计算样式",
+  "devtools.inspect_element_at": "坐标探测",
   "file.mutation.prepare": "准备文件变更",
   "file.replace.prepare": "准备文本替换",
   "git.mutation.prepare": "准备 Git 操作",
@@ -187,6 +199,7 @@ type TurnReasoningTimelineProps = {
   turnStartedAt?: string;
   turnEndedAt?: string;
   liveThinking?: string | null;
+  playbook?: import("@/lib/agent-turn-feed").AgentTurnFeed["playbook"];
 };
 
 export function TurnReasoningTimeline({
@@ -196,6 +209,7 @@ export function TurnReasoningTimeline({
   turnStartedAt,
   turnEndedAt,
   liveThinking,
+  playbook,
 }: TurnReasoningTimelineProps) {
   const [open, setOpen] = useState(isActiveTurn && !turnCompleted);
   const [tick, setTick] = useState(0);
@@ -246,7 +260,12 @@ export function TurnReasoningTimeline({
     isActiveTurn,
     turnCompleted,
   );
-  const headerMeta = formatTimelineHeaderMeta(summary);
+  const headerMeta = formatTimelineHeaderMeta(
+    summary,
+    playbook?.title && playbook.totalSteps > 0
+      ? `${playbook.completedCount}/${playbook.totalSteps} 路径`
+      : null,
+  );
   const working = isActiveTurn && !turnCompleted;
 
   return (
@@ -281,6 +300,12 @@ export function TurnReasoningTimeline({
 
       {open && (
         <div className="ml-5 mt-2 space-y-4 border-l border-zinc-200/90 pl-3 dark:border-zinc-700/80">
+          {playbook && (
+            <TurnPlaybookStrip
+              playbook={playbook}
+              active={isActiveTurn && !turnCompleted}
+            />
+          )}
           {steps.map((step, index) => (
             <div key={step.id}>
               {steps.length > 1 && (

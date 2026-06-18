@@ -1,0 +1,24 @@
+{
+  "source": "cursor-ide-session-template",
+  "recordedAt": "",
+  "scenario": "小改 UI + 审查 Accept",
+  "cursorFlow": [
+    "Agent 改 1 个文件",
+    "右侧/侧栏 diff 预览",
+    "Accept 或 Reject",
+    "可选：对话内 inline Apply"
+  ],
+  "vecNextFlow": [
+    "右栏「审查」Tab 自动聚焦",
+    "文件 chip + split diff",
+    "底栏「应用更改 / 放弃更改」",
+    "中栏变更卡 → 跳转审查"
+  ],
+  "labelMapping": {
+    "cursorAccept": "Accept",
+    "vecNextApply": "应用更改",
+    "cursorReject": "Discard / Reject",
+    "vecNextDiscard": "放弃更改"
+  },
+  "notes": ""
+}

@@ -6,6 +6,7 @@ import {
   stopStandaloneServer,
   waitForServer,
 } from "./server-launcher.mjs";
+import { setupBrowserCdp } from "./browser-cdp.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_WAIT_MS = Number(process.env.VEC_SERVER_WAIT_MS ?? 120_000);
@@ -107,6 +108,7 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  setupBrowserCdp();
   ipcMain.handle("workspace:pick-folder", pickWorkspaceFolder);
   ipcMain.handle("desktop:open-config-dir", async (_event, targetDir) => {
     const dir =

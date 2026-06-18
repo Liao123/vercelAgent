@@ -9,12 +9,31 @@ async function read(rel: string): Promise<string> {
 }
 
 async function main(): Promise<void> {
-  const main = await read("electron/main.mjs");
-  assert.ok(main.includes("webviewTag: true"), "electron webviewTag");
-  assert.ok(main.includes("sandbox: false"), "electron webview sandbox off");
+  assert.ok(
+    await fs
+      .access(path.join(ROOT, "electron/browser-cdp.mjs"))
+      .then(() => true)
+      .catch(() => false),
+    "electron/browser-cdp.mjs",
+  );
+
+  const mainSrc = await read("electron/main.mjs");
+  const preload = await read("electron/preload.cjs");
+  assert.ok(mainSrc.includes("webviewTag: true"), "electron webviewTag");
+  assert.ok(mainSrc.includes("setupBrowserCdp"), "browser CDP setup");
+  assert.ok(preload.includes("registerBrowserGuest"), "preload browser CDP");
+  assert.ok(mainSrc.includes("sandbox: false"), "electron webview sandbox off");
 
   const panel = await read("src/components/browser-panel.tsx");
   assert.ok(panel.includes("BrowserWebview"), "browser panel webview");
+  assert.ok(
+    panel.includes("Codex 模式") || panel.includes("Codex 模式 · WebView"),
+    "browser panel codex badge",
+  );
+  assert.ok(
+    panel.includes("Search or enter URL"),
+    "browser panel url placeholder",
+  );
   assert.ok(
     panel.includes("useDesktopApp") || panel.includes("isDesktopApp"),
     "browser panel desktop gate",
@@ -24,6 +43,10 @@ async function main(): Promise<void> {
   assert.ok(
     webview.includes("/api/agent/browser/snapshot"),
     "webview posts snapshot",
+  );
+  assert.ok(
+    webview.includes("captureBrowserScreenshotCdp"),
+    "webview CDP screenshot",
   );
   assert.ok(
     webview.includes("console-message"),
@@ -38,8 +61,12 @@ async function main(): Promise<void> {
     "webview collects HAR-lite entries",
   );
   assert.ok(
-    webview.includes("captureWebviewScreenshot"),
-    "webview captures page screenshot",
+    webview.includes("allowpopups=\"\""),
+    "webview allowpopups attribute",
+  );
+  assert.ok(
+    webview.includes("isIgnorableWebviewLoadError"),
+    "webview ignores aborted navigation",
   );
 
   const harRoute = await read("src/app/api/agent/browser/har/route.ts");

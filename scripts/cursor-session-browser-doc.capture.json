@@ -1,0 +1,40 @@
+{
+  "source": "cursor-chat-session (Auto agent + cursor-ide-browser MCP)",
+  "recordedAt": "2026-06-18",
+  "userRequest": "解析 Apifox 链接接口参数",
+  "docUrl": "https://s.apifox.cn/aed7ded5-e044-4fc8-8c17-811dd6b0f909/469140751e0",
+  "cursorToolSequence": [
+    "browser_navigate(url) → 自动返回 accessibility snapshot（等同 take_snapshot）",
+    "browser_snapshot（可选，带截图）"
+  ],
+  "toolStepCount": 1,
+  "didNotUse": [
+    "devtools.get_network_requests",
+    "重复 browser.open",
+    "12 轮 tool loop"
+  ],
+  "extractedApi": {
+    "title": "队伍建设-队伍工作记录（中间轮播图+文字也用该接口）",
+    "method": "GET",
+    "path": "/api/team/getEffectPage",
+    "queryParams": [
+      {
+        "name": "teamId",
+        "type": "integer",
+        "required": true
+      }
+    ],
+    "response200": {
+      "fields": [
+        "code",
+        "message",
+        "data[]: WorkEffect(effectId, organId, name, startTime, endTime, addres, personNum, hoursNum, remark, images, type, serviceObject)"
+      ]
+    }
+  },
+  "vecNextTargetFlow": [
+    "browser.wait_and_inspect(url) 或 browser.open + browser.inspect",
+    "返回 textPreview + accessibilityTree + 一次中文 final",
+    "禁止反复 devtools.get_network_requests"
+  ]
+}

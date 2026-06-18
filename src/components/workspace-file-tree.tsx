@@ -42,7 +42,8 @@ export function WorkspaceFileTree({
     Record<string, TreeEntry[]>
   >({});
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(() => new Set());
-  const [error, setError] = useState<string | null>(null);
+  const [rootError, setRootError] = useState<string | null>(null);
+  const [dirErrors, setDirErrors] = useState<Record<string, string>>({});
   const [gitByPath, setGitByPath] = useState<
     Map<string, GitStatusFileEntry>
   >(() => new Map());
@@ -60,7 +61,13 @@ export function WorkspaceFileTree({
   }, []);
 
   const loadDir = useCallback(async (dirPath: string) => {
-    setError(null);
+    if (dirPath === ".") setRootError(null);
+    setDirErrors((prev) => {
+      if (!prev[dirPath]) return prev;
+      const next = { ...prev };
+      delete next[dirPath];
+      return next;
+    });
     let skip = false;
     setChildrenByDir((prev) => {
       if (prev[dirPath]) skip = true;
@@ -87,7 +94,12 @@ export function WorkspaceFileTree({
         [dirPath]: (data.entries ?? []) as TreeEntry[],
       }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载目录失败");
+      const message = err instanceof Error ? err.message : "加载目录失败";
+      if (dirPath === ".") {
+        setRootError(message);
+      } else {
+        setDirErrors((prev) => ({ ...prev, [dirPath]: message }));
+      }
     } finally {
       setLoadingDirs((prev) => {
         const next = new Set(prev);
@@ -155,6 +167,14 @@ export function WorkspaceFileTree({
   const renderDir = (dirPath: string, depth: number) => {
     const entries = childrenByDir[dirPath];
     if (!entries) {
+      const dirError = dirErrors[dirPath];
+      if (dirError) {
+        return (
+          <p className="py-0.5 pl-2 text-[10px] text-zinc-500 dark:text-zinc-400">
+            目录尚未创建或不可访问
+          </p>
+        );
+      }
       return (
         <p className="py-0.5 pl-2 text-[10px] text-zinc-400">
           {loadingDirs.has(dirPath) ? "加载中…" : ""}
@@ -241,9 +261,9 @@ export function WorkspaceFileTree({
         ref={scrollRef}
         className={`min-h-0 flex-1 overflow-auto ${isPanel ? "py-1" : "p-1"}`}
       >
-        {error ? (
+        {rootError ? (
           <p className="px-2 text-[10px] text-red-600 dark:text-red-400">
-            {error}
+            {rootError}
           </p>
         ) : (
           renderDir(".", 0)

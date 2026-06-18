@@ -13,8 +13,9 @@ import {
   shouldRunFinalPrepareNudge,
 } from "@/agent/core/final-prepare-nudge";
 import {
-  shouldSkipEditRecoveryForUiPrepare,
-} from "@/agent/core/ui-prepare-nudge";
+  attemptGracefulLoopFinal,
+  GRACEFUL_FINAL_DEFAULT_SUMMARY,
+} from "@/agent/core/loop-graceful-final";
 import { isUiLocationQuery } from "@/agent/core/prepare-gate";
 import { parseCompactedMemory } from "@/agent/memory/loop-context-compactor";
 import {
@@ -100,6 +101,12 @@ import {
   type AgentLoopToolRunnerDeps,
 } from "@/agent/core/agent-loop-tool-runner";
 import type { AgentUiContext } from "@/agent/types";
+import {
+  buildSoftRoundBudgetHint,
+  computePlaybookProgress,
+  countToolRounds,
+  resolveTaskPlaybook,
+} from "@/agent/core/task-playbooks";
 
 export type AgentLoopInput = {
   userRequest: string;
@@ -149,7 +156,8 @@ type AgentLoopDecision =
       thought?: string;
     };
 
-const DEFAULT_MAX_ITERATIONS = 12;
+const DEFAULT_MAX_ITERATIONS = 14;
+const MAX_LOOP_ITERATION_CAP = 18;
 const MAX_REFLECTION_ROUNDS = 4;
 
 function extractJsonObjectCandidates(text: string): string[] {
@@ -541,16 +549,42 @@ export async function runAgentLoop(
   emit({ type: "turn.created", turnId: turn.id, turn });
   emitPlan();
 
+  const taskPlaybook = resolveTaskPlaybook(effectiveUserRequest, runState);
+  emit({
+    type: "playbook.matched",
+    taskId: task.id,
+    playbookId: taskPlaybook.id,
+    title: taskPlaybook.title,
+    matchReason: taskPlaybook.matchReason,
+    goldenSteps: taskPlaybook.goldenSteps.map((s) => s.label),
+    softMaxToolRounds: taskPlaybook.softMaxToolRounds,
+    at: nowIso(),
+  });
+  const emitPlaybookProgress = () => {
+    const progress = computePlaybookProgress(taskPlaybook, runState.toolsCalled);
+    emit({
+      type: "playbook.progress",
+      taskId: task.id,
+      playbookId: taskPlaybook.id,
+      title: taskPlaybook.title,
+      progressLabel: progress.progressLabel,
+      completedCount: progress.completedCount,
+      totalSteps: progress.totalSteps,
+      currentStepLabel: progress.currentStepLabel,
+      completedStepIds: progress.completedStepIds,
+      at: nowIso(),
+    });
+  };
+  emitPlaybookProgress();
+
   const openingReflection: AgentReflection = {
-    understanding: effectiveUserRequest,
-    blockers: postExecuteFeedback
-      ? [postExecuteFeedback.summary]
-      : [],
+    understanding: `${taskPlaybook.title}：${effectiveUserRequest}`,
+    blockers: postExecuteFeedback ? [postExecuteFeedback.summary] : [],
     plannedNext: postExecuteFeedback
       ? "先读 checkpoint 中 post-execute 失败摘要，修复相关文件后再 file.replace.prepare。"
       : attachedPaths.length > 0
-        ? `已预读 ${attachedPaths.length} 个附加文件；继续核实其他假设后再决定是否准备变更审批。`
-        : "先用工具在磁盘上核实假设，再决定是否准备代码变更审批。",
+        ? `已预读 ${attachedPaths.length} 个附加文件；${taskPlaybook.openingPlannedNext}`
+        : taskPlaybook.openingPlannedNext,
     source: "runtime",
   };
   emitReflection(emit, task.id, openingReflection);
@@ -578,6 +612,7 @@ export async function runAgentLoop(
   }
   const userMessageText = [
     effectiveUserRequest,
+    taskPlaybook.loopHint ?? "",
     attachedPaths.length > 0
       ? formatAttachedFilesUserNote(attachedPaths, attachedSelections)
       : "",
@@ -656,13 +691,16 @@ export async function runAgentLoop(
       pushReflectionToMessages(messages, reflection, checkpoint),
     shouldInjectRuntimeReflection,
     emitPlan,
+    emitPlaybookProgress,
+    playbook: taskPlaybook,
     fallbackSummary,
   };
 
-  let summary = "Agent loop stopped without a final answer.";
+  let summary = GRACEFUL_FINAL_DEFAULT_SUMMARY;
+  let softBudgetHintInjected = false;
   const maxIterations = Math.min(
     Math.max(input.maxIterations ?? DEFAULT_MAX_ITERATIONS, 1),
-    16,
+    MAX_LOOP_ITERATION_CAP,
   );
 
   let modelUnavailable = false;
@@ -670,6 +708,13 @@ export async function runAgentLoop(
   let reactiveCompactUsed = false;
 
   for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
+    const toolRounds = countToolRounds(runState.toolsCalled);
+    const budgetHint = buildSoftRoundBudgetHint(taskPlaybook, toolRounds);
+    if (budgetHint && !softBudgetHintInjected && iteration < maxIterations) {
+      messages.push({ role: "user", content: budgetHint });
+      softBudgetHintInjected = true;
+    }
+
     const compactResult = await compactAgentLoopMessages({
       messages,
       userRequest: effectiveUserRequest,
@@ -743,18 +788,27 @@ export async function runAgentLoop(
             ? getApiConfig()?.visionModel
             : undefined);
 
+        const forceFinalIteration = iteration >= maxIterations;
+        const nativeTools = isNativeToolLoopEnabled() && !forceFinalIteration;
+
         output = await provider.generate({
           messages,
           model: loopModel,
           temperature: 0,
           maxTokens: agentMessagesHaveImages(messages) ? 2000 : 1400,
-          metadata: { taskId: task.id, iteration },
-          ...(isNativeToolLoopEnabled()
+          metadata: {
+            taskId: task.id,
+            iteration,
+            forceFinal: forceFinalIteration,
+          },
+          ...(nativeTools
             ? {
                 tools: buildLoopToolDefinitions(),
                 toolChoice: "auto" as const,
               }
-            : {}),
+            : forceFinalIteration
+              ? { toolChoice: "none" as const }
+              : {}),
         });
       } catch (error) {
         if (
@@ -827,6 +881,16 @@ export async function runAgentLoop(
     });
 
     if (isNativeToolLoopEnabled() && output.toolCalls && output.toolCalls.length > 0) {
+      if (iteration >= maxIterations) {
+        const forcedText = output.content?.trim();
+        if (forcedText) {
+          summary = forcedText;
+          emitPlan({ lastAction: "final" });
+          break;
+        }
+        continue;
+      }
+
       messages.push({
         role: "assistant",
         content: output.content || null,
@@ -974,6 +1038,26 @@ export async function runAgentLoop(
     toolContext = runResult.toolContext;
     messages.push(runResult.observationMessage);
     continue;
+  }
+
+  if (summary === GRACEFUL_FINAL_DEFAULT_SUMMARY) {
+    const loopModel =
+      input.model ??
+      (agentMessagesHaveImages(messages)
+        ? getApiConfig()?.visionModel
+        : undefined);
+    const graceful = await attemptGracefulLoopFinal({
+      messages,
+      provider,
+      taskId: task.id,
+      model: loopModel,
+      userRequest: effectiveUserRequest,
+    });
+    if (graceful) {
+      summary = graceful;
+      emit({ type: "model.delta", taskId: task.id, text: graceful });
+      emitPlan({ lastAction: "final" });
+    }
   }
 
   if (

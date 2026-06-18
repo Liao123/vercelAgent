@@ -17,6 +17,11 @@ import {
   isEditTaskSatisfied,
 } from "@/agent/core/loop-direct-apply";
 import { captureUiPrepareHintFromFileRead } from "@/agent/core/ui-prepare-nudge";
+import {
+  computePlaybookProgress,
+  findCircuitBreaker,
+  type ResolvedTaskPlaybook,
+} from "@/agent/core/task-playbooks";
 import { buildToolObservationMessage } from "@/agent/memory/loop-context-compactor";
 import type { AppliedFileMutation } from "@/agent/tools/file-mutations";
 import type { PatchResult } from "@/agent/tools/patch-tools";
@@ -73,6 +78,8 @@ export type AgentLoopToolRunnerDeps = {
   ) => void;
   shouldInjectRuntimeReflection: (state: AgentLoopRunState) => boolean;
   emitPlan: (hint?: { lastAction?: string }) => void;
+  emitPlaybookProgress: () => void;
+  playbook: ResolvedTaskPlaybook;
   fallbackSummary: (error: unknown) => string;
 };
 
@@ -126,6 +133,46 @@ export async function runAgentLoopToolCall(input: {
   };
   deps.emit({ type: "tool.started", taskId: deps.taskId, toolCall });
 
+  const circuitRule = findCircuitBreaker(
+    deps.playbook,
+    tool.name,
+    deps.runState.toolFailureStreak,
+  );
+  if (circuitRule) {
+    const observation = {
+      error: circuitRule.message,
+      useInstead: circuitRule.redirectTool,
+    };
+    recordToolCall(deps.runState, tool.name, observation, observation.error);
+    deps.emit({
+      type: "tool.completed",
+      taskId: deps.taskId,
+      toolCall: completeLoopToolCallRecord(toolCall, observation.error),
+      result: observation,
+    });
+    deps.emitPlaybookProgress();
+    const observationMessage = buildToolObservationMessage(
+      tool.name,
+      observation,
+      observationCtx,
+    );
+    deps.runState.reflectionRounds += 1;
+    deps.emitReflection({
+      understanding: circuitRule.understanding,
+      blockers: [observation.error],
+      plannedNext: circuitRule.plannedNext,
+      source: "runtime",
+    });
+    return {
+      observationText:
+        typeof observationMessage.content === "string"
+          ? observationMessage.content
+          : JSON.stringify(observationMessage.content),
+      observationMessage,
+      toolContext: deps.getToolContext(),
+    };
+  }
+
   try {
     let toolContext = deps.getToolContext();
     const toolResult = await tool.execute(input.args, toolContext);
@@ -141,6 +188,7 @@ export async function runAgentLoopToolCall(input: {
       result: toolResult.result,
     });
     recordToolCall(deps.runState, tool.name, toolResult.result);
+    deps.emitPlaybookProgress();
 
     if (
       tool.name === "file.read" &&

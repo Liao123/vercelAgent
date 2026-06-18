@@ -440,24 +440,24 @@ export function AgentComposer({
       <div className="mx-auto w-full max-w-3xl px-4 py-3 sm:px-6">
         {orphanAttachedFiles.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-1.5">
-            {orphanAttachedFiles.map((filePath) => {
-              const index = attachedFiles.indexOf(filePath);
+            {attachedFiles.map((filePath, index) => {
+              if (requestContainsAtPath(request, filePath)) return null;
               return (
-              <span
-                key={`${index}-${filePath}`}
-                className="inline-flex max-w-full items-center gap-1 rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-0.5 font-mono text-[11px] text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400"
-                title={filePath}
-              >
-                <span className="truncate">{filePath}</span>
-                <button
-                  type="button"
-                  onClick={() => onRemoveAttachedFile(index)}
-                  className="shrink-0 hover:text-zinc-900 dark:hover:text-zinc-200"
-                  aria-label={`移除 ${filePath}`}
+                <span
+                  key={`attached-${index}-${filePath}`}
+                  className="inline-flex max-w-full items-center gap-1 rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-0.5 font-mono text-[11px] text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400"
+                  title={filePath}
                 >
-                  ×
-                </button>
-              </span>
+                  <span className="truncate">{filePath}</span>
+                  <button
+                    type="button"
+                    onClick={() => onRemoveAttachedFile(index)}
+                    className="shrink-0 hover:text-zinc-900 dark:hover:text-zinc-200"
+                    aria-label={`移除 ${filePath}`}
+                  >
+                    ×
+                  </button>
+                </span>
               );
             })}
           </div>
@@ -466,7 +466,7 @@ export function AgentComposer({
         {referenceImages.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
             {referenceImages.map((src, index) => (
-              <div key={`${index}-${src.slice(0, 24)}`} className="relative">
+              <div key={`ref-img-${index}`} className="relative">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={src}
