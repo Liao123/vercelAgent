@@ -5,13 +5,19 @@
  */
 import type { AgentMessage } from "@/agent/types";
 import { estimateTokens } from "@/agent/memory/context-manager";
+import {
+  buildToolObservationTombstone,
+  isTombstoneStubText,
+  MICRO_OBSERVATION_STUB,
+  parseObservationToolName,
+  SOFT_TOOL_COLLAPSE_STUB,
+} from "@/agent/memory/loop-tombstone-stub";
 
-export const MICRO_OBSERVATION_STUB =
-  "[Older tool result cleared — see [COMPACTED_MEMORY] snippets]";
-
-/** A118：soft collapse 占位（不 merge memory，可 file.read / 重调工具） */
-export const SOFT_TOOL_COLLAPSE_STUB =
-  "[Older tool result collapsed — re-call tool or file.read storagePath if externalized]";
+export {
+  MICRO_OBSERVATION_STUB,
+  SOFT_TOOL_COLLAPSE_STUB,
+  TOMBSTONE_MARKER,
+} from "@/agent/memory/loop-tombstone-stub";
 
 export const COLLAPSE_TAIL_KEEP = 4;
 export const SOFT_TOOL_PROTECT_RECENT = 6;
@@ -118,9 +124,8 @@ function observationBodyText(message: AgentMessage): string {
   return messageText(message);
 }
 
-function parseObservationToolName(text: string): string | null {
-  const match = /Observation from ([^:]+):/.exec(text);
-  return match?.[1]?.trim() ?? null;
+function parseObservationToolNameFromText(text: string): string | null {
+  return parseObservationToolName(text);
 }
 
 /** Layer 2：middle 里过大的 tool observation 替换为 stub（JSON user 观测 + 原生 role:tool）。 */
@@ -136,23 +141,23 @@ export function microCompactMiddleObservations(middle: AgentMessage[]): {
     const isNativeTool = message.role === "tool";
     if (!isJsonObservation && !isNativeTool) return message;
 
-    const toolName = parseObservationToolName(body) ?? "";
+    const toolName = parseObservationToolNameFromText(body) ?? "";
     if (!MICRO_COMPACTABLE_TOOLS.has(toolName)) return message;
     const tokenEstimate = estimateTokens(isNativeTool ? body : messageText(message));
     if (tokenEstimate < 1_200) return message;
 
     compactedCount += 1;
-    const firstLine = body.split("\n")[0] ?? body.slice(0, 120);
+    const tombstone = buildToolObservationTombstone(message, "micro");
     if (isNativeTool) {
       return {
         role: "tool" as const,
         tool_call_id: message.tool_call_id,
-        content: `${firstLine}\n${MICRO_OBSERVATION_STUB}`,
+        content: tombstone,
       };
     }
     return {
       role: "user" as const,
-      content: `${firstLine}\n${MICRO_OBSERVATION_STUB}`,
+      content: tombstone,
     };
   });
 
@@ -195,30 +200,24 @@ export function isToolObservationMessage(message: AgentMessage): boolean {
 function isAlreadyToolObservationStub(message: AgentMessage): boolean {
   const text = messageText(message);
   return (
+    isTombstoneStubText(text) ||
     text.includes(MICRO_OBSERVATION_STUB) ||
     text.includes(SOFT_TOOL_COLLAPSE_STUB)
   );
 }
 
 function stubToolObservationMessage(message: AgentMessage): AgentMessage {
+  const tombstone = buildToolObservationTombstone(message, "soft");
   if (message.role === "tool") {
-    const raw =
-      typeof message.content === "string"
-        ? message.content
-        : JSON.stringify(message.content ?? "");
-    const firstLine = raw.split("\n")[0] ?? "[tool result]";
     return {
       role: "tool",
       tool_call_id: message.tool_call_id,
-      content: `${firstLine}\n${SOFT_TOOL_COLLAPSE_STUB}`,
+      content: tombstone,
     };
   }
-
-  const text = messageText(message);
-  const firstLine = text.split("\n")[0] ?? text.slice(0, 120);
   return {
     role: "user",
-    content: `${firstLine}\n${SOFT_TOOL_COLLAPSE_STUB}`,
+    content: tombstone,
   };
 }
 

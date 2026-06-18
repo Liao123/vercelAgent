@@ -26,6 +26,10 @@ import {
   LOOP_COMPACTION_CONFIG,
 } from "@/agent/memory/loop-compaction-config";
 import {
+  isBurstTailEnabled,
+  resolveBurstAwareTailStart,
+} from "@/agent/memory/loop-burst-tail";
+import {
   COLLAPSE_TAIL_KEEP,
   isSoftToolCollapseEnabled,
   microCompactMiddleObservations,
@@ -34,6 +38,10 @@ import {
   snipLowValueMiddleMessages,
   softCollapseMiddleToolObservations,
 } from "@/agent/memory/loop-compaction-layers";
+import {
+  extractUserMessageAnchors,
+  formatUserAnchorsBlock,
+} from "@/agent/memory/loop-tombstone-stub";
 import {
   extractFileReadSnippetsFromMessages,
   formatPinnedFileSnippetsBlock,
@@ -85,6 +93,7 @@ const SECTION_SUMMARY = "## Summary";
 const SECTION_SUMMARY_ZH = "## 摘要";
 const SECTION_CHANGED = "## Changed files";
 const SECTION_CHANGED_ZH = "## 涉及文件";
+const SECTION_USER_ANCHORS_ZH = "## 用户锚点";
 
 function findSectionStart(content: string, ...headers: string[]): number {
   for (const header of headers) {
@@ -456,8 +465,22 @@ export function splitLoopMessagesForCompaction(messages: AgentMessage[]): {
   middle: AgentMessage[];
   tail: AgentMessage[];
 } {
-  const tailStart = Math.max(0, messages.length - TAIL_KEEP_COUNT);
-  const headCount = resolveLoopPinnedHeadCount(messages, tailStart);
+  let tailStart = Math.max(0, messages.length - TAIL_KEEP_COUNT);
+  let headCount = resolveLoopPinnedHeadCount(messages, tailStart);
+
+  if (isBurstTailEnabled()) {
+    tailStart = resolveBurstAwareTailStart(messages, headCount, {
+      minKeep: LOOP_COMPACTION_CONFIG.burstTailMin,
+      maxKeep: TAIL_KEEP_COUNT,
+    });
+    headCount = resolveLoopPinnedHeadCount(messages, tailStart);
+    if (tailStart < headCount) {
+      tailStart = headCount;
+    }
+  } else {
+    headCount = resolveLoopPinnedHeadCount(messages, tailStart);
+  }
+
   return {
     head: messages.slice(0, headCount),
     middle: messages.slice(headCount, tailStart),
@@ -579,6 +602,7 @@ export function buildStructuredCompactedMemory(input: {
   changedFiles: string[];
   pinnedFileSnippets?: PinnedFileSnippet[];
   pinnedPrepareHint?: UiPrepareHint | null;
+  userAnchors?: string[];
 }): string {
   const changedLines =
     input.changedFiles.length > 0
@@ -590,14 +614,18 @@ export function buildStructuredCompactedMemory(input: {
   const prepareHintBlock = formatPinnedPrepareHintBlock(
     input.pinnedPrepareHint ?? null,
   );
+  const userAnchorsBlock = formatUserAnchorsBlock(input.userAnchors ?? []);
 
   return [
     `${COMPACTED_MEMORY_PREFIX} — round ${input.round}, ${input.method}]`,
     "本轮滚动任务记忆。最近 tail 消息代表最新一步。",
-    "如需核实下方未列出的细节，可再次调用工具。",
+    "如需核实下方未列出的细节，可再次调用工具；墓碑 stub 的 recall 行提示如何找回。",
     "",
     SECTION_PINNED_ZH,
     formatPinnedFactsBlock(input.pinnedFacts),
+    "",
+    SECTION_USER_ANCHORS_ZH,
+    userAnchorsBlock,
     "",
     SECTION_FILE_SNIPPETS_ZH,
     snippetBlock,
@@ -894,6 +922,8 @@ export async function compactAgentLoopMessages(input: {
     ),
   );
 
+  const userAnchors = extractUserMessageAnchors([...head, ...middle, ...tail]);
+
   let method: LoopContextCompactMethod = "deterministic";
   const compressed = compressContext({
     scope: "task",
@@ -923,6 +953,7 @@ export async function compactAgentLoopMessages(input: {
         changedFiles,
         pinnedFileSnippets,
         pinnedPrepareHint,
+        userAnchors,
       }),
     },
     ...tail,
@@ -967,6 +998,7 @@ export async function compactAgentLoopMessages(input: {
     changedFiles,
     pinnedFileSnippets,
     pinnedPrepareHint,
+    userAnchors,
   });
 
   const memoryMessage: AgentMessage = {
@@ -999,6 +1031,7 @@ export async function compactAgentLoopMessages(input: {
       changedFiles,
       pinnedFileSnippets: pinnedFileSnippets.slice(0, 3),
       pinnedPrepareHint,
+      userAnchors,
     });
     nextMessages = [
       ...collapsedHead,

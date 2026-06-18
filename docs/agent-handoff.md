@@ -6,7 +6,7 @@
 
 ---
 
-## 内核状态（A112–A119 done）
+## 内核状态（A112–A126 done）
 
 | 项 | 说明 |
 | --- | --- |
@@ -18,9 +18,11 @@
 | **A119** | 离线压缩基准；SSE `layersApplied` |
 | **A120** | micro 层兼容原生 `role:tool` |
 | **A121** | OpenAI tool 名编码（`file.read` → `file_read`） |
-| **A122** | Composer **Ctrl+V 粘贴截图**（Win+Shift+S → 输入框） |
-| **A123** | Composer **拖放截图** + 成功状态提示（已粘贴/已拖入/已附加） |
+| **A122** | Composer Ctrl+V 粘贴截图 |
+| **A123** | Composer 拖放截图 + 状态提示 |
 | **A124** | 发送后聊天区用户气泡展示附图 |
+| **A125** | 工具观测墓碑 stub + 用户锚点 |
+| **A126** | 爆发段感知 tail（`AGENT_LOOP_BURST_TAIL_MIN` / `AGENT_LOOP_BURST_TAIL=0` 关闭） |
 
 **产品**：对齐 Cursor 剪贴板附图；最多 4 张，走现有 `referenceImages` + vision 模型链路。
 
@@ -38,6 +40,8 @@
 | `AGENT_TOOL_RESULT_EXTERNALIZE=0` | 开 | 关则内联截断 |
 | `AGENT_LOOP_SOFT_COLLAPSE=0` | 开 | 关 soft collapse |
 | `AGENT_LOOP_SOFT_COLLAPSE_RATIO` | 0.70 | soft 触发比例 |
+| `AGENT_LOOP_BURST_TAIL_MIN` | 4 | 爆发段 tail 最少条数 |
+| `AGENT_LOOP_BURST_TAIL=0` | 开 | 关则固定 `TAIL_KEEP` |
 | `AGENT_EDIT_RECOVERY=1` | 关 | recovery |
 | `AGENT_FINAL_PREPARE_NUDGE=1` | 关 | 末轮 prepare nudge |
 

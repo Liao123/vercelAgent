@@ -14,8 +14,8 @@ import {
   isSoftToolCollapseEnabled,
   isToolObservationMessage,
   needsSoftToolCollapse,
-  SOFT_TOOL_COLLAPSE_STUB,
   softCollapseMiddleToolObservations,
+  TOMBSTONE_MARKER,
 } from "../src/agent/memory/loop-compaction-layers";
 import { getMaxContextTokens, DEFAULT_TOKEN_BUDGET } from "../src/agent/memory/token-budget";
 import type { AgentMessage } from "../src/agent/types";
@@ -51,7 +51,7 @@ async function main(): Promise<void> {
 
   const soft = softCollapseMiddleToolObservations(middle);
   assert.ok(soft.collapsedCount >= 4);
-  assert.match(String(soft.messages[1]?.content), /Older tool result collapsed/);
+  assert.match(String(soft.messages[1]?.content), /TOMBSTONE|recall:/);
   assert.ok(isToolObservationMessage(soft.messages.at(-1)!));
 
   const messages: AgentMessage[] = [
@@ -97,7 +97,7 @@ async function main(): Promise<void> {
   assert.ok(shouldApplyCompactionMessages(compacted));
   assert.ok(
     compacted.messages.some((message) =>
-      String(message.content).includes(SOFT_TOOL_COLLAPSE_STUB),
+      String(message.content).includes(TOMBSTONE_MARKER),
     ),
   );
 

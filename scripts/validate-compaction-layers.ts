@@ -52,7 +52,7 @@ async function main(): Promise<void> {
   assert.ok(micro.compactedCount >= 1);
   assert.match(
     micro.messages.at(-1)?.content as string,
-    /Older tool result cleared/,
+    /TOMBSTONE/,
   );
 
   const nativeMiddle: AgentMessage[] = [
@@ -73,7 +73,7 @@ async function main(): Promise<void> {
   const nativeMicro = microCompactMiddleObservations(nativeMiddle);
   assert.equal(nativeMicro.compactedCount, 1);
   assert.equal(nativeMicro.messages[1]?.role, "tool");
-  assert.match(String(nativeMicro.messages[1]?.content), /Older tool result cleared/);
+  assert.match(String(nativeMicro.messages[1]?.content), /TOMBSTONE/);
 
   const messages: AgentMessage[] = [
     { role: "system", content: "agent" },

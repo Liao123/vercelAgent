@@ -10,6 +10,8 @@ function readPositiveInt(name: string, fallback: number): number {
 
 export const LOOP_COMPACTION_CONFIG = {
   tailKeepCount: readPositiveInt("AGENT_LOOP_TAIL_KEEP", 12),
+  /** A126：爆发段 tail 最少保留条数（max 仍由 tailKeepCount） */
+  burstTailMin: readPositiveInt("AGENT_LOOP_BURST_TAIL_MIN", 4),
   middleMessageTrigger: readPositiveInt("AGENT_LOOP_MIDDLE_MSG_TRIGGER", 8),
   middleTokenTrigger: readPositiveInt("AGENT_LOOP_MIDDLE_TOKEN_TRIGGER", 4_000),
 };
