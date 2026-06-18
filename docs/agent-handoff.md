@@ -1,127 +1,85 @@
 # Agent 接续备忘（Cursor 对齐 + 黄金路径）
 
-更新时间：2026-06-17
+更新时间：2026-06-18
 
-> 下次开工先读本文，再跑验证命令。聊天上下文不必保留。
+> 下次开工先读本文，再跑 `npm run validate:agent`。
 
 ---
 
-## 最新（2026-06-17 · A025 CDP-lite）
+## 内核状态（A112–A119 done）
 
-**阶段结论**：A106 黄金路径 + A107 审查联动 + **A025 CDP-lite（network/query/截图/HAR）** 已交付；`npm run validate:agent` **全绿**（~87s）。
-
-| 项 | 内容 |
+| 项 | 说明 |
 | --- | --- |
-| **A106** | 消歧 / jsx / prepare 对齐 handoff P0；`scripts/golden-path-fixtures.ts` |
-| **A107** | 审查区文件联动 + `prune:approvals` |
-| **A025** | CDP-lite：console/DOM/页面错误 + network + `browser.query` + 截图 + HAR-lite（`ccd3934`） |
-| 离线 | `validate-golden-path` → `agent-session-sidebar.tsx` L460 `+` |
-| 在线 | `npm run trial:golden-path-sidebar`（需 dev + 模型） |
+| **A114** | 默认原生 `tools`/`tool_calls`；`AGENT_LOOP_JSON_PROTOCOL=1` 回退 |
+| **A115** | 大 tool 结果外置 `.agent-state/tool-results/` |
+| **A116** | collapse 投影调研 → defer 全量移植 |
+| **A117** | open tabs → `buildOpenEditorUiContext` |
+| **A118** | soft tool-collapse（middle 旧 tool stub） |
+| **A119** | 离线压缩基准；SSE `layersApplied` |
+| **A120** | micro 层兼容原生 `role:tool` |
+| **A121** | OpenAI tool 名编码（`file.read` → `file_read`） |
+| **A122** | Composer **Ctrl+V 粘贴截图**（Win+Shift+S → 输入框） |
+| **A123** | Composer **拖放截图** + 成功状态提示（已粘贴/已拖入/已附加） |
+| **A124** | 发送后聊天区用户气泡展示附图 |
 
-**回归命令**：
+**产品**：对齐 Cursor 剪贴板附图；最多 4 张，走现有 `referenceImages` + vision 模型链路。
+
+**实机长线程**（2026-06-18）：`trial:long-thread` 通过 — Task1 4 次压缩（`snip:1,auto`），无 emergency `collapse`。报告：`.agent-state/compare/long-thread-trial.json`
+
+**压缩基准**（离线）：`npm run validate:compaction-benchmark` → `.agent-state/compare/compaction-benchmark.json`
+
+**实机长线程**（需 dev + 模型）：`npm run trial:long-thread`
+
+### 环境开关
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `AGENT_LOOP_JSON_PROTOCOL=1` | 关 | 回退 JSON 协议 |
+| `AGENT_TOOL_RESULT_EXTERNALIZE=0` | 开 | 关则内联截断 |
+| `AGENT_LOOP_SOFT_COLLAPSE=0` | 开 | 关 soft collapse |
+| `AGENT_LOOP_SOFT_COLLAPSE_RATIO` | 0.70 | soft 触发比例 |
+| `AGENT_EDIT_RECOVERY=1` | 关 | recovery |
+| `AGENT_FINAL_PREPARE_NUDGE=1` | 关 | 末轮 prepare nudge |
+
+### 回归
 
 ```bash
 npm run validate:agent
-npm run trial:golden-path-sidebar:strict      # dry-run + strict prepare
-npm run trial:golden-path-sidebar:execute     # 写盘 + scoped lint 验收
+npm run trial:golden-path-sidebar:strict   # 有模型时
 ```
 
 ---
 
-## 本轮已完成（2026-06-01）
+## 产品决策（不变）
 
-### UI / 三栏（对齐 Cursor）
-
-| 项 | 文件/说明 |
-| --- | --- |
-| 审查区上下布局 | 上：横向文件标签；下：diff；默认**不选中**文件 |
-| Git 只读回退 | 无 Agent 审批时，`collectReviewDisplay` 用 `workspace.git.files` + `/api/agent/workspace/file-diff` |
-| Composer ⚙ 设置 | `src/components/agent-agent-settings.tsx`：自动写盘、strict prepare、lint 失败自动再修 |
-| 文案「接受」 | 中栏变更卡 / 审查底栏；三栏下中栏**不重复**接受按钮（`showInlineFileChangeActions={false}`） |
-| 审查底栏 | 仅 **pending** 文件审批：`ReviewActionBar` 拒绝 / 接受 |
-| 写后验证展示 | 变更卡下 `PostExecuteVerificationView`；`agent-turn-feed` 聚合 `verification.completed` |
-
-### 默认策略（见 `agent-defaults.md`）
-
-- 自动写盘（低/中风险）：`readAutoApplyFileChanges()` 未设置时 **默认 true**
-- lint 失败自动再修：`readAutoReloopOnLintFail()` 未设置时 **默认 true**
-- 写盘后验证：**scoped lint only**（`post-execute-verify.ts`）；全仓 build 已从写后链移除（避免误报）
-
-### Loop 思考闭环（修复「审批未就绪」死循环）
-
-| 问题 | 修复 |
-| --- | --- |
-| 新任务仍加载上轮 lint 失败 | `.agent-state/post-execute-verify.json` 仅在 `isPostExecuteFixContinuation(request)` 时注入；否则 `clearStoredPostExecuteVerification` |
-| 每步 tool 都反思 | `postExecuteFeedback` 仅在 `!approvalPrepared` 时触发 `shouldInjectRuntimeReflection` |
-| 文案误导 | 区分 **lint 待修** vs **审批已就绪**；`prepare` 成功生成审批后清除 `postExecuteFeedback` |
-| 验证通过后仍残留 | `approvals/execute` 成功时 `clearStoredPostExecuteVerification` |
-
-关键文件：`src/agent/core/agent-loop.ts`、`src/lib/agent-lint-reloop.ts`（`isPostExecuteFixContinuation`）。
-
-### 运行时错误修复
-
-- **现象**：`useAgentWorkspaceBridge is not defined`（侧栏 `AgentSessionSidebar`）
-- **处理**：命名空间导入 `AgentWorkspaceBridge.useAgentWorkspaceBridge()`；去掉 `useWorkspaceBridge` 别名
-- **本地**：删 `.next` 后 `npm run dev`；用户环境若仍报错务必清缓存
-
-```powershell
-cd "d:\案例\vec-next"
-Remove-Item -Recurse -Force .next -ErrorAction SilentlyContinue
-npm run dev
-```
+日常不用 prepare 硬门禁；自动写盘默认开。`assertPrepareGate` 仅 strict / 评测。
 
 ---
 
-## 下次第一件事（建议顺序）
-
-1. **在线复验**：`npm run trial:golden-path-sidebar -- --strict`（dev + 模型）
-2. **产品向**：@ 提及带编辑器选区；Electron 签名/自动更新；完整 CDP HAR（非 lite）
-
-```bash
-npm run validate:agent
-npm run trial:golden-path-sidebar      # 有模型时
-```
-
----
-
-## 待办 backlog（未做 / 可选）
+## 待办（可选）
 
 | 优先级 | 内容 |
 | --- | --- |
-| P0 | done | 侧栏加号 + 浏览器自动写盘/lint/再修 + approvals API 瘦身 + scoped lint |
-| P1 | done | Electron CDP-lite（console/DOM/network/query/截图/HAR-lite） |
-| P2 | done | @ 提及带审查区选区（`@path#Lx-y` + 预读切片） |
-| P2 | Electron 签名 / 自动更新 / 完整 CDP HAR | 见 `docs/agent-electron.md` 发布说明；未接入 auto-update |
+| P2 | Electron 签名 / 自动更新 / 完整 CDP |
+| 观测 | 实机 `trial:long-thread` 记录 `layersApplied` 是否出现 `collapse` |
 
-**明确不做**：「接受当前文件」（Cursor 也无此操作）；保持整批接受 / 自动写盘。
+**明确不做**：「接受当前文件」；Claude 全量双轨 CONTEXT_COLLAPSE。
 
 ---
 
-## 关键路径速查
+## 关键路径
 
 | 区域 | 路径 |
 | --- | --- |
-| 审查 | `agent-review-panel.tsx`, `approval-file-changes.ts` |
-| 三栏壳 | `agent-panel.tsx`, `agent-right-rail.tsx` |
-| 中栏轮次 | `agent-turn-feed.ts`, `agent-turn-change-card.tsx`, `agent-event-timeline.tsx` |
-| Loop | `agent/core/agent-loop.ts`, `agent-loop-state.ts` |
-| 写后验证 | `agent/verification/post-execute-verify.ts`, `api/agent/approvals/execute/route.ts` |
-| 偏好 | `agent-file-auto-apply.ts`, `agent-lint-reloop.ts`, `agent-agent-settings.tsx` |
-| Bridge | `agent-workspace-bridge.tsx`, `agent-session-sidebar.tsx` |
-
----
-
-## 与用户对话相关的已知坑
-
-1. **审查 Tab 空**：只有 Agent 审批或 Git 脏文件；手改文件需 Git 仓库 + M 标记 + 打开审查 Tab 刷新 workspace
-2. **思考重复 2–4 轮同一句**：多半是陈旧 `post-execute-verify.json`；已用 `isPostExecuteFixContinuation` 缓解，需新会话验证
-3. **dev 报错 hook 未定义**：几乎总是 `.next` 缓存；清目录重启 dev
+| Loop | `src/agent/core/agent-loop.ts` |
+| 压缩 | `src/agent/memory/loop-context-compactor.ts`, `loop-compaction-layers.ts` |
+| 外置 | `src/agent/memory/tool-result-storage.ts` |
+| 审计 | `docs/agent-kernel-audit.md` |
 
 ---
 
 ## 文档联动
 
-- 产品默认：`docs/agent-defaults.md`
-- 差距表：`docs/agent-cursor-codex-gap.md`
-- 排期入口：`docs/agent-plan-next.md`
-- 台账：`docs/agent-progress.md`（下次完成项请改状态为 done）
+- 压缩基准：[`agent-compaction-benchmark.md`](agent-compaction-benchmark.md)
+- Collapse 调研：[`agent-collapse-projection-spike.md`](agent-collapse-projection-spike.md)
+- 台账：[`agent-progress.md`](agent-progress.md)

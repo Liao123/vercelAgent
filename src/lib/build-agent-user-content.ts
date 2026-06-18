@@ -34,10 +34,10 @@ export function buildAgentUserContent(
 }
 
 export function agentMessagesHaveImages(
-  messages: Array<{ content: AgentContent }>,
+  messages: Array<{ content: AgentContent | null }>,
 ): boolean {
   return messages.some((message) => {
-    if (typeof message.content === "string") return false;
+    if (!message.content || typeof message.content === "string") return false;
     return message.content.some((part) => part.type === "image_url");
   });
 }

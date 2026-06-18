@@ -5,6 +5,8 @@ export type AgentLoopRunState = {
   userRequest: string;
   likelyEditRequest: boolean;
   approvalPrepared: boolean;
+  /** A112：已通过 file.replace / file.mutation / patch.apply 直接写盘 */
+  editApplied?: boolean;
   toolsCalled: string[];
   filesRead: string[];
   /** UI label 多文件命中时的消歧状态（A076） */
@@ -165,16 +167,24 @@ export function recordToolCall(
   } else if (
     toolName === "file.replace.prepare" ||
     toolName === "file.mutation.prepare" ||
-    toolName === "patch.prepare"
+    toolName === "patch.prepare" ||
+    toolName === "file.replace" ||
+    toolName === "file.mutation" ||
+    toolName === "patch.apply"
   ) {
     state.lastPrepareError = undefined;
+    if (
+      toolName === "file.replace" ||
+      toolName === "file.mutation" ||
+      toolName === "patch.apply"
+    ) {
+      state.editApplied = true;
+      state.approvalPrepared = true;
+    }
   }
 }
 
-import {
-  hasUiLocationEvidence,
-  isUiLocationQuery,
-} from "@/agent/core/prepare-gate";
+import { isNativeToolLoopEnabled } from "@/agent/core/loop-protocol";
 import {
   buildUiDisambiguationReadNudgeBlock,
   buildUiPrepareNudgeBlock,
@@ -182,12 +192,16 @@ import {
 import { formatPostExecuteFeedbackBlock } from "@/agent/verification/post-execute-verify";
 
 export function buildRuntimeCheckpoint(state: AgentLoopRunState): string {
+  const hasIssue = Boolean(
+    state.lastToolError ||
+      state.lastPrepareError ||
+      state.postExecuteFeedback,
+  );
+
   const lines = [
-    "=== Runtime checkpoint (reflect before you finalize) ===",
+    "=== Runtime checkpoint ===",
     `User request: ${state.userRequest}`,
-    `Edit-like request: ${state.likelyEditRequest ? "yes" : "no"}`,
-    `Approval prepared: ${state.approvalPrepared ? "yes" : "no"}`,
-    `Tools used: ${state.toolsCalled.length > 0 ? state.toolsCalled.join(" → ") : "(none yet)"}`,
+    `Edit applied: ${state.editApplied ? "yes" : "no"}`,
     `Files read: ${state.filesRead.length > 0 ? state.filesRead.join(", ") : "(none yet)"}`,
   ];
 
@@ -198,50 +212,48 @@ export function buildRuntimeCheckpoint(state: AgentLoopRunState): string {
   const disambiguationNudge = buildUiDisambiguationReadNudgeBlock(state);
   if (disambiguationNudge) {
     lines.push(disambiguationNudge);
-  } else if (state.disambiguation) {
-    lines.push(
-      `UI disambiguation (${state.disambiguation.label}): recommend ${state.disambiguation.recommendedPath}.`,
-      `Rationale: ${state.disambiguation.selectionRationale}`,
-      "All disambiguation candidates read. In reflect, briefly explain why you chose the recommended file over alternatives before prepare.",
-    );
   }
 
-  if (state.lastToolError) {
-    lines.push(`Last tool issue: ${state.lastToolError}`);
-  }
-  if (state.lastPrepareError) {
-    lines.push(
-      `Last prepare issue: ${state.lastPrepareError}`,
-      "If search text was not found, you likely guessed from Chinese phrasing. Use file.read again and copy an exact substring, or file.search for a short literal.",
-    );
-  }
+  if (hasIssue || state.strictPrepare) {
+    if (state.lastToolError) {
+      lines.push(`Last tool issue: ${state.lastToolError}`);
+    }
+    if (state.lastPrepareError) {
+      lines.push(
+        `Last prepare issue: ${state.lastPrepareError}`,
+        "Use file.read and copy an exact substring for file.replace.",
+      );
+    }
 
-  const prepareNudge = buildUiPrepareNudgeBlock(state);
-  if (prepareNudge) {
-    lines.push(prepareNudge);
+    const prepareNudge = buildUiPrepareNudgeBlock(state);
+    if (prepareNudge && !state.editApplied) {
+      lines.push(prepareNudge);
+    }
   }
 
   if (isExplicitReadOnlyRequest(state.userRequest)) {
     lines.push(
-      "This is a read-only task: use inspect/read/search/git status tools only; do not prepare file or patch approvals.",
-      "You may action=final once you have enough evidence.",
+      "Read-only task: do not mutate files.",
+      "You may action=final when done.",
     );
-  } else if (state.likelyEditRequest && !state.approvalPrepared) {
+  } else if (state.likelyEditRequest && !isEditTaskSatisfied(state)) {
     lines.push(
-      "Required for this task: produce exactly one approval via file.replace.prepare, file.mutation.prepare, or patch.prepare.",
-      "Do not action=final until approval exists or you have exhausted reasonable tool strategies.",
-      "Suggested flow: file.locate → file.read → (optional file.search) → file.replace.prepare with exact search from disk.",
-      "Prepare gate: target file MUST be in Files read above; UI/homepage edits MUST call ui.trace_from_page or file.locate first; do NOT prepare edits under src/agent/core/* for UI tasks.",
+      "Use file.replace / file.mutation / patch.apply to write changes (preferred).",
+      "Do not action=final until a write succeeded or you exhausted reasonable strategies.",
     );
-  } else if (state.approvalPrepared) {
-    lines.push(
-      "An approval is ready for the user. You may action=final with a short summary telling them to approve and execute in the UI.",
-    );
+  } else if (isEditTaskSatisfied(state)) {
+    lines.push("File change applied. You may action=final with a short summary.");
   }
 
   lines.push(
-    'Respond with JSON only. Prefer {"action":"reflect",...} to think, or {"action":"tool_call",...} for the next step.',
+    isNativeToolLoopEnabled()
+      ? "Use tool calls to read or edit files; reply with plain text when done."
+      : 'Respond with JSON only: {"action":"reflect"|"tool_call"|"final",...}',
   );
 
   return lines.join("\n");
+}
+
+function isEditTaskSatisfied(state: AgentLoopRunState): boolean {
+  return state.editApplied === true || state.approvalPrepared;
 }

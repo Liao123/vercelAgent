@@ -399,6 +399,50 @@ export async function prepareFileMutation(input: {
   };
 }
 
+export async function commitPreparedFileMutation(
+  rootPath: string,
+  prepared: PreparedFileMutation,
+): Promise<AppliedFileMutation> {
+  const operation = prepared.operation;
+  if (operation.type === "rename") {
+    const fromAbsolute = resolveInsideWorkspace(rootPath, operation.fromPath);
+    const toAbsolute = resolveInsideWorkspace(rootPath, operation.toPath);
+    if ((await fileExists(toAbsolute)) && !operation.overwrite) {
+      throw new Error(`Target already exists: ${operation.toPath}`);
+    }
+    await fs.mkdir(path.dirname(toAbsolute), { recursive: true });
+    if (operation.overwrite && (await fileExists(toAbsolute))) {
+      await fs.unlink(toAbsolute);
+    }
+    await fs.rename(fromAbsolute, toAbsolute);
+    return { ...prepared, applied: true };
+  }
+
+  const absolutePath = resolveInsideWorkspace(rootPath, operation.path);
+  if (operation.type === "delete") {
+    await fs.unlink(absolutePath);
+    return { ...prepared, applied: true };
+  }
+
+  await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+  await fs.writeFile(absolutePath, operation.content, "utf8");
+  return { ...prepared, applied: true };
+}
+
+export async function executeFileMutationDirect(input: {
+  rootPath: string;
+  taskId: string;
+  operation: FileMutationOperation;
+}): Promise<AppliedFileMutation> {
+  const prepared = await prepareFileMutation({
+    rootPath: input.rootPath,
+    taskId: input.taskId,
+    operation: input.operation,
+    createApproval: false,
+  });
+  return commitPreparedFileMutation(input.rootPath, prepared);
+}
+
 export async function applyFileMutation(input: {
   rootPath: string;
   taskId: string;
@@ -415,28 +459,5 @@ export async function applyFileMutation(input: {
     throw new Error("Approval does not match this file mutation.");
   }
 
-  const operation = prepared.operation;
-  if (operation.type === "rename") {
-    const fromAbsolute = resolveInsideWorkspace(input.rootPath, operation.fromPath);
-    const toAbsolute = resolveInsideWorkspace(input.rootPath, operation.toPath);
-    if ((await fileExists(toAbsolute)) && !operation.overwrite) {
-      throw new Error(`Target already exists: ${operation.toPath}`);
-    }
-    await fs.mkdir(path.dirname(toAbsolute), { recursive: true });
-    if (operation.overwrite && (await fileExists(toAbsolute))) {
-      await fs.unlink(toAbsolute);
-    }
-    await fs.rename(fromAbsolute, toAbsolute);
-    return { ...prepared, applied: true };
-  }
-
-  const absolutePath = resolveInsideWorkspace(input.rootPath, operation.path);
-  if (operation.type === "delete") {
-    await fs.unlink(absolutePath);
-    return { ...prepared, applied: true };
-  }
-
-  await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-  await fs.writeFile(absolutePath, operation.content, "utf8");
-  return { ...prepared, applied: true };
+  return commitPreparedFileMutation(input.rootPath, prepared);
 }

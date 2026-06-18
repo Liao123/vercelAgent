@@ -15,6 +15,11 @@ import type {
   ModelProvider,
   ModelStreamEvent,
 } from "@/agent/model/types";
+import {
+  formatCompactModelOutput,
+  getCompactSystemPrompt,
+} from "@/agent/prompts/compact-prompt";
+import { parseOpenAiToolCalls, serializeAgentMessagesForOpenAiApi } from "@/agent/model/loop-tool-schemas";
 
 type ChatCompletionChoice = {
   message?: Record<string, unknown>;
@@ -44,10 +49,16 @@ export class ChatCompletionsProvider implements ModelProvider {
       },
       body: JSON.stringify({
         model,
-        messages: input.messages,
+        messages: serializeAgentMessagesForOpenAiApi(input.messages),
         stream: false,
         max_tokens: input.maxTokens,
         temperature: input.temperature,
+        ...(input.tools && input.tools.length > 0
+          ? {
+              tools: input.tools,
+              tool_choice: input.toolChoice ?? "auto",
+            }
+          : {}),
       }),
     });
 
@@ -70,10 +81,11 @@ export class ChatCompletionsProvider implements ModelProvider {
     const choice = data.choices?.[0];
     const message = choice?.message;
     const rawContent = message?.content;
+    const toolCalls = parseOpenAiToolCalls(message);
     const { text, images } = parseAssistantPayload(rawContent);
-    const content = text || extractAssistantText(message);
+    const content = text || extractAssistantText(message) || "";
 
-    if (!content) {
+    if (!content && toolCalls.length === 0) {
       const reason = choice?.finish_reason ?? "unknown";
       throw new Error(`Model returned empty content. finish_reason: ${reason}`);
     }
@@ -85,6 +97,7 @@ export class ChatCompletionsProvider implements ModelProvider {
       finishReason: choice?.finish_reason,
       rawContent,
       raw: data,
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
     };
   }
 
@@ -157,19 +170,7 @@ export class ChatCompletionsProvider implements ModelProvider {
       messages: [
         {
           role: "system",
-          content: [
-            "You merge coding-agent history into compact memory for the next model turn.",
-            "Output plain text with exactly these sections (no other headings):",
-            "## Summary",
-            "- Bullet points: tools used, files read/changed, approvals prepared (include approval_* ids verbatim), errors, blockers, what is still pending for the user.",
-            "## Changed files",
-            "- One repo-relative path per line prefixed with '- ', or a single line: - none",
-            "Rules:",
-            "- Copy every approval_* id from Pinned facts into Summary; never drop or rename them.",
-            "- Do not invent paths, commands, or approval ids.",
-            "- Collapse repeated file.read of the same path into one note.",
-            "- Keep branch names and git commands if present in steps.",
-          ].join("\n"),
+          content: getCompactSystemPrompt(),
         },
         {
           role: "user",
@@ -188,6 +189,9 @@ export class ChatCompletionsProvider implements ModelProvider {
       temperature: 0,
     });
 
-    return { summary: output.content.trim(), model: output.model };
+    return {
+      summary: formatCompactModelOutput(output.content.trim()),
+      model: output.model,
+    };
   }
 }

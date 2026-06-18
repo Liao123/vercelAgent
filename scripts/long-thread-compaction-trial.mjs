@@ -2,8 +2,12 @@
  * 长任务 + 延续会话压缩 实机试用（需 dev server + 模型 API）。
  *
  * 用法：
- *   npx tsx scripts/long-thread-compaction-trial.mjs [baseUrl] [workspacePath]
+ *   node scripts/long-thread-compaction-trial.mjs [baseUrl] [workspacePath]
+ *
+ * 结果写入 `.agent-state/compare/long-thread-trial.json`。
  */
+import fs from "node:fs";
+import path from "node:path";
 const BASE =
   process.argv[2] ??
   process.env.AGENT_BASE_URL ??
@@ -98,8 +102,12 @@ function summarizeRun(label, events) {
   console.log("  tools:", tools.length, tools.slice(0, 12).join(" → "));
   console.log("  compactions:", compactions.length);
   for (const c of compactions) {
+    const layers =
+      Array.isArray(c.layersApplied) && c.layersApplied.length > 0
+        ? ` | layers ${c.layersApplied.join(",")}`
+        : "";
     console.log(
-      `    · 第 ${c.round} 轮 ${c.method} | ${c.estimatedTokensBefore}→${c.estimatedTokensAfter} tokens | 审批 ${c.pinnedApprovalCount ?? 0}`,
+      `    · 第 ${c.round} 轮 ${c.method} | ${c.estimatedTokensBefore}→${c.estimatedTokensAfter} tokens | 审批 ${c.pinnedApprovalCount ?? 0}${layers}`,
     );
   }
 
@@ -154,11 +162,47 @@ async function main() {
   if (!run2.ok) process.exit(1);
 
   const totalCompact = run1.compactions.length + run2.compactions.length;
+  const report = {
+    recordedAt: new Date().toISOString(),
+    base,
+    workspacePath,
+    threadId,
+    totalCompact,
+    task1: {
+      ok: run1.ok,
+      compactions: run1.compactions.map((c) => ({
+        round: c.round,
+        method: c.method,
+        estimatedTokensBefore: c.estimatedTokensBefore,
+        estimatedTokensAfter: c.estimatedTokensAfter,
+        layersApplied: c.layersApplied,
+      })),
+    },
+    task2: {
+      ok: run2.ok,
+      compactions: run2.compactions.map((c) => ({
+        round: c.round,
+        method: c.method,
+        estimatedTokensBefore: c.estimatedTokensBefore,
+        estimatedTokensAfter: c.estimatedTokensAfter,
+        layersApplied: c.layersApplied,
+      })),
+    },
+  };
+  const outDir = path.join(workspacePath, ".agent-state", "compare");
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(outDir, "long-thread-trial.json"),
+    `${JSON.stringify(report, null, 2)}\n`,
+    "utf8",
+  );
+
   console.log("\n=== 结果 ===");
   console.log("总压缩事件:", totalCompact);
   console.log("Task1 压缩:", run1.compactions.length);
   console.log("Task2 压缩:", run2.compactions.length);
   console.log("Thread:", threadId);
+  console.log("Report:", path.join(outDir, "long-thread-trial.json"));
   console.log("\n浏览器打开:", `${base.replace(/\/$/, "")}/`);
   console.log("侧栏选同 thread → 查看「任务记忆」与活动流「上下文已压缩」");
 

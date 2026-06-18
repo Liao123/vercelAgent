@@ -27,6 +27,10 @@ import {
   formatMentionLineRange,
   type ReviewEditorSelection,
 } from "@/lib/review-editor-selection";
+import {
+  dataTransferMayHaveImageFiles,
+  getImageFilesFromDataTransfer,
+} from "@/lib/composer-clipboard-image";
 
 type AgentComposerProps = {
   request: string;
@@ -46,6 +50,8 @@ type AgentComposerProps = {
   };
   referenceImages: string[];
   onPickImages: () => void;
+  onPasteReferenceImages?: (files: File[]) => void | Promise<void>;
+  onDropReferenceImages?: (files: File[]) => void | Promise<void>;
   onRemoveImage: (index: number) => void;
   maxReferenceImages: number;
   attachedFiles: string[];
@@ -79,6 +85,8 @@ export function AgentComposer({
   workspacePicker,
   referenceImages,
   onPickImages,
+  onPasteReferenceImages,
+  onDropReferenceImages,
   onRemoveImage,
   maxReferenceImages,
   attachedFiles,
@@ -94,6 +102,8 @@ export function AgentComposer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const highlightRef = useRef<HTMLDivElement>(null);
   const suggestAbortRef = useRef<AbortController | null>(null);
+  const imageDragDepthRef = useRef(0);
+  const [imageDragActive, setImageDragActive] = useState(false);
   const [atMention, setAtMention] = useState<{
     start: number;
     query: string;
@@ -102,6 +112,62 @@ export function AgentComposer({
   const [activeSuggestIndex, setActiveSuggestIndex] = useState(0);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [atHint, setAtHint] = useState<string | null>(null);
+
+  const onPaste = useCallback(
+    async (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      if (!onPasteReferenceImages || running) return;
+      const imageFiles = getImageFilesFromDataTransfer(event.clipboardData);
+      if (imageFiles.length === 0) return;
+      event.preventDefault();
+      await onPasteReferenceImages(imageFiles);
+    },
+    [onPasteReferenceImages, running],
+  );
+
+  const onImageDragEnter = useCallback(
+    (event: React.DragEvent) => {
+      const onDrop = onDropReferenceImages ?? onPasteReferenceImages;
+      if (!onDrop || running) return;
+      if (!dataTransferMayHaveImageFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      imageDragDepthRef.current += 1;
+      setImageDragActive(true);
+    },
+    [onDropReferenceImages, onPasteReferenceImages, running],
+  );
+
+  const onImageDragLeave = useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    imageDragDepthRef.current = Math.max(0, imageDragDepthRef.current - 1);
+    if (imageDragDepthRef.current === 0) {
+      setImageDragActive(false);
+    }
+  }, []);
+
+  const onImageDragOver = useCallback(
+    (event: React.DragEvent) => {
+      const onDrop = onDropReferenceImages ?? onPasteReferenceImages;
+      if (!onDrop || running) return;
+      if (!dataTransferMayHaveImageFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+    },
+    [onDropReferenceImages, onPasteReferenceImages, running],
+  );
+
+  const onImageDrop = useCallback(
+    async (event: React.DragEvent) => {
+      event.preventDefault();
+      imageDragDepthRef.current = 0;
+      setImageDragActive(false);
+      const onDrop = onDropReferenceImages ?? onPasteReferenceImages;
+      if (!onDrop || running) return;
+      const imageFiles = getImageFilesFromDataTransfer(event.dataTransfer);
+      if (imageFiles.length === 0) return;
+      await onDrop(imageFiles);
+    },
+    [onDropReferenceImages, onPasteReferenceImages, running],
+  );
 
   const resize = useCallback(() => {
     const node = textareaRef.current;
@@ -477,7 +543,17 @@ export function AgentComposer({
                 )}
               </ul>
             )}
-            <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm transition focus-within:border-zinc-300 focus-within:ring-2 focus-within:ring-zinc-200/80 dark:border-zinc-700 dark:bg-zinc-900 dark:focus-within:border-zinc-600 dark:focus-within:ring-zinc-800">
+            <div
+              className={`overflow-hidden rounded-2xl border bg-white shadow-sm transition focus-within:ring-2 dark:bg-zinc-900 ${
+                imageDragActive
+                  ? "border-sky-400 ring-2 ring-sky-300/80 dark:border-sky-500 dark:ring-sky-800/80"
+                  : "border-zinc-200 focus-within:border-zinc-300 focus-within:ring-zinc-200/80 dark:border-zinc-700 dark:focus-within:border-zinc-600 dark:focus-within:ring-zinc-800"
+              }`}
+              onDragEnter={onImageDragEnter}
+              onDragLeave={onImageDragLeave}
+              onDragOver={onImageDragOver}
+              onDrop={(event) => void onImageDrop(event)}
+            >
             <div className="relative max-h-[200px] min-h-[44px] overflow-hidden">
               {request.trim().length > 0 && (
                 <div
@@ -500,8 +576,9 @@ export function AgentComposer({
                 onClick={syncAtFromTextarea}
                 onKeyUp={syncAtFromTextarea}
                 onKeyDown={onKeyDown}
+                onPaste={onPaste}
                 onScroll={syncHighlightScroll}
-                placeholder="描述要做的改动…（@ 附加文件，Enter 发送）"
+                placeholder="描述要做的改动…（@ 附加文件，Ctrl+V / 拖入截图，Enter 发送）"
                 disabled={running}
                 rows={1}
                 className={`relative z-10 block max-h-[200px] min-h-[44px] w-full resize-none bg-transparent px-4 py-3 text-[14px] leading-relaxed outline-none caret-zinc-900 selection:bg-sky-200/40 disabled:opacity-60 dark:caret-zinc-100 dark:selection:bg-sky-900/40 ${
@@ -527,7 +604,7 @@ export function AgentComposer({
                   disabled={running || referenceImages.length >= maxReferenceImages}
                   onClick={onPickImages}
                   className="rounded-lg px-2 py-1 text-[12px] text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-700 disabled:opacity-40 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
-                  title="附加参考图"
+                  title="附加参考图（Ctrl+V 粘贴或拖入截图）"
                 >
                   ＋
                 </button>

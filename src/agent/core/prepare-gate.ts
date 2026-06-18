@@ -1,5 +1,6 @@
 /**
- * prepare 类工具硬门禁：改前须有 file.read 证据；UI 意图须先 trace/locate。
+ * prepare 类工具门禁（仅 strictPrepare / 评测 enforce 时生效）。
+ * 日常与 Cursor 一致：模型可直接 prepare，由磁盘 read + exact search 保证正确性。
  */
 import type { AgentLoopRunState } from "@/agent/core/agent-loop-state";
 import type { AgentUiContext } from "@/agent/types";
@@ -11,6 +12,8 @@ export type PrepareGateInput = {
   exemptReadPaths?: string[];
   runState: AgentLoopRunState;
   uiContext?: AgentUiContext;
+  /** 评测脚本显式开启门禁（与 runState.strictPrepare 等效） */
+  enforce?: boolean;
 };
 
 export function normalizeWorkspacePath(filePath: string): string {
@@ -39,6 +42,10 @@ function readSet(runState: AgentLoopRunState): Set<string> {
 }
 
 export function assertPrepareGate(input: PrepareGateInput): void {
+  const enforce =
+    input.enforce === true || input.runState.strictPrepare === true;
+  if (!enforce) return;
+
   const { runState, requiredReadPaths, exemptReadPaths = [] } = input;
   const exempt = new Set(exemptReadPaths.map(normalizeWorkspacePath));
   const read = readSet(runState);

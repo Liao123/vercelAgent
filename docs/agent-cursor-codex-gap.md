@@ -77,9 +77,9 @@
 | 能力 | Cursor / Codex | vec-next 现状 | 等级 | 是否要对齐 | 备注 |
 | --- | --- | --- | --- | --- | --- |
 | @ 文件 | `@path`、拖拽、当前 Tab | Composer `@` + 附加列表 + 右侧文件树 | L1 | 是 | A080 已有；缺 **当前编辑器选区/光标** |
-| 附图 | 支持 | 支持 | L0 | — | |
+| 附图 | 支持（含 **Ctrl+V 截图** A122、**拖放** A123） | 支持 | L0 | — | 最多 4 张 |
 | 运行时 layout | 当前预览页 | `uiContext.layout` 传入 Loop | L0 | — | A073 |
-| 打开文件集合 | 自动带 open tabs | 无 | L2 | Electron 后 | A025 deferred |
+| 打开文件集合 | 自动带 open tabs | `@` 附着 + 审查选区 → system（A117） | L2 | 部分 | Electron 真多 tab 仍 deferred |
 
 ### D. 准确度 / Agent 行为（非 UI）
 

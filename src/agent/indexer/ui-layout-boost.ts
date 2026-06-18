@@ -36,17 +36,63 @@ export function layoutCandidateBoost(
   return 0;
 }
 
+export function buildOpenEditorUiContext(input: {
+  layout?: AgentUiLayout;
+  activeRoute?: string;
+  attachedPaths?: string[];
+  activeEditorPath?: string | null;
+  maxPaths?: number;
+}): AgentUiContext {
+  const maxPaths = input.maxPaths ?? 16;
+  const normalizedAttached = (input.attachedPaths ?? [])
+    .map((filePath) => filePath.replaceAll("\\", "/"))
+    .filter(Boolean);
+  const active =
+    input.activeEditorPath?.replaceAll("\\", "/") ?? normalizedAttached.at(-1);
+
+  const openEditorPaths = [
+    ...new Set([
+      ...normalizedAttached,
+      ...(active ? [active] : []),
+    ]),
+  ].slice(0, maxPaths);
+
+  const ctx: AgentUiContext = {
+    layout: input.layout,
+    activeRoute: input.activeRoute ?? "/",
+  };
+  if (openEditorPaths.length > 0) {
+    ctx.openEditorPaths = openEditorPaths;
+  }
+  if (active) {
+    ctx.activeEditorPath = active;
+  }
+  return ctx;
+}
+
 export function describeUiContextForPrompt(uiContext?: AgentUiContext): string {
   if (!uiContext?.layout) return "";
 
   const route = uiContext.activeRoute ?? "/";
   const primary = primaryRunModeComponentPath(uiContext.layout);
+  const openTabs =
+    uiContext.openEditorPaths && uiContext.openEditorPaths.length > 0
+      ? [
+          `Open editor files (user context): ${uiContext.openEditorPaths.join(", ")}.`,
+          uiContext.activeEditorPath
+            ? `Active editor file: ${uiContext.activeEditorPath}. Prefer file.read here when the task references "current file".`
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n")
+      : "";
 
   if (uiContext.layout === "triple") {
     return [
       `Product UI context: layout=triple (Codex/Cursor 三栏), activeRoute=${route}.`,
       `Visible RunMode (Loop/闭环) selector lives in ${COMPOSER_PATH} (center column composer), NOT ${PANEL_PATH}.`,
       primary ? `For RunMode / 闭环 / Loop UI edits, prefer file.read ${primary} first.` : "",
+      openTabs,
     ]
       .filter(Boolean)
       .join("\n");
@@ -56,6 +102,7 @@ export function describeUiContextForPrompt(uiContext?: AgentUiContext): string {
     `Product UI context: layout=${uiContext.layout}, activeRoute=${route}.`,
     `RunMode (Loop/闭环) selector lives in ${PANEL_PATH}.`,
     primary ? `For RunMode UI edits, prefer file.read ${primary} first.` : "",
+    openTabs,
   ]
     .filter(Boolean)
     .join("\n");

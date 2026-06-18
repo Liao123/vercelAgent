@@ -114,6 +114,7 @@ async function main(): Promise<void> {
       toolName: "file.replace.prepare",
       requiredReadPaths: [SIDEBAR_PATH],
       runState: attachOnlyState,
+      enforce: true,
     }),
   );
   assert(
@@ -137,6 +138,7 @@ async function main(): Promise<void> {
     toolName: "file.replace.prepare",
     requiredReadPaths: [SIDEBAR_PATH],
     runState: happyState,
+    enforce: true,
   });
 
   const sidebarContent = await fs.readFile(

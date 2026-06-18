@@ -19,7 +19,6 @@ import {
 } from "../src/agent/memory/loop-context-compactor";
 import {
   extractPrepareHintFromMessages,
-  extractPrepareHintFromText,
   SECTION_PREPARE_HINT_ZH,
 } from "../src/agent/memory/loop-prepare-hint-pin";
 import { resolveInsideWorkspace } from "../src/agent/tools/path-safety";
@@ -84,8 +83,8 @@ async function main(): Promise<void> {
   const nudge = buildUiPrepareNudgeBlock(runState);
   assert.ok(nudge, "nudge block required");
   assert.ok(
-    extractPrepareHintFromText(checkpoint)?.path === SIDEBAR_PATH,
-    "checkpoint should parse to prepare hint",
+    runState.prepareHint?.path === SIDEBAR_PATH,
+    "runState.prepareHint should pin sidebar path for compaction input",
   );
 
   const messages: AgentMessage[] = [

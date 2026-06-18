@@ -27,4 +27,7 @@ export type {
   ModelOutput,
   ModelProvider,
   ModelStreamEvent,
+  ModelToolCall,
+  ModelToolDefinition,
 } from "@/agent/model/types";
+export { buildLoopToolDefinitions } from "@/agent/model/loop-tool-schemas";

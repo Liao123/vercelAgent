@@ -29,7 +29,9 @@ import {
 } from "@/agent/indexer";
 import {
   applyUnifiedPatch,
+  applyUnifiedPatchDirect,
   createPatchApproval,
+  executeFileMutationDirect,
   getGitDiff,
   getGitStatus,
   listDirectory,
@@ -70,7 +72,10 @@ export type AgentLoopToolName =
   | "file.mutation.prepare"
   | "git.mutation.prepare"
   | "shell.command.prepare"
-  | "patch.prepare";
+  | "patch.prepare"
+  | "file.replace"
+  | "file.mutation"
+  | "patch.apply";
 
 export type AgentLoopToolSpec = {
   name: AgentLoopToolName;
@@ -193,6 +198,32 @@ function parseMutationOperation(args: Record<string, unknown>): FileMutationOper
   throw new Error("Unsupported file mutation type.");
 }
 
+async function buildExactTextWriteOperation(
+  rootPath: string,
+  filePath: string,
+  search: string,
+  replace: string,
+  replaceAll: boolean,
+) {
+  const current = await readTextFile(rootPath, filePath, 500_000);
+  const firstIndex = current.content.indexOf(search);
+  if (firstIndex === -1) {
+    throw new Error(`Search text was not found in ${filePath}.`);
+  }
+
+  const nextContent = replaceAll
+    ? current.content.split(search).join(replace)
+    : `${current.content.slice(0, firstIndex)}${replace}${current.content.slice(
+        firstIndex + search.length,
+      )}`;
+
+  if (nextContent === current.content) {
+    throw new Error("Replacement would not change the file.");
+  }
+
+  return { current, nextContent, search };
+}
+
 async function prepareExactTextReplacement(
   args: Record<string, unknown>,
   context: AgentLoopToolContext,
@@ -212,26 +243,19 @@ async function prepareExactTextReplacement(
     uiContext: context.uiContext,
   });
 
-  const current = await readTextFile(context.workspace.rootPath, filePath, 500_000);
-  const firstIndex = current.content.indexOf(search);
-  if (firstIndex === -1) {
-    throw new Error(`Search text was not found in ${filePath}.`);
-  }
-
-  const nextContent = replaceAll
-    ? current.content.split(search).join(replace)
-    : `${current.content.slice(0, firstIndex)}${replace}${current.content.slice(
-        firstIndex + search.length,
-      )}`;
-
-  if (nextContent === current.content) {
-    throw new Error("Replacement would not change the file.");
-  }
+  const { current, nextContent, search: resolvedSearch } =
+    await buildExactTextWriteOperation(
+      context.workspace.rootPath,
+      filePath,
+      search,
+      replace,
+      replaceAll,
+    );
 
   const evidence = buildPrepareEvidenceFromSearch({
     path: current.path,
     content: current.content,
-    search,
+    search: resolvedSearch,
     source: "file.replace.prepare",
   });
 
@@ -246,6 +270,43 @@ async function prepareExactTextReplacement(
     createApproval: true,
     evidence,
   });
+}
+
+async function applyExactTextReplacement(
+  args: Record<string, unknown>,
+  context: AgentLoopToolContext,
+) {
+  const filePath = stringArg(args, "path");
+  const search = stringArg(args, "search");
+  const replace = stringArg(args, "replace");
+  const replaceAll = args.all === true;
+
+  if (!filePath) throw new Error("path is required.");
+  if (!search) throw new Error("search is required.");
+
+  const { current, nextContent } = await buildExactTextWriteOperation(
+    context.workspace.rootPath,
+    filePath,
+    search,
+    replace,
+    replaceAll,
+  );
+
+  const applied = await executeFileMutationDirect({
+    rootPath: context.workspace.rootPath,
+    taskId: context.taskId,
+    operation: {
+      type: "write",
+      path: current.path,
+      content: nextContent,
+    },
+  });
+
+  return {
+    applied: true,
+    mutation: applied,
+    summary: `已写入 ${current.path}`,
+  };
 }
 
 function parseGitMutationOperation(
@@ -898,6 +959,74 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
           ...patchResult,
           approval,
           summary: `Patch 预览 · ${changedCount} / ${patchResult.files.length} 个文件有变化`,
+        },
+      };
+    },
+  },
+  {
+    name: "file.replace",
+    description:
+      "Apply an exact text replacement and write to disk immediately (Cursor-like). Prefer over file.replace.prepare for normal edits.",
+    args: {
+      path: "Workspace-relative file path.",
+      search: "Exact text to find on disk.",
+      replace: "Replacement text. Use empty string to remove text.",
+      all: "Optional boolean. Replace all occurrences when true.",
+    },
+    async execute(args, context) {
+      return {
+        result: await applyExactTextReplacement(args, context),
+      };
+    },
+  },
+  {
+    name: "file.mutation",
+    description:
+      "Create or overwrite a file on disk immediately. Use write for existing files, create for new paths.",
+    args: {
+      type: "create | write",
+      path: "Workspace-relative path.",
+      content: "Full file content.",
+      overwrite: "Optional boolean for create when file exists.",
+    },
+    async execute(args, context) {
+      const type = args.type;
+      if (type !== "create" && type !== "write") {
+        throw new Error("Direct file.mutation only supports create or write.");
+      }
+      const operation = parseMutationOperation(args);
+      const applied = await executeFileMutationDirect({
+        rootPath: context.workspace.rootPath,
+        taskId: context.taskId,
+        operation,
+      });
+      return {
+        result: {
+          applied: true,
+          mutation: applied,
+          summary: `已${operation.type === "create" ? "创建" : "写入"} ${applied.preview.path}`,
+        },
+      };
+    },
+  },
+  {
+    name: "patch.apply",
+    description:
+      "Apply a unified diff to disk immediately. Use for multi-file changes. Prefer over patch.prepare.",
+    args: {
+      patch: "Full unified diff with ---/+++ and @@ hunks.",
+    },
+    async execute(args, context) {
+      const patch = stringArg(args, "patch");
+      const patchResult = await applyUnifiedPatchDirect({
+        rootPath: context.workspace.rootPath,
+        patch,
+      });
+      const changedCount = patchResult.files.filter((file) => file.changed).length;
+      return {
+        result: {
+          ...patchResult,
+          summary: `已应用 patch · ${changedCount} / ${patchResult.files.length} 个文件有变化`,
         },
       };
     },

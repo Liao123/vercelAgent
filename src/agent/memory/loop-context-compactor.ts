@@ -27,9 +27,12 @@ import {
 } from "@/agent/memory/loop-compaction-config";
 import {
   COLLAPSE_TAIL_KEEP,
+  isSoftToolCollapseEnabled,
   microCompactMiddleObservations,
   needsEmergencyCollapse,
+  needsSoftToolCollapse,
   snipLowValueMiddleMessages,
+  softCollapseMiddleToolObservations,
 } from "@/agent/memory/loop-compaction-layers";
 import {
   extractFileReadSnippetsFromMessages,
@@ -49,17 +52,29 @@ import {
   SECTION_PREPARE_HINT,
   SECTION_PREPARE_HINT_ZH,
 } from "@/agent/memory/loop-prepare-hint-pin";
+import {
+  formatCompactModelOutput,
+  getCompactSystemPrompt,
+} from "@/agent/prompts/compact-prompt";
 import type { ModelProvider } from "@/agent/model/types";
 import type { AgentMessage } from "@/agent/types";
 import { newId, nowIso } from "@/agent/types";
+import {
+  externalizeObservationPayload,
+  FILE_READ_INLINE_MAX,
+  isToolResultExternalizeEnabled,
+  serializedPayloadBytes,
+  TOOL_RESULT_INLINE_MAX,
+  type ToolResultObservationContext,
+} from "@/agent/memory/tool-result-storage";
 
 /** 无 thread 记忆时至少保留 system + 当前用户任务。 */
 const MIN_PINNED_HEAD_COUNT = 2;
 const TAIL_KEEP_COUNT = LOOP_COMPACTION_CONFIG.tailKeepCount;
 const MIDDLE_TRIGGER_TOKENS = LOOP_COMPACTION_CONFIG.middleTokenTrigger;
 const MIDDLE_MESSAGE_TRIGGER = LOOP_COMPACTION_CONFIG.middleMessageTrigger;
-const OBSERVATION_JSON_MAX = 8_000;
-const FILE_READ_CONTENT_MAX = 12_000;
+const OBSERVATION_JSON_MAX = TOOL_RESULT_INLINE_MAX;
+const FILE_READ_CONTENT_MAX = FILE_READ_INLINE_MAX;
 const SUMMARY_MERGE_MAX_CHARS = 10_000;
 const SUMMARY_PREVIEW_CHARS = 420;
 
@@ -108,6 +123,24 @@ export type ParsedCompactedMemory = {
 };
 
 function messageText(message: AgentMessage): string {
+  if (message.role === "tool") {
+    const body =
+      typeof message.content === "string"
+        ? message.content
+        : JSON.stringify(message.content);
+    return `Tool result (${message.tool_call_id ?? "?"}): ${body}`;
+  }
+  if (message.tool_calls?.length) {
+    const names = message.tool_calls.map((call) => call.function.name).join(", ");
+    const text =
+      typeof message.content === "string"
+        ? message.content
+        : message.content
+          ? JSON.stringify(message.content)
+          : "";
+    return `Assistant tool_calls [${names}]${text ? `: ${text}` : ""}`;
+  }
+  if (message.content == null) return "";
   if (typeof message.content === "string") return message.content;
   return JSON.stringify(message.content);
 }
@@ -152,10 +185,53 @@ function truncateFileReadResult(
   };
 }
 
-/** 写入模型上下文前的工具结果整形（单条观测上限）。 */
+function shapeFileReadResult(
+  record: Record<string, unknown>,
+  ctx?: ToolResultObservationContext,
+): Record<string, unknown> {
+  const content = record.content;
+  if (
+    ctx?.workspaceRoot &&
+    isToolResultExternalizeEnabled() &&
+    typeof content === "string" &&
+    content.length > FILE_READ_CONTENT_MAX
+  ) {
+    return externalizeObservationPayload(ctx, record, {
+      path: record.path,
+      lineCount: content.split(/\r?\n/).length,
+      originalLength: content.length,
+    });
+  }
+  return truncateFileReadResult(record);
+}
+
+function finalizeObservationPayload(
+  toolName: string,
+  payload: unknown,
+  ctx?: ToolResultObservationContext,
+): unknown {
+  const bytes = serializedPayloadBytes(payload);
+  if (
+    ctx?.workspaceRoot &&
+    isToolResultExternalizeEnabled() &&
+    bytes > OBSERVATION_JSON_MAX
+  ) {
+    return externalizeObservationPayload(
+      { ...ctx, toolName },
+      payload,
+    );
+  }
+  if (bytes <= OBSERVATION_JSON_MAX) {
+    return payload;
+  }
+  return JSON.parse(safeJson(payload, OBSERVATION_JSON_MAX));
+}
+
+/** 写入模型上下文前的工具结果整形（单条观测上限；超大结果可外置）。 */
 export function shapeToolResultForObservation(
   toolName: string,
   result: unknown,
+  ctx?: ToolResultObservationContext,
 ): unknown {
   if (!result || typeof result !== "object") {
     return result;
@@ -164,7 +240,7 @@ export function shapeToolResultForObservation(
   const record = result as Record<string, unknown>;
 
   if (toolName === "file.read") {
-    return truncateFileReadResult(record);
+    return shapeFileReadResult(record, ctx);
   }
 
   if (toolName === "file.search" && Array.isArray(record.matches)) {
@@ -295,14 +371,15 @@ export function shapeToolResultForObservation(
     }
   }
 
-  return JSON.parse(safeJson(result, OBSERVATION_JSON_MAX));
+  return finalizeObservationPayload(toolName, result, ctx);
 }
 
 export function buildToolObservationMessage(
   toolName: string,
   result: unknown,
+  ctx?: ToolResultObservationContext,
 ): AgentMessage {
-  const shaped = shapeToolResultForObservation(toolName, result);
+  const shaped = shapeToolResultForObservation(toolName, result, ctx);
   return {
     role: "user",
     content: `Observation from ${toolName}:\n${safeJson(shaped, OBSERVATION_JSON_MAX)}`,
@@ -620,8 +697,9 @@ async function runSemanticCompact(input: {
       pinnedFacts: pinnedBlock,
       maxTokens: 1_100,
     });
+    const formatted = formatCompactModelOutput(output.summary);
     const parsed = parseCompactedMemory(
-      `${COMPACTED_MEMORY_PREFIX} — round 1, semantic]\n${SECTION_SUMMARY}\n${output.summary}`,
+      `${COMPACTED_MEMORY_PREFIX} — round 1, semantic]\n${SECTION_SUMMARY}\n${formatted}`,
     );
     return {
       summaryBody: parsed?.summaryBody ?? output.summary,
@@ -633,12 +711,7 @@ async function runSemanticCompact(input: {
     messages: [
       {
         role: "system",
-        content: [
-          "Merge prior memory with new agent steps into compact memory.",
-          "Output sections ## Summary and ## Changed files only.",
-          "Copy every approval_* id from Pinned facts into Summary verbatim.",
-          "Do not invent facts. Collapse duplicate file reads.",
-        ].join("\n"),
+        content: getCompactSystemPrompt(),
       },
       {
         role: "user",
@@ -656,11 +729,12 @@ async function runSemanticCompact(input: {
     temperature: 0,
   });
 
+  const formatted = formatCompactModelOutput(output.content);
   const parsed = parseCompactedMemory(
-    `${COMPACTED_MEMORY_PREFIX} — round 1, semantic]\n${output.content}`,
+    `${COMPACTED_MEMORY_PREFIX} — round 1, semantic]\n${formatted}`,
   );
   return {
-    summaryBody: parsed?.summaryBody ?? output.content.trim(),
+    summaryBody: parsed?.summaryBody ?? formatted.trim(),
     changedFiles: parsed?.changedFiles ?? [],
   };
 }
@@ -710,6 +784,27 @@ export async function compactAgentLoopMessages(input: {
     layersApplied.push(`micro:${micro.compactedCount}`);
   }
 
+  let estimatedTokensCurrent = estimateMessagesTokens([
+    ...head,
+    ...middle,
+    ...tail,
+  ]);
+  if (
+    isSoftToolCollapseEnabled() &&
+    needsSoftToolCollapse(estimatedTokensCurrent, maxContext)
+  ) {
+    const soft = softCollapseMiddleToolObservations(middle);
+    if (soft.collapsedCount > 0) {
+      middle = soft.messages;
+      estimatedTokensCurrent = estimateMessagesTokens([
+        ...head,
+        ...middle,
+        ...tail,
+      ]);
+      layersApplied.push(`soft:${soft.collapsedCount}`);
+    }
+  }
+
   let priorMemory: ParsedCompactedMemory | null = null;
   const existingMemoryIndex = middle.findIndex(isCompactedMemoryMessage);
   if (existingMemoryIndex >= 0) {
@@ -732,10 +827,29 @@ export async function compactAgentLoopMessages(input: {
     hasPriorMemory,
     forceCompact: input.forceCompact,
   });
-  const mustCompact =
-    shouldCompact || input.forceCompact === true || layersApplied.length > 0;
 
-  if (!mustCompact) {
+  const hasSoftLayer = layersApplied.some((layer) => layer.startsWith("soft:"));
+  const needsMemoryCompact =
+    shouldCompact ||
+    input.forceCompact === true ||
+    layersApplied.some(
+      (layer) => layer.startsWith("snip:") || layer.startsWith("micro:"),
+    );
+
+  if (!needsMemoryCompact && hasSoftLayer) {
+    const layerOnlyMessages = [...head, ...middle, ...tail];
+    return {
+      messages: layerOnlyMessages,
+      method: "none",
+      estimatedTokensBefore,
+      estimatedTokensAfter: estimateMessagesTokens(layerOnlyMessages),
+      middleMessageCount: middle.length,
+      round: priorMemory?.round ?? 0,
+      layersApplied,
+    };
+  }
+
+  if (!needsMemoryCompact) {
     return {
       ...emptyResult(messages, estimatedTokensBefore),
       middleMessageCount: middle.length,
@@ -934,6 +1048,13 @@ function emptyResult(
   };
 }
 
+export function shouldApplyCompactionMessages(
+  result: LoopContextCompactResult,
+): boolean {
+  if (result.method !== "none") return true;
+  return Boolean(result.layersApplied?.length);
+}
+
 export function createLoopCompactEventPayload(
   result: LoopContextCompactResult,
 ): {
@@ -948,6 +1069,7 @@ export function createLoopCompactEventPayload(
   memoryContent?: string;
   pinnedApprovalCount?: number;
   changedFileCount?: number;
+  layersApplied?: string[];
 } | null {
   if (result.method === "none" || !result.summaryId) return null;
   return {
@@ -962,5 +1084,6 @@ export function createLoopCompactEventPayload(
     memoryContent: result.memoryContent,
     pinnedApprovalCount: result.pinnedFacts?.approvalIds.length,
     changedFileCount: result.changedFiles?.length,
+    layersApplied: result.layersApplied,
   };
 }

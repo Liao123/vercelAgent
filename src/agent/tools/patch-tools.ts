@@ -414,6 +414,33 @@ export async function applyUnifiedPatch(input: {
   };
 }
 
+/** A112：Loop 内直接应用 patch，不经审批（Cursor 式写盘）。 */
+export async function applyUnifiedPatchDirect(input: {
+  rootPath: string;
+  patch: string;
+}): Promise<PatchResult> {
+  const parsedFiles = parseUnifiedDiff(input.patch);
+  const changes: PatchFileChange[] = [];
+
+  for (const parsedFile of parsedFiles) {
+    changes.push(await resolvePatchChange(input.rootPath, parsedFile));
+  }
+
+  for (const change of changes) {
+    if (!change.changed && change.kind === "modify") continue;
+    await applyPatchChange(input.rootPath, change);
+  }
+
+  const requiredApprovalAction = getPatchApprovalAction(input.patch);
+  return {
+    mode: "apply",
+    patchHash: requiredApprovalAction.replace("patch.apply:", ""),
+    requiredApprovalAction,
+    files: changes,
+    applied: true,
+  };
+}
+
 export function describePatchFiles(result: PatchResult): string[] {
   return result.files.map((file) => {
     const target = file.newPath || file.oldPath;

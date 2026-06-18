@@ -6,12 +6,29 @@
  */
 import type { AgentMessage } from "@/agent/types";
 
+export type ModelToolDefinition = {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+};
+
+export type ModelToolCall = {
+  id: string;
+  name: string;
+  arguments: string;
+};
+
 export type ModelInput = {
   messages: AgentMessage[];
   model?: string;
   maxTokens?: number;
   temperature?: number;
   metadata?: Record<string, unknown>;
+  tools?: ModelToolDefinition[];
+  toolChoice?: "auto" | "none";
 };
 
 export type ModelOutput = {
@@ -21,6 +38,7 @@ export type ModelOutput = {
   finishReason?: string;
   rawContent?: unknown;
   raw?: unknown;
+  toolCalls?: ModelToolCall[];
 };
 
 export type ModelStreamEvent =

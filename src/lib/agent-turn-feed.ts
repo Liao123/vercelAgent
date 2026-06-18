@@ -19,6 +19,7 @@ export type AgentChangeChip = {
 export type AgentTurnFeed = {
   taskId: string;
   userRequest: string;
+  referenceImages?: string[];
   createdAt: string;
   completedAt?: string;
   status: "running" | "completed" | "failed";
@@ -261,6 +262,7 @@ export function groupEventsIntoTurns(events: AgentEvent[]): AgentTurnFeed[] {
   let current: {
     taskId: string;
     userRequest: string;
+    referenceImages?: string[];
     createdAt: string;
     events: AgentEvent[];
   } | null = null;
@@ -272,6 +274,7 @@ export function groupEventsIntoTurns(events: AgentEvent[]): AgentTurnFeed[] {
     turns.push({
       taskId: current.taskId,
       userRequest: current.userRequest,
+      referenceImages: current.referenceImages,
       createdAt: current.createdAt,
       completedAt: outcome.completedAt,
       status: outcome.status,
@@ -298,6 +301,7 @@ export function groupEventsIntoTurns(events: AgentEvent[]): AgentTurnFeed[] {
       current = {
         taskId: event.taskId,
         userRequest: event.task.userRequest,
+        referenceImages: event.task.referenceImages,
         createdAt: event.task.createdAt,
         events: [event],
       };

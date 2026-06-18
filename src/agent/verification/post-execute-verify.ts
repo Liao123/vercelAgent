@@ -217,7 +217,7 @@ export function formatPostExecuteFeedbackBlock(
     lines.push("stderr/stdout excerpt:", feedback.outputSnippet.trim());
   }
   lines.push(
-    "Read the errors above, fix source with file.replace.prepare + approval, or run workspace.inspect for full JSON.",
+    "Read the errors above, fix source with file.replace, or run workspace.inspect for full JSON.",
     "Do not action=final until lint/typecheck would pass or user accepts the failure.",
   );
   return lines.join("\n");

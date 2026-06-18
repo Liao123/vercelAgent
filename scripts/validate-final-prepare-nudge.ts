@@ -23,6 +23,7 @@ import {
 } from "./golden-path-fixtures";
 
 async function main(): Promise<void> {
+  process.env.AGENT_FINAL_PREPARE_NUDGE = "1";
   const content = await fs.readFile(
     resolveInsideWorkspace(process.cwd(), SIDEBAR_PATH),
     "utf8",

@@ -33,14 +33,26 @@ export type AgentTextContentPart = {
   text: string;
 };
 
+export type AgentFunctionToolCall = {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
+};
+
 export type AgentContent =
   | AgentTextContent
   | Array<AgentTextContentPart | AgentImageContentPart>;
 
 export type AgentMessage = {
   role: AgentRole;
-  content: AgentContent;
+  content: AgentContent | null;
   name?: string;
+  /** OpenAI / 兼容 API 原生 tool_calls（A114） */
+  tool_calls?: AgentFunctionToolCall[];
+  tool_call_id?: string;
 };
 
 export type AgentPlanStepStatus =
@@ -82,6 +94,8 @@ export type Task = {
   threadId: AgentId;
   workspaceId: AgentId;
   userRequest: string;
+  /** 用户附带的参考图（data URL），用于聊天区展示与 vision 请求 */
+  referenceImages?: string[];
   status: AgentStatus;
   plan?: AgentPlan;
   createdAt: string;
@@ -356,6 +370,7 @@ export type AgentEvent =
       threadId?: string;
       pinnedApprovalCount?: number;
       changedFileCount?: number;
+      layersApplied?: string[];
     }
   | {
       type: "reflection.updated";
@@ -374,6 +389,10 @@ export type AgentUiContext = {
   layout?: AgentUiLayout;
   /** 用户当前查看的路由，默认 `/`。 */
   activeRoute?: string;
+  /** A117：用户已打开/附着的编辑器文件（对齐 Cursor open tabs 提示）。 */
+  openEditorPaths?: string[];
+  /** 当前焦点文件（审查区选区或最近 @ 文件）。 */
+  activeEditorPath?: string;
 };
 
 export function nowIso(): string {

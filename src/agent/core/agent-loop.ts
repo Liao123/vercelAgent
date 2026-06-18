@@ -4,8 +4,6 @@
  * 通用编程能力：不依赖中文句式硬编码；通过工具观察 + 显式反思检查点推进任务。
  */
 import {
-  AGENT_LOOP_TOOLS,
-  getAgentLoopTool,
   type AgentLoopToolContext,
 } from "@/agent/core/agent-loop-tools";
 import { tryRecoverEditApproval } from "@/agent/core/edit-recovery";
@@ -15,8 +13,6 @@ import {
   shouldRunFinalPrepareNudge,
 } from "@/agent/core/final-prepare-nudge";
 import {
-  captureUiPrepareHintFromFileRead,
-  listUnreadDisambiguationPaths,
   shouldSkipEditRecoveryForUiPrepare,
 } from "@/agent/core/ui-prepare-nudge";
 import { isUiLocationQuery } from "@/agent/core/prepare-gate";
@@ -70,6 +66,7 @@ import {
   buildToolObservationMessage,
   compactAgentLoopMessages,
   createLoopCompactEventPayload,
+  shouldApplyCompactionMessages,
 } from "@/agent/memory/loop-context-compactor";
 import { isContextOverflowError } from "@/agent/memory/loop-compaction-layers";
 import {
@@ -78,7 +75,11 @@ import {
   saveThreadMemory,
 } from "@/agent/memory/thread-memory-store";
 import { getCurrentWorkspace } from "@/agent/workspace";
-import { describeUiContextForPrompt } from "@/agent/indexer/ui-layout-boost";
+import {
+  isEditRecoveryEnabled,
+  isEditTaskSatisfied,
+  isFinalPrepareNudgeEnabled,
+} from "@/agent/core/loop-direct-apply";
 import {
   formatAttachedFilesUserNote,
   mergeAttachedPaths,
@@ -87,6 +88,17 @@ import {
   preloadAttachedFiles,
   type EditorSelectionContext,
 } from "@/agent/core/attached-files";
+import { createLoopSystemPrompt } from "@/agent/prompts/create-loop-system-prompt";
+import { isNativeToolLoopEnabled } from "@/agent/core/loop-protocol";
+import {
+  buildLoopToolDefinitions,
+  parseToolCallArguments,
+} from "@/agent/model/loop-tool-schemas";
+import {
+  runAgentLoopToolCall,
+  shouldInterceptNativeFinal,
+  type AgentLoopToolRunnerDeps,
+} from "@/agent/core/agent-loop-tool-runner";
 import type { AgentUiContext } from "@/agent/types";
 
 export type AgentLoopInput = {
@@ -139,56 +151,6 @@ type AgentLoopDecision =
 
 const DEFAULT_MAX_ITERATIONS = 12;
 const MAX_REFLECTION_ROUNDS = 4;
-
-function createSystemPrompt(
-  workspaceRoot: string,
-  uiContext?: AgentUiContext,
-): string {
-  const toolList = AGENT_LOOP_TOOLS.map((tool) => ({
-    name: tool.name,
-    description: tool.description,
-    args: tool.args,
-  }));
-
-  return [
-    "You are a coding agent runtime controller in a reflective loop.",
-    "Workflow: UNDERSTAND → GATHER EVIDENCE (tools) → PREPARE CHANGE → REFLECT → repeat until done.",
-    "User-facing text in reflect (understanding, plannedNext, blockers) and final summary MUST be Simplified Chinese.",
-    "You must respond with one JSON object and no markdown.",
-    "Allowed response shapes:",
-    '{"action":"reflect","understanding":"用户想要什么（中文）","blockers":["可选阻塞（中文）"],"plannedNext":"下一步具体动作（中文）","thought":"optional"}',
-    '{"action":"tool_call","tool":"tool.name","args":{},"thought":"为什么要调用这个工具（中文，一句话）"}',
-    '{"action":"final","summary":"给用户的中文总结","thought":"optional"}',
-    "Always include thought on tool_call: one Chinese sentence explaining why you are calling the tool and what you expect to learn.",
-    "Use action=reflect when you need to think before the next tool, or after a failure, or when the request is ambiguous.",
-    "Only call tools from the provided list. Do not invent tools.",
-    "For code-change requests:",
-    "- Gather evidence first: project.index, file.locate, file.read, file.search as needed.",
-    "- UI / 首页 / 页面 / 按钮 / 去掉某段界面文字:",
-    "  1) Call ui.trace_from_page (or file.locate—the latter merges import tree for UI queries) BEFORE file.search.",
-    "  2) Use jsx.find_text for visible labels (闭环/Loop/buttons)—returns line numbers + component guess; prefer over raw file.search.",
-    "  3) Use symbol.find_references when you need who imports a component file or where a symbol is exported.",
-    "  4) file.read files in suggestedReadOrder until you find the exact JSX with the visible label.",
-    "  5) Do NOT edit src/agent/core/* just because file.search found loop/闭环—prefer src/app/* and src/components/* for user-visible UI.",
-    "  6) If multiple files contain the same label, file.read EACH candidate (see disambiguation.mustReadPaths from locate/trace) before prepare; in reflect explain why you chose the recommended file.",
-    "  7) Before file.replace.prepare, file.read EVERY file you will edit and confirm the exact visible label text exists there.",
-    "- Never guess file.replace.prepare search text from loose Chinese (e.g. 删除首页123文字). Read the file and copy an exact substring from disk.",
-    "- Small edits: file.replace.prepare. Single-file full replace: file.mutation.prepare. Multi-file or /dev/null diffs: patch.prepare.",
-    "- Mutation prepare tools only create approvals; the user approves and executes in the UI.",
-    "- Do not action=final on edit tasks until an approval was prepared, unless you explain clearly why it is impossible.",
-    "- To verify: shell.command.prepare with lint, build, test, or typecheck (only if script exists in package.json).",
-    "- After user executes a file/patch approval, runtime may auto-run lint/typecheck; failures appear as verification.completed events—fix in a new Loop round, never auto-apply.",
-    "- User may attach files via @path in the request or UI; pre-loaded file.read at task start counts as read evidence.",
-    "- Git branch/commit/push: git.mutation.prepare only; never assume they ran.",
-    "On tool errors: action=reflect, then try a different strategy (another path, file.search, different exact search string).",
-    "Do not run arbitrary shell, install packages, or auto-execute git/shell without user approval in the UI.",
-    `Workspace root: ${workspaceRoot}`,
-    describeUiContextForPrompt(uiContext),
-    `Tools: ${JSON.stringify(toolList)}`,
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
 
 function extractJsonObjectCandidates(text: string): string[] {
   const candidates: string[] = [];
@@ -358,8 +320,17 @@ function fallbackSummary(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function observationMessage(toolName: string, result: unknown): AgentMessage {
-  return buildToolObservationMessage(toolName, result);
+function observationMessage(
+  toolName: string,
+  result: unknown,
+  rootPath: string,
+  toolCallId?: string,
+): AgentMessage {
+  return buildToolObservationMessage(toolName, result, {
+    workspaceRoot: rootPath,
+    toolName,
+    toolCallId,
+  });
 }
 
 function emitReflection(
@@ -463,18 +434,7 @@ function shouldInjectRuntimeReflection(state: AgentLoopRunState): boolean {
   if (state.reflectionRounds >= MAX_REFLECTION_ROUNDS) return false;
   if (isExplicitReadOnlyRequest(state.userRequest)) return false;
   if (state.lastToolError || state.lastPrepareError) return true;
-  if (state.likelyEditRequest && !state.approvalPrepared && state.toolsCalled.length >= 2) {
-    return true;
-  }
-  if (state.prepareHint && !state.approvalPrepared) {
-    return true;
-  }
-  if (listUnreadDisambiguationPaths(state).length > 0) {
-    return true;
-  }
-  if (state.postExecuteFeedback && !state.approvalPrepared) {
-    return true;
-  }
+  if (state.postExecuteFeedback && !isEditTaskSatisfied(state)) return true;
   return false;
 }
 
@@ -514,11 +474,16 @@ export async function runAgentLoop(
     updatedAt: now,
     contextSummary: priorThreadMemory?.memoryContent.slice(0, 400),
   };
+  const referenceImages = (input.referenceImages ?? []).filter((url) =>
+    url.startsWith("data:image/"),
+  );
   const task: Task = {
     id: newId("task"),
     threadId: thread.id,
     workspaceId: workspace.id,
     userRequest: effectiveUserRequest,
+    referenceImages:
+      referenceImages.length > 0 ? referenceImages : undefined,
     status: "running",
     createdAt: now,
     updatedAt: now,
@@ -594,7 +559,7 @@ export async function runAgentLoop(
   const messages: AgentMessage[] = [
     {
       role: "system",
-      content: createSystemPrompt(workspace.rootPath, input.uiContext),
+      content: createLoopSystemPrompt(workspace.rootPath, input.uiContext),
     },
   ];
   if (priorThreadMemory?.memoryContent) {
@@ -623,7 +588,7 @@ export async function runAgentLoop(
     role: "user",
     content: buildAgentUserContent(
       userMessageText,
-      input.referenceImages,
+      referenceImages.length > 0 ? referenceImages : undefined,
     ),
   });
   if (attachedPaths.length > 0) {
@@ -665,7 +630,7 @@ export async function runAgentLoop(
           thought: "用户附加文件，启动时预读。",
         }),
       });
-      messages.push(observationMessage("file.read", result));
+      messages.push(observationMessage("file.read", result, workspace.rootPath, toolCall.id));
     }
   }
   pushReflectionToMessages(messages, openingReflection, buildRuntimeCheckpoint(runState));
@@ -676,6 +641,24 @@ export async function runAgentLoop(
     uiContext: input.uiContext,
     runState,
   };
+
+  const toolRunnerDeps: AgentLoopToolRunnerDeps = {
+    taskId: task.id,
+    rootPath: workspace.rootPath,
+    emit,
+    runState,
+    getToolContext: () => toolContext,
+    setToolContext: (ctx) => {
+      toolContext = ctx;
+    },
+    emitReflection: (reflection) => emitReflection(emit, task.id, reflection),
+    pushReflectionToMessages: (reflection, checkpoint) =>
+      pushReflectionToMessages(messages, reflection, checkpoint),
+    shouldInjectRuntimeReflection,
+    emitPlan,
+    fallbackSummary,
+  };
+
   let summary = "Agent loop stopped without a final answer.";
   const maxIterations = Math.min(
     Math.max(input.maxIterations ?? DEFAULT_MAX_ITERATIONS, 1),
@@ -699,10 +682,12 @@ export async function runAgentLoop(
           ? runState.prepareHint
           : undefined,
     });
-    if (compactResult.method !== "none") {
-      contextCompactRound = compactResult.round;
+    if (shouldApplyCompactionMessages(compactResult)) {
       messages.length = 0;
       messages.push(...compactResult.messages);
+    }
+    if (compactResult.method !== "none") {
+      contextCompactRound = compactResult.round;
       const payload = createLoopCompactEventPayload(compactResult);
       if (payload) {
         const memoryContent =
@@ -721,6 +706,7 @@ export async function runAgentLoop(
           threadId: thread.id,
           pinnedApprovalCount: payload.pinnedApprovalCount,
           changedFileCount: payload.changedFileCount,
+          layersApplied: payload.layersApplied ?? compactResult.layersApplied,
         });
         if (memoryContent) {
           const summaryPreview = payload.summaryPreview ?? memoryContent.slice(0, 420);
@@ -763,6 +749,12 @@ export async function runAgentLoop(
           temperature: 0,
           maxTokens: agentMessagesHaveImages(messages) ? 2000 : 1400,
           metadata: { taskId: task.id, iteration },
+          ...(isNativeToolLoopEnabled()
+            ? {
+                tools: buildLoopToolDefinitions(),
+                toolChoice: "auto" as const,
+              }
+            : {}),
         });
       } catch (error) {
         if (
@@ -784,10 +776,12 @@ export async function runAgentLoop(
                 : undefined,
             forceCompact: true,
           });
-          if (reactiveCompact.method !== "none") {
-            contextCompactRound = reactiveCompact.round;
+          if (shouldApplyCompactionMessages(reactiveCompact)) {
             messages.length = 0;
             messages.push(...reactiveCompact.messages);
+          }
+          if (reactiveCompact.method !== "none") {
+            contextCompactRound = reactiveCompact.round;
             const payload = createLoopCompactEventPayload(reactiveCompact);
             if (payload) {
               emit({
@@ -804,6 +798,7 @@ export async function runAgentLoop(
                 threadId: thread.id,
                 pinnedApprovalCount: payload.pinnedApprovalCount,
                 changedFileCount: payload.changedFileCount,
+                layersApplied: payload.layersApplied ?? reactiveCompact.layersApplied,
               });
             }
             modelRetryAfterCompact = true;
@@ -828,8 +823,86 @@ export async function runAgentLoop(
     emit({
       type: "model.delta",
       taskId: task.id,
-      text: output.content,
+      text: output.content || (output.toolCalls?.length ? `[tools: ${output.toolCalls.map((t) => t.name).join(", ")}]` : ""),
     });
+
+    if (isNativeToolLoopEnabled() && output.toolCalls && output.toolCalls.length > 0) {
+      messages.push({
+        role: "assistant",
+        content: output.content || null,
+        tool_calls: output.toolCalls.map((toolCall) => ({
+          id: toolCall.id,
+          type: "function" as const,
+          function: {
+            name: toolCall.name,
+            arguments: toolCall.arguments,
+          },
+        })),
+      });
+
+      for (const toolCall of output.toolCalls) {
+        let args: Record<string, unknown> = {};
+        try {
+          args = parseToolCallArguments(toolCall.arguments);
+        } catch (error) {
+          args = {};
+          recordToolCall(
+            runState,
+            toolCall.name,
+            { error: fallbackSummary(error) },
+            fallbackSummary(error),
+          );
+        }
+
+        const patchTextFallback =
+          toolCall.name === "patch.apply" && typeof args.patch === "string"
+            ? args.patch
+            : undefined;
+
+        const runResult = await runAgentLoopToolCall({
+          toolName: toolCall.name,
+          args,
+          patchTextFallback,
+          toolCallId: toolCall.id,
+          deps: toolRunnerDeps,
+        });
+        toolContext = runResult.toolContext;
+
+        messages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          content: runResult.observationText,
+        });
+      }
+      continue;
+    }
+
+    if (isNativeToolLoopEnabled()) {
+      const finalText = output.content?.trim();
+      if (!finalText) {
+        summary = "Model returned empty response without tool calls.";
+        break;
+      }
+
+      if (shouldInterceptNativeFinal(runState, iteration, maxIterations)) {
+        runState.reflectionRounds += 1;
+        const reflection: AgentReflection = {
+          understanding: finalText,
+          blockers: ["改代码任务尚未写盘。"],
+          plannedNext:
+            "继续调用 file.read 取证，再用 file.replace / patch.apply 写盘。",
+          source: "runtime",
+        };
+        emitReflection(emit, task.id, reflection);
+        pushReflectionToMessages(messages, reflection, buildRuntimeCheckpoint(runState));
+        emitPlan({ lastAction: "reflect" });
+        continue;
+      }
+
+      summary = finalText;
+      emitPlan({ lastAction: "final" });
+      break;
+    }
 
     let decision: AgentLoopDecision;
     try {
@@ -866,16 +939,16 @@ export async function runAgentLoop(
       decision.action === "final" &&
       runState.likelyEditRequest &&
       !isExplicitReadOnlyRequest(runState.userRequest) &&
-      !runState.approvalPrepared &&
+      !isEditTaskSatisfied(runState) &&
       runState.reflectionRounds < MAX_REFLECTION_ROUNDS &&
       iteration < maxIterations
     ) {
       runState.reflectionRounds += 1;
       const reflection: AgentReflection = {
         understanding: decision.summary,
-        blockers: ["改代码任务尚未生成审批。"],
+        blockers: ["改代码任务尚未写盘。"],
         plannedNext:
-          "依次调用 file.locate / file.read / file.search，再用 file.replace.prepare 传入磁盘上的精确子串。",
+          "依次调用 file.locate / file.read，再用 file.replace 写盘。",
         source: "runtime",
       };
       emitReflection(emit, task.id, reflection);
@@ -890,142 +963,23 @@ export async function runAgentLoop(
       break;
     }
 
-    const tool = getAgentLoopTool(decision.tool);
-    if (!tool) {
-      const observation = {
-        error: `Tool is not allowed: ${decision.tool}`,
-        allowedTools: AGENT_LOOP_TOOLS.map((item) => item.name),
-      };
-      recordToolCall(runState, "tool.error", observation, observation.error);
-      messages.push(observationMessage("tool.error", observation));
-      if (shouldInjectRuntimeReflection(runState)) {
-        runState.reflectionRounds += 1;
-        const reflection: AgentReflection = {
-          understanding: "上一次工具选择无效。",
-          blockers: [observation.error],
-          plannedNext: "从允许的工具列表中重新选择。",
-          source: "runtime",
-        };
-        emitReflection(emit, task.id, reflection);
-        pushReflectionToMessages(messages, reflection, buildRuntimeCheckpoint(runState));
-        emitPlan({ lastAction: "reflect" });
-      }
-      continue;
-    }
-
-    const toolCall = createToolCall(
-      task.id,
-      tool.name,
-      decision.args ?? {},
-      decision.thought,
-    );
-    emit({ type: "tool.started", taskId: task.id, toolCall });
-    try {
-      const toolResult = await tool.execute(decision.args ?? {}, toolContext);
-      if (toolResult.context) toolContext = toolResult.context;
-      emit({
-        type: "tool.completed",
-        taskId: task.id,
-        toolCall: completeToolCall(toolCall),
-        result: toolResult.result,
-      });
-      recordToolCall(runState, tool.name, toolResult.result);
-
-      if (tool.name === "file.read" && toolResult.result && typeof toolResult.result === "object") {
-        const readResult = toolResult.result as { path?: unknown; content?: unknown };
-        if (
-          typeof readResult.path === "string" &&
-          typeof readResult.content === "string"
-        ) {
-          captureUiPrepareHintFromFileRead(
-            runState,
-            readResult.path,
-            readResult.content,
-            toolContext.uiContext,
-          );
-        }
-      }
-
-      const approval = extractApprovalFromToolResult(toolResult.result);
-      if (approval) {
-        runState.approvalPrepared = true;
-        if (runState.postExecuteFeedback) {
-          delete runState.postExecuteFeedback;
-        }
-        emit({
-          type: "approval.required",
-          taskId: task.id,
-          approval,
-        });
-      }
-
-      messages.push(observationMessage(tool.name, toolResult.result));
-
-      if (shouldInjectRuntimeReflection(runState)) {
-        runState.reflectionRounds += 1;
-        const pendingLintFix =
-          Boolean(runState.postExecuteFeedback) && !runState.approvalPrepared;
-        const reflection: AgentReflection = {
-          understanding: runState.approvalPrepared
-            ? "已生成代码变更审批，等待界面接受并写盘（写盘后会自动跑 lint/typecheck）。"
-            : pendingLintFix
-              ? "上一轮写盘后 lint/typecheck 未通过，需用 file.replace.prepare 提交修复审批，不要只反复 file.read。"
-              : "工具已运行，但改代码审批仍未就绪或上一步失败。",
-          blockers: [
-            ...(runState.postExecuteFeedback
-              ? [runState.postExecuteFeedback.summary]
-              : []),
-            ...(runState.lastPrepareError ? [runState.lastPrepareError] : []),
-            ...(runState.lastToolError &&
-            !runState.lastPrepareError &&
-            !runState.postExecuteFeedback
-              ? [runState.lastToolError]
-              : []),
-          ],
-          plannedNext: runState.approvalPrepared
-            ? "可以 action=final，并提示用户在审查区接受变更。"
-            : pendingLintFix
-              ? "对 checkpoint 中列出的出错文件：file.read 确认原文 → file.replace.prepare（search 必须为磁盘原文）。"
-              : listUnreadDisambiguationPaths(runState).length > 0
-                ? `先 file.read 未读候选：${listUnreadDisambiguationPaths(runState).join("、")}，再 prepare。`
-                : runState.prepareHint
-                  ? `立即对 ${runState.prepareHint.path} 调用 file.replace.prepare；search 必须使用 checkpoint 里 Candidate 的 JSON 字符串原文（含空格）。`
-                  : "action=reflect，或 file.read + file.replace.prepare（精确子串）。",
-          source: "runtime",
-        };
-        emitReflection(emit, task.id, reflection);
-        pushReflectionToMessages(messages, reflection, buildRuntimeCheckpoint(runState));
-        emitPlan({ lastAction: "reflect" });
-      }
-      emitPlan({ lastAction: "tool" });
-    } catch (error) {
-      const observation = { error: fallbackSummary(error) };
-      recordToolCall(runState, tool.name, observation, observation.error);
-      emit({
-        type: "tool.completed",
-        taskId: task.id,
-        toolCall: completeToolCall(toolCall, observation.error),
-        result: observation,
-      });
-      messages.push(observationMessage(tool.name, observation));
-
-      runState.reflectionRounds += 1;
-      const reflection: AgentReflection = {
-        understanding: `工具 ${tool.name} 执行失败。`,
-        blockers: [observation.error],
-        plannedNext:
-          "先反思：尝试 file.search、换路径或其他策略，再重试 prepare。",
-        source: "runtime",
-      };
-      emitReflection(emit, task.id, reflection);
-      pushReflectionToMessages(messages, reflection, buildRuntimeCheckpoint(runState));
-      emitPlan({ lastAction: "reflect" });
-    }
+    const runResult = await runAgentLoopToolCall({
+      toolName: decision.tool,
+      args: decision.args ?? {},
+      rationale: decision.thought,
+      patchTextFallback:
+        typeof decision.args?.patch === "string" ? decision.args.patch : undefined,
+      deps: toolRunnerDeps,
+    });
+    toolContext = runResult.toolContext;
+    messages.push(runResult.observationMessage);
+    continue;
   }
 
   if (
     !modelUnavailable &&
-    !runState.approvalPrepared &&
+    !isEditTaskSatisfied(runState) &&
+    isFinalPrepareNudgeEnabled() &&
     shouldRunFinalPrepareNudge(runState, input.uiContext)
   ) {
     const nudgeMessage = buildFinalPrepareNudgeUserMessage(runState);
@@ -1053,33 +1007,17 @@ export async function runAgentLoop(
         emit({ type: "model.delta", taskId: task.id, text: output.content });
         messages.push({ role: "assistant", content: output.content });
         const decision = parseDecision(output.content);
-        if (decision.action === "tool_call" && decision.tool) {
-          const tool = getAgentLoopTool(decision.tool);
-          if (tool && isPrepareToolName(tool.name)) {
-            const toolCall = createToolCall(
-              task.id,
-              tool.name,
-              decision.args ?? {},
-              decision.thought ?? "Final prepare nudge",
-            );
-            emit({ type: "tool.started", taskId: task.id, toolCall });
-            const toolResult = await tool.execute(decision.args ?? {}, toolContext);
-            if (toolResult.context) toolContext = toolResult.context;
-            emit({
-              type: "tool.completed",
-              taskId: task.id,
-              toolCall: completeToolCall(toolCall),
-              result: toolResult.result,
-            });
-            recordToolCall(runState, tool.name, toolResult.result);
-            const approval = extractApprovalFromToolResult(toolResult.result);
-            if (approval) {
-              runState.approvalPrepared = true;
-              emit({ type: "approval.required", taskId: task.id, approval });
-              summary =
-                "末轮 prepare 助推已生成审批。请在界面批准并执行。";
-            }
-            messages.push(observationMessage(tool.name, toolResult.result));
+        if (decision.action === "tool_call" && decision.tool && isPrepareToolName(decision.tool)) {
+          const runResult = await runAgentLoopToolCall({
+            toolName: decision.tool,
+            args: decision.args ?? {},
+            rationale: decision.thought ?? "Final prepare nudge",
+            deps: toolRunnerDeps,
+          });
+          toolContext = runResult.toolContext;
+          messages.push(runResult.observationMessage);
+          if (isEditTaskSatisfied(runState)) {
+            summary = "末轮 prepare 助推已完成。";
           }
         }
       } catch {
@@ -1089,13 +1027,15 @@ export async function runAgentLoop(
     }
   }
 
-  const recoverySummary = await attemptEditRecovery(
-    emit,
-    task.id,
-    runState,
-    workspace.rootPath,
-    input.uiContext,
-  );
+  const recoverySummary = isEditRecoveryEnabled()
+    ? await attemptEditRecovery(
+        emit,
+        task.id,
+        runState,
+        workspace.rootPath,
+        input.uiContext,
+      )
+    : null;
   if (recoverySummary) {
     summary = runState.approvalPrepared
       ? recoverySummary
@@ -1103,14 +1043,14 @@ export async function runAgentLoop(
   } else if (
     runState.likelyEditRequest &&
     !isExplicitReadOnlyRequest(runState.userRequest) &&
-    !runState.approvalPrepared
+    !isEditTaskSatisfied(runState)
   ) {
     if (shouldSkipEditRecoveryForUiPrepare(runState, input.uiContext)) {
-      summary = `${summary}\n已读完推荐 UI 文件并有 exact 行候选，但尚未调用 file.replace.prepare。请重试，并使用 checkpoint 中的 Candidate 作为 search 参数（勿依赖 edit.recovery）。`;
+      summary = `${summary}\n已读完推荐 UI 文件并有 exact 行候选，但尚未写盘。请重试并用 file.replace（Candidate 作 search）。`;
     } else {
-      summary = `${summary}\n未能为本次改代码需求生成审批。请查看事件流中的反思步骤，或补充更具体的目标文件/要改的确切文字后重试。`;
+      summary = `${summary}\n未能完成写盘。请查看事件流或补充更具体的目标文件/确切文字后重试。`;
     }
-  } else if (modelUnavailable && !runState.approvalPrepared) {
+  } else if (modelUnavailable && !isEditTaskSatisfied(runState)) {
     summary = `${summary}\n模型不可用且磁盘恢复未生成审批。请检查 API 配额或 .env.local 配置后重试。`;
   }
 
@@ -1155,13 +1095,4 @@ export async function runAgentLoop(
     events,
     summary,
   };
-}
-
-function extractApprovalFromToolResult(result: unknown) {
-  if (!result || typeof result !== "object") return null;
-  if (!("approval" in result)) return null;
-  const approval = (result as { approval?: unknown }).approval;
-  if (!approval || typeof approval !== "object") return null;
-  if (!("id" in approval) || !("action" in approval)) return null;
-  return approval as Extract<AgentEvent, { type: "approval.required" }>["approval"];
 }

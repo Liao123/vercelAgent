@@ -57,6 +57,7 @@ const msgNoRead = expectGateError(unreadState, () =>
     toolName: "file.replace.prepare",
     requiredReadPaths: [SIDEBAR_PATH],
     runState: unreadState,
+    enforce: true,
   }),
 );
 assert(msgNoRead.includes("file.read"), msgNoRead);
@@ -68,6 +69,7 @@ const msgNoLocate = expectGateError(noLocateState, () =>
     toolName: "file.replace.prepare",
     requiredReadPaths: [SIDEBAR_PATH],
     runState: noLocateState,
+    enforce: true,
   }),
 );
 assert(msgNoLocate.includes("ui.trace_from_page"), msgNoLocate);
@@ -80,6 +82,7 @@ const msgAgentCore = expectGateError(agentCoreState, () =>
     toolName: "file.replace.prepare",
     requiredReadPaths: ["src/agent/core/agent-loop.ts"],
     runState: agentCoreState,
+    enforce: true,
   }),
 );
 assert(msgAgentCore.includes("agent 运行时"), msgAgentCore);
@@ -91,6 +94,7 @@ assertPrepareGate({
   toolName: "file.replace.prepare",
   requiredReadPaths: [SIDEBAR_PATH],
   runState: okState,
+  enforce: true,
 });
 
 const partialDisambigState = createAgentLoopRunState(uiQuery);
@@ -107,6 +111,7 @@ const msgPartialDisambig = expectGateError(partialDisambigState, () =>
     toolName: "file.replace.prepare",
     requiredReadPaths: [SIDEBAR_PATH],
     runState: partialDisambigState,
+    enforce: true,
   }),
 );
 assert(msgPartialDisambig.includes("多候选消歧"), msgPartialDisambig);
@@ -115,5 +120,13 @@ assert(
   hasUiLocationEvidence(["project.index", "file.locate"]),
   "file.locate should count as UI location evidence",
 );
+
+const defaultOffState = createAgentLoopRunState(uiQuery);
+assertPrepareGate({
+  toolName: "file.replace.prepare",
+  requiredReadPaths: [SIDEBAR_PATH],
+  runState: defaultOffState,
+});
+console.log("prepare gate default-off: no throw without file.read");
 
 console.log("validate-prepare-gate: all assertions passed");

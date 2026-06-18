@@ -1,6 +1,4 @@
-/**
- * A087：主循环用尽仍未 prepare 时，追加一轮「仅允许 file.replace.prepare」的模型调用。
- */
+import { isFinalPrepareNudgeEnabled } from "@/agent/core/loop-direct-apply";
 import type { AgentLoopRunState } from "@/agent/core/agent-loop-state";
 import {
   allDisambiguationCandidatesRead,
@@ -23,7 +21,8 @@ export function shouldRunFinalPrepareNudge(
   state: AgentLoopRunState,
   uiContext?: AgentUiContext,
 ): boolean {
-  if (state.approvalPrepared || !state.likelyEditRequest) return false;
+  if (!isFinalPrepareNudgeEnabled()) return false;
+  if (state.editApplied || state.approvalPrepared || !state.likelyEditRequest) return false;
   if (hasAttemptedPrepareTool(state)) return false;
   if (!state.prepareHint || state.prepareHint.suggestedSearchLines.length === 0) {
     return false;

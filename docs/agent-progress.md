@@ -492,6 +492,23 @@ node scripts/golden-path-trial.mjs "D:\案例\aiproject"   # 外部项目改 ind
 | A095 | done | 左栏 strictPrepare 开关对齐 Loop API；`validate:strict-prepare-prefs` |
 | A096–A101 | done | Cursor 差距盘点；去闭环/Agent 设置；右栏审查 Tab |
 | A102–A105 | done | 中栏应用更改；lint UX；Composer @ 联想；`validate:cursor-shell-ui` / `validate:composer-at` |
+| A108 | done | 审查 diff 选区 → `@path#Lx-y`；`validate:editor-selection` |
+| A109 | done | 五层压缩 Snip/Micro/Auto/Reactive/Collapse；`validate:compaction-layers` |
+| A110 | done | `prompts/compact.md` + `loop-system.md` + `.agent-state/MEMORY.md`；`validate:agent-prompts` |
+| A111 | done | 内核八层审计 `docs/agent-kernel-audit.md`； backlog A112–A117 |
+| A112 | done | 直接写盘 `file.replace` / `file.mutation` / `patch.apply`；`validate:direct-apply` |
+| A113 | done | 纠偏瘦身：recovery/nudge 默认关；checkpoint 仅失败时 |
+| A114 | done | 原生 tool loop（OpenAI tools）；`AGENT_LOOP_JSON_PROTOCOL=1` 回退；`validate:native-tool-loop` |
+| A115 | done | 大 tool 结果外置 `.agent-state/tool-results/`；`validate:tool-result-externalize` |
+| A116 | done | collapse 投影调研；结论 defer → `docs/agent-collapse-projection-spike.md` |
+| A117 | done | open tabs 注入：`buildOpenEditorUiContext` + panel 接线；`validate:open-tabs-inject` |
+| A118 | done | soft tool-collapse；`validate:soft-tool-collapse` |
+| A119 | done | 压缩层离线基准 + SSE `layersApplied`；`validate:compaction-benchmark` |
+| A120 | done | micro 层支持原生 `role:tool` |
+| A121 | done | OpenAI tool 名 `encode/decode` + 历史 messages 序列化 |
+| A122 | done | Composer **Ctrl+V 粘贴截图**；`validate:composer-paste-image` |
+| A123 | done | Composer **拖放截图** + 粘贴/拖入/选择成功提示 |
+| A124 | done | 聊天区用户气泡展示附图（`task.referenceImages`） |
 | A025 Electron | in_progress | 桌面壳与选文件夹已接入；CDP/WebView 仍 deferred |
 | 开发闭环 develop | dev only | `?dev=1` 顶部面板，主路径仍为 Loop |
 

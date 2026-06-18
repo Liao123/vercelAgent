@@ -63,11 +63,11 @@ import {
   type ReviewEditorSelection,
 } from "@/lib/review-editor-selection";
 import { workspaceIdsEqual } from "@/lib/workspace-path";
+import { buildOpenEditorUiContext } from "@/agent/indexer/ui-layout-boost";
 import {
   canAutoApplyFileApproval,
   readAutoApplyFileChanges,
 } from "@/lib/agent-file-auto-apply";
-import { readStrictPrepareLoop } from "@/lib/agent-strict-prepare";
 import {
   approvalDetailsPayloadBytes,
   needsApprovalDetailsHydration,
@@ -1205,10 +1205,13 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
             continueThreadMemory && currentThreadId
               ? currentThreadId
               : undefined,
-          uiContext: { layout, activeRoute: "/" },
+          uiContext: buildOpenEditorUiContext({
+            layout,
+            attachedPaths: pathsForLoop,
+            activeEditorPath: reviewEditorSelection?.path ?? null,
+          }),
           attachedPaths: pathsForLoop,
           attachedSelections,
-          strictPrepare: readStrictPrepareLoop(),
         }),
       });
 
@@ -1472,23 +1475,51 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     }
   }
 
+  async function addReferenceImagesFromFiles(
+    files: File[],
+    source: "paste" | "drop" | "pick",
+  ) {
+    const remaining = MAX_REFERENCE_IMAGES - referenceImages.length;
+    if (remaining <= 0) {
+      setError(`最多附加 ${MAX_REFERENCE_IMAGES} 张参考图`);
+      return;
+    }
+    const toAdd = files.slice(0, remaining);
+    const overflow = files.length - toAdd.length;
+    try {
+      const urls = await Promise.all(toAdd.map((file) => readImageFile(file)));
+      if (urls.length === 0) return;
+      setReferenceImages((prev) =>
+        [...prev, ...urls].slice(0, MAX_REFERENCE_IMAGES),
+      );
+      setError(null);
+      const verb =
+        source === "paste"
+          ? "已粘贴"
+          : source === "drop"
+            ? "已拖入"
+            : "已附加";
+      let status = `${verb} ${urls.length} 张截图`;
+      if (overflow > 0) {
+        status += `（已达上限 ${MAX_REFERENCE_IMAGES} 张）`;
+      }
+      setApprovalStatus(status);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "图片读取失败");
+    }
+  }
+
+  async function onPasteReferenceImages(files: File[]) {
+    await addReferenceImagesFromFiles(files, "paste");
+  }
+
   async function onPickReferenceImages(
     e: React.ChangeEvent<HTMLInputElement>,
   ) {
     const files = e.target.files;
     if (!files?.length) return;
-    const remaining = MAX_REFERENCE_IMAGES - referenceImages.length;
-    const toAdd = Array.from(files).slice(0, remaining);
-    try {
-      const urls = await Promise.all(toAdd.map((file) => readImageFile(file)));
-      setReferenceImages((prev) =>
-        [...prev, ...urls].slice(0, MAX_REFERENCE_IMAGES),
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "图片读取失败");
-    } finally {
-      e.target.value = "";
-    }
+    await addReferenceImagesFromFiles(Array.from(files), "pick");
+    e.target.value = "";
   }
 
   function noteRecentPath(filePath: string) {
@@ -2049,6 +2080,10 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
             workspacePicker={workspacePickerProps}
             referenceImages={referenceImages}
             onPickImages={() => referenceFileRef.current?.click()}
+            onPasteReferenceImages={onPasteReferenceImages}
+            onDropReferenceImages={(files) =>
+              addReferenceImagesFromFiles(files, "drop")
+            }
             onRemoveImage={(index) =>
               setReferenceImages((prev) => prev.filter((_, i) => i !== index))
             }

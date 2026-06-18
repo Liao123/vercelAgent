@@ -9,10 +9,6 @@ import {
   readAutoReloopOnLintFail,
   writeAutoReloopOnLintFail,
 } from "@/lib/agent-lint-reloop";
-import {
-  readStrictPrepareLoop,
-  writeStrictPrepareLoop,
-} from "@/lib/agent-strict-prepare";
 
 type AgentAgentSettingsProps = {
   disabled?: boolean;
@@ -57,7 +53,6 @@ export function AgentAgentSettings({
 }: AgentAgentSettingsProps) {
   const [open, setOpen] = useState(false);
   const [autoApply, setAutoApply] = useState(() => readAutoApplyFileChanges());
-  const [strictPrepare, setStrictPrepare] = useState(() => readStrictPrepareLoop());
   const [autoLintReloop, setAutoLintReloop] = useState(() => readAutoReloopOnLintFail());
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -113,16 +108,6 @@ export function AgentAgentSettings({
               onChange={(value) => {
                 writeAutoApplyFileChanges(value);
                 setAutoApply(value);
-                onPrefsChange?.();
-              }}
-            />
-            <SettingRow
-              label="Strict prepare"
-              description="禁用 recovery 兜底，仅用于评测或强约束改码"
-              checked={strictPrepare}
-              onChange={(value) => {
-                writeStrictPrepareLoop(value);
-                setStrictPrepare(value);
                 onPrefsChange?.();
               }}
             />

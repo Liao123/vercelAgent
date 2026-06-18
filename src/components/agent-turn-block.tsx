@@ -19,13 +19,47 @@ type AgentTurnBlockProps = {
   onFixLintAfterWrite?: (verification: PostExecuteVerification) => void;
 };
 
-function UserBubble({ text }: { text: string }) {
+function UserBubble({
+  text,
+  images = [],
+}: {
+  text: string;
+  images?: string[];
+}) {
+  const showPlaceholderOnly =
+    images.length > 0 && text === "请根据附图完成开发任务。";
+
   return (
     <div className="flex justify-end">
-      <div className="max-w-[min(100%,40rem)] rounded-2xl rounded-br-md bg-zinc-100 px-4 py-2.5 dark:bg-zinc-800/90">
-        <p className="whitespace-pre-wrap break-words text-[14px] leading-[1.6] text-zinc-900 dark:text-zinc-100">
-          {text}
-        </p>
+      <div className="max-w-[min(100%,40rem)] space-y-2 rounded-2xl rounded-br-md bg-zinc-100 px-4 py-2.5 dark:bg-zinc-800/90">
+        {!showPlaceholderOnly && text.trim().length > 0 && (
+          <p className="whitespace-pre-wrap break-words text-[14px] leading-[1.6] text-zinc-900 dark:text-zinc-100">
+            {text}
+          </p>
+        )}
+        {images.length > 0 && (
+          <div
+            className={`flex flex-wrap gap-2 ${!showPlaceholderOnly && text.trim().length > 0 ? "pt-0.5" : ""}`}
+          >
+            {images.map((src, index) => (
+              <a
+                key={`${index}-${src.slice(0, 32)}`}
+                href={src}
+                target="_blank"
+                rel="noreferrer"
+                className="block overflow-hidden rounded-lg border border-zinc-200/80 dark:border-zinc-600/80"
+                title="点击查看大图"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={src}
+                  alt={`附图 ${index + 1}`}
+                  className="max-h-48 max-w-full object-contain"
+                />
+              </a>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -105,7 +139,7 @@ export function AgentTurnBlock({
 
   return (
     <article className="space-y-4 pb-8">
-      <UserBubble text={turn.userRequest} />
+      <UserBubble text={turn.userRequest} images={turn.referenceImages} />
 
       <div className="space-y-3">
         {(hasTimeline || liveThinking) && (

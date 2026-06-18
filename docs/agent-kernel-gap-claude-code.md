@@ -7,7 +7,8 @@
 - 本地 clone：`D:\案例\claude-code-claude`（`src/services/compact/*`、`src/services/compact/prompt.ts`）
 - 博文解读：[Claude Code 源码分析 · 五层压缩](https://duoblog.com/blog/claude-code/source-code-analysis#%E4%B8%8A%E4%B8%8B%E6%96%87%E5%8E%8B%E7%BC%A9%E4%BA%94%E5%B1%82%E9%80%92%E8%BF%9B%E7%AD%96%E7%95%A5)
 
-> 用途：指导 vec-next **内核**演进（压缩、记忆、系统提示），不照搬泄露源码。
+> 用途：指导 vec-next **内核**演进（压缩、记忆、系统提示），不照搬泄露源码。  
+> **完整八层审计**（控制循环、协议、纠偏、写盘）：见 [`agent-kernel-audit.md`](agent-kernel-audit.md)。
 
 ---
 
@@ -45,7 +46,7 @@
 | 用户偏好 | 设置 + MEMORY.md | Composer ⚙、`agent-defaults.md` |
 | 会话 | transcript | Thread `[THREAD_MEMORY]` |
 | 任务滚动记忆 | compact boundary | `[COMPACTED_MEMORY]` + pinned facts/snippets |
-| 跨会话偏好 | MEMORY.md ≤25KB | ⏳ 待做：`.agent-state/MEMORY.md` |
+| 跨会话偏好 | MEMORY.md ≤25KB | ✅ `.agent-state/MEMORY.md` 注入 system 尾部（A110） |
 | 可压 transcript | 最低优先级 | Loop middle/tail |
 
 ---
@@ -54,15 +55,17 @@
 
 | Claude Code | vec-next |
 |-------------|----------|
-| `getCompactPrompt` 专用压缩 prompt（analysis + summary 块） | `runSemanticCompact` 简短 merge 指令 |
-| 主系统 prompt 极大、按功能拆分 | `createSystemPrompt` 单文件长字符串（UI/prepare 规则较全） |
-| NO_TOOLS_PREAMBLE 防 compact 时调工具 | ❌ 未单独拆 compact 子 prompt |
+| `getCompactPrompt` 专用压缩 prompt（analysis + summary 块） | ✅ `src/agent/prompts/compact.md` + `formatCompactModelOutput` |
+| 主系统 prompt 极大、按功能拆分 | ✅ `src/agent/prompts/loop-system.md`（`validate:agent-prompts`） |
+| NO_TOOLS_PREAMBLE 防 compact 时调工具 | ✅ compact.md 首部 CRITICAL 禁工具 |
 
-**下一步（A110）**：
+**A110（2026-06-17）已完成**：
 
-1. 抽出 `src/agent/prompts/compact.md`（参考 Claude `prompt.ts` 的 analysis/summary 结构）
-2. 抽出 `src/agent/prompts/loop-system.md`，`validate:agent` 断言关键句
-3. 加载工作区 `MEMORY.md`（若存在）注入 system 尾部
+1. `src/agent/prompts/compact.md` + `compact-prompt.ts`
+2. `src/agent/prompts/loop-system.md` + `create-loop-system-prompt.ts`
+3. `.agent-state/MEMORY.md` 跨会话偏好（≤25KB）注入 system
+
+验证：`npm run validate:agent-prompts`
 
 ---
 

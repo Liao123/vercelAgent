@@ -55,6 +55,26 @@ async function main(): Promise<void> {
     /Older tool result cleared/,
   );
 
+  const nativeMiddle: AgentMessage[] = [
+    {
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: "call_1", type: "function", function: { name: "file.read", arguments: "{}" } }],
+    },
+    {
+      role: "tool",
+      tool_call_id: "call_1",
+      content: `Observation from file.read:\n${JSON.stringify({
+        path: "src/a.ts",
+        content: "x".repeat(8_000),
+      })}`,
+    },
+  ];
+  const nativeMicro = microCompactMiddleObservations(nativeMiddle);
+  assert.equal(nativeMicro.compactedCount, 1);
+  assert.equal(nativeMicro.messages[1]?.role, "tool");
+  assert.match(String(nativeMicro.messages[1]?.content), /Older tool result cleared/);
+
   const messages: AgentMessage[] = [
     { role: "system", content: "agent" },
     { role: "user", content: "改侧栏加号" },
