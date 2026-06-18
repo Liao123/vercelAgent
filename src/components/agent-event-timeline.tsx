@@ -342,6 +342,7 @@ function renderAgentEvent(
         changedFileCount: event.changedFileCount,
         estimatedTokensBefore: event.estimatedTokensBefore,
         estimatedTokensAfter: event.estimatedTokensAfter,
+        layersApplied: event.layersApplied,
       });
       return (
         <CollapsibleEventRow

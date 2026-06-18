@@ -6,7 +6,7 @@
 
 ---
 
-## 内核状态（A112–A126 done）
+## 内核状态（A112–A127 done）
 
 | 项 | 说明 |
 | --- | --- |
@@ -23,6 +23,8 @@
 | **A124** | 发送后聊天区用户气泡展示附图 |
 | **A125** | 工具观测墓碑 stub + 用户锚点 |
 | **A126** | 爆发段感知 tail（`AGENT_LOOP_BURST_TAIL_MIN` / `AGENT_LOOP_BURST_TAIL=0` 关闭） |
+| **A127** | UI 展示压缩层 `layersApplied`（时间线 + 底部状态） |
+| **A127** | UI 展示压缩层 `layersApplied`；`validate:compaction-ui` |
 
 **产品**：对齐 Cursor 剪贴板附图；最多 4 张，走现有 `referenceImages` + vision 模型链路。
 

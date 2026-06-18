@@ -1,5 +1,10 @@
 /** 压缩方式等 UI 文案（中文）。 */
 
+export function formatCompactionLayers(layers?: string[] | null): string | null {
+  if (!layers?.length) return null;
+  return layers.join(", ");
+}
+
 export function formatCompactMethod(method?: string | null): string {
   if (method === "semantic") return "语义压缩";
   if (method === "deterministic") return "确定性压缩";
@@ -14,10 +19,13 @@ export function formatCompactionMeta(input: {
   changedFileCount?: number | null;
   estimatedTokensBefore?: number | null;
   estimatedTokensAfter?: number | null;
+  layersApplied?: string[] | null;
 }): string {
   const parts: string[] = [];
   if (input.method) parts.push(formatCompactMethod(input.method));
   if (input.round != null) parts.push(`第 ${input.round} 轮`);
+  const layers = formatCompactionLayers(input.layersApplied);
+  if (layers) parts.push(`layers ${layers}`);
   if (input.pinnedApprovalCount != null && input.pinnedApprovalCount > 0) {
     parts.push(`${input.pinnedApprovalCount} 个审批 ID`);
   }

@@ -511,6 +511,7 @@ node scripts/golden-path-trial.mjs "D:\案例\aiproject"   # 外部项目改 ind
 | A124 | done | 聊天区用户气泡展示附图（`task.referenceImages`） |
 | A125 | done | 工具观测墓碑 stub + 用户锚点；`validate:tombstone-stub` |
 | A126 | done | 爆发段感知 tail；`validate:burst-tail` |
+| A127 | done | UI 展示压缩 layers；`validate:compaction-ui` |
 | A025 Electron | in_progress | 桌面壳与选文件夹已接入；CDP/WebView 仍 deferred |
 | 开发闭环 develop | dev only | `?dev=1` 顶部面板，主路径仍为 Loop |
 

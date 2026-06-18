@@ -9,7 +9,7 @@ import {
   useState,
 } from "react";
 import { readImageFile } from "@/lib/read-image-file";
-import { formatCompactMethod } from "@/lib/compaction-labels";
+import { formatCompactMethod, formatCompactionLayers } from "@/lib/compaction-labels";
 import { AgentEventTimeline } from "@/components/agent-event-timeline";
 import { AgentReviewPanel } from "@/components/agent-review-panel";
 import { AgentComposer } from "@/components/agent-composer";
@@ -1289,8 +1289,9 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
             }
           }
           if (parsed.type === "context.compacted") {
+            const layers = formatCompactionLayers(parsed.layersApplied);
             setApprovalStatus(
-              `上下文已压缩（第 ${parsed.round ?? "?"} 轮 · ${formatCompactMethod(parsed.method)}）`,
+              `上下文已压缩（第 ${parsed.round ?? "?"} 轮 · ${formatCompactMethod(parsed.method)}${layers ? ` · ${layers}` : ""}）`,
             );
           }
           if (parsed.type === "task.failed") {
