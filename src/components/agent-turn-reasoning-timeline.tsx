@@ -44,6 +44,7 @@ const TOOL_LABELS: Record<string, string> = {
   "file.replace.prepare": "准备文本替换",
   "git.mutation.prepare": "准备 Git 操作",
   "shell.command.prepare": "准备验证脚本",
+  "shell.run.prepare": "准备终端命令",
   "patch.prepare": "准备 Patch",
 };
 

@@ -78,6 +78,8 @@ const DETAIL_TYPES = new Set<AgentEvent["type"]>([
 
 const HIGHLIGHT_TYPES = new Set<AgentEvent["type"]>([
   "approval.required",
+  "approval.executed",
+  "assistant.notice",
   "file.changed",
   "verification.completed",
   "task.completed",
@@ -131,6 +133,18 @@ function chipFromApproval(approval: ApprovalRequest): AgentChangeChip[] {
         approvalId: approval.id,
         tone: "pending" as const,
       }));
+  }
+
+  if (details.kind === "shell_command") {
+    return [
+      {
+        id: approval.id,
+        path: details.preview.command,
+        label: "命令待审批",
+        approvalId: approval.id,
+        tone: "pending",
+      },
+    ];
   }
 
   return [

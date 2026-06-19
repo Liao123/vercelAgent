@@ -8,3 +8,4 @@ export * from "@/agent/browser/browser-snapshot";
 export * from "@/agent/browser/browser-query";
 export * from "@/agent/browser/browser-har";
 export * from "@/agent/browser/browser-cdp-guest";
+export * from "@/agent/browser/browser-tabs";

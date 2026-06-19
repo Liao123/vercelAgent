@@ -4,9 +4,11 @@ import {
   computePlaybookProgress,
   findCircuitBreaker,
   isBrowserDocAnalysisRequest,
+  isCapabilityExtensionRequest,
+  isDesignReplicateRequest,
   resolveTaskPlaybook,
 } from "../src/agent/core/task-playbooks";
-import { GOLDEN_UI_QUERY } from "./golden-path-fixtures";
+import { GOLDEN_UI_QUERY, GOLDEN_DESIGN_REPLICATE_QUERY } from "./golden-path-fixtures";
 import { createAgentLoopRunState } from "../src/agent/core/agent-loop-state";
 
 async function read(rel: string): Promise<string> {
@@ -32,6 +34,24 @@ async function main(): Promise<void> {
   assert.ok(isBrowserDocAnalysisRequest(docRequest), "browser doc detect");
   const docPb = resolveTaskPlaybook(docRequest);
   assert.equal(docPb.id, "browser-doc");
+
+  assert.ok(
+    isDesignReplicateRequest(GOLDEN_DESIGN_REPLICATE_QUERY),
+    "design replicate detect",
+  );
+  const replicatePb = resolveTaskPlaybook(GOLDEN_DESIGN_REPLICATE_QUERY);
+  assert.equal(replicatePb.id, "design-replicate");
+
+  assert.ok(
+    isCapabilityExtensionRequest(
+      "给 Agent 加 shell.run 终端能力，改 src/agent/core/agent-loop-tools.ts",
+    ),
+    "capability extension detect",
+  );
+  const extPb = resolveTaskPlaybook(
+    "扩展 Agent 命令行能力，对齐 Cursor，改 agent-loop-tools 并跑 validate:shell-run",
+  );
+  assert.equal(extPb.id, "capability-extension");
 
   const uiPb = resolveTaskPlaybook(GOLDEN_UI_QUERY);
   assert.equal(uiPb.id, "ui-visible-edit");

@@ -47,6 +47,7 @@ function toolLabel(name: string): string {
     "file.replace.prepare": "准备文本替换",
     "git.mutation.prepare": "准备 Git 操作",
     "shell.command.prepare": "准备 npm 脚本",
+    "shell.run.prepare": "准备终端命令",
     "patch.prepare": "准备 Patch",
   };
   return labels[name] ?? name;
@@ -438,12 +439,16 @@ function renderAgentEvent(
         event.approval.details?.kind === "patch_apply"
           ? formatPatchPreviewSummary(event.approval.details.preview)
           : null;
+      const shellLine =
+        event.approval.details?.kind === "shell_command"
+          ? event.approval.details.preview.command
+          : null;
       return (
         <EventRow
           key={`${event.type}-${index}`}
           tone="warn"
           title={`待审批 · ${event.approval.title}`}
-          body={[event.approval.reason, patchLine]
+          body={[event.approval.reason, shellLine ? `命令：${shellLine}` : null, patchLine]
             .filter(Boolean)
             .join("\n")}
           showDebug={showDebug}
@@ -454,6 +459,24 @@ function renderAgentEvent(
         />
       );
     }
+    case "approval.executed":
+      return (
+        <CollapsibleEventRow
+          key={`${event.type}-${index}`}
+          tone={event.status === "succeeded" ? "success" : "error"}
+          title={
+            event.status === "succeeded"
+              ? `命令已执行 · ${event.command}`
+              : `命令失败 · ${event.command}`
+          }
+          summary={event.summary ?? (event.status === "succeeded" ? "完成" : "失败")}
+          detail={event.output?.slice(0, 2000)}
+          showDebug={showDebug}
+          debugJson={event}
+          defaultOpen={event.status === "failed"}
+          compact={compact}
+        />
+      );
     case "verification.completed":
       return (
         <CollapsibleEventRow
@@ -539,6 +562,10 @@ type AgentEventTimelineProps = {
   onApplyApproval?: (approvalId: string) => void;
   onRejectApproval?: (approvalId: string) => void;
   applyApprovalBusy?: boolean;
+  pendingCommandApprovalIds?: Set<string>;
+  onApproveCommand?: (approvalId: string) => void;
+  onRejectCommand?: (approvalId: string) => void;
+  commandApprovalBusy?: boolean;
   /** 中栏变更卡是否显示接受/拒绝（三栏下 false，与 Cursor 一致：改在审查/自动写盘） */
   showInlineFileChangeActions?: boolean;
   onFixLintAfterWrite?: (
@@ -559,6 +586,10 @@ export function AgentEventTimeline({
   onApplyApproval,
   onRejectApproval,
   applyApprovalBusy = false,
+  pendingCommandApprovalIds,
+  onApproveCommand,
+  onRejectCommand,
+  commandApprovalBusy = false,
   showInlineFileChangeActions = true,
   onFixLintAfterWrite,
 }: AgentEventTimelineProps) {
@@ -663,6 +694,10 @@ export function AgentEventTimeline({
                   onApplyApproval={onApplyApproval}
                   onRejectApproval={onRejectApproval}
                   applyApprovalBusy={applyApprovalBusy}
+                  pendingCommandApprovalIds={pendingCommandApprovalIds}
+                  onApproveCommand={onApproveCommand}
+                  onRejectCommand={onRejectCommand}
+                  commandApprovalBusy={commandApprovalBusy}
                   showInlineFileChangeActions={showInlineFileChangeActions}
                   onFixLintAfterWrite={onFixLintAfterWrite}
                 />

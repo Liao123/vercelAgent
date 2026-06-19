@@ -358,7 +358,8 @@ export function shapeToolResultForObservation(
 
   if (
     toolName === "git.mutation.prepare" ||
-    toolName === "shell.command.prepare"
+    toolName === "shell.command.prepare" ||
+    toolName === "shell.run.prepare"
   ) {
     const approval = record.approval;
     if (approval && typeof approval === "object") {
@@ -1043,9 +1044,7 @@ export async function compactAgentLoopMessages(input: {
     memoryContent = collapseMemory;
   }
 
-  if (method !== "none") {
-    layersApplied.push("auto");
-  }
+  layersApplied.push("auto");
 
   return {
     messages: nextMessages,

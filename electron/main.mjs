@@ -108,7 +108,25 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  setupBrowserCdp();
+  setupBrowserCdp(() => mainWindow);
+  ipcMain.handle("desktop:open-external-url", async (_event, url) => {
+    if (typeof url !== "string" || !url.trim()) {
+      return { ok: false, error: "url is required." };
+    }
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        return { ok: false, error: "Only http(s) URLs are allowed." };
+      }
+      await shell.openExternal(url);
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : "打开链接失败。",
+      };
+    }
+  });
   ipcMain.handle("workspace:pick-folder", pickWorkspaceFolder);
   ipcMain.handle("desktop:open-config-dir", async (_event, targetDir) => {
     const dir =

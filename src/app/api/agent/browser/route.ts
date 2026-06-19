@@ -9,18 +9,35 @@ import {
   getPersistedBrowserTarget,
   openBrowserUrl,
 } from "@/agent/browser";
+import {
+  getBrowserTabsState,
+  getActiveBrowserTab,
+  tabToBrowserTarget,
+} from "@/agent/browser/browser-tabs";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  const state = await getBrowserTabsState();
+  const active = await getActiveBrowserTab();
   return Response.json({
-    target: await getPersistedBrowserTarget(),
+    tabs: state.tabs,
+    activeTabId: state.activeTabId,
+    version: state.version,
+    target: active?.url
+      ? tabToBrowserTarget(active, state.version)
+      : await getPersistedBrowserTarget(),
     snapshot: await getPersistedBrowserPageSnapshot(),
   });
 }
 
 export async function POST(request: Request) {
-  let body: { url?: string; requestedBy?: "user" | "agent" | "system" };
+  let body: {
+    url?: string;
+    requestedBy?: "user" | "agent" | "system";
+    newTab?: boolean;
+    tabId?: string;
+  };
   try {
     body = await request.json();
   } catch {
@@ -35,8 +52,16 @@ export async function POST(request: Request) {
     const target = await openBrowserUrl({
       url: body.url,
       requestedBy: body.requestedBy ?? "user",
+      newTab: body.newTab,
+      tabId: body.tabId,
     });
-    return Response.json({ target });
+    const state = await getBrowserTabsState();
+    return Response.json({
+      target,
+      tabs: state.tabs,
+      activeTabId: state.activeTabId,
+      version: state.version,
+    });
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : "Failed to open URL." },

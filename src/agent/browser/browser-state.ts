@@ -21,6 +21,8 @@ export type BrowserTarget = {
 export type OpenBrowserUrlInput = {
   url: string;
   requestedBy?: BrowserRequestedBy;
+  newTab?: boolean;
+  tabId?: string;
 };
 
 let browserTarget: BrowserTarget | null = null;
@@ -90,29 +92,36 @@ async function writeBrowserTargetToDisk(target: BrowserTarget): Promise<void> {
 }
 
 export async function getPersistedBrowserTarget(): Promise<BrowserTarget | null> {
-  const persisted = await readBrowserTargetFromDisk();
-  if (persisted) {
-    browserTarget = persisted;
-    browserVersion = Math.max(browserVersion, persisted.version);
-  }
-
-  return browserTarget;
+  const { getBrowserTabsState, getActiveBrowserTab, tabToBrowserTarget } =
+    await import("@/agent/browser/browser-tabs");
+  const state = await getBrowserTabsState();
+  const tab = await getActiveBrowserTab();
+  if (!tab?.url) return null;
+  return tabToBrowserTarget(tab, state.version);
 }
 
 export async function openBrowserUrl(
-  input: OpenBrowserUrlInput,
+  input: OpenBrowserUrlInput & { newTab?: boolean; tabId?: string },
 ): Promise<BrowserTarget> {
-  const now = nowIso();
-  const previous = await getPersistedBrowserTarget();
-  const nextTarget: BrowserTarget = {
-    url: normalizeBrowserUrl(input.url),
-    requestedBy: input.requestedBy ?? "user",
-    openedAt: previous?.openedAt ?? now,
-    updatedAt: now,
-    version: ++browserVersion,
-  };
+  const { openBrowserUrlInTabs } = await import("@/agent/browser/browser-tabs");
+  const { tab, state } = await openBrowserUrlInTabs({
+    url: input.url,
+    requestedBy: input.requestedBy,
+    newTab: input.newTab,
+    tabId: input.tabId,
+  });
+  return tabToBrowserTargetFromTab(tab, state.version);
+}
 
-  browserTarget = nextTarget;
-  await writeBrowserTargetToDisk(nextTarget);
-  return nextTarget;
+function tabToBrowserTargetFromTab(
+  tab: import("@/agent/browser/browser-tabs").BrowserTab,
+  stateVersion: number,
+): BrowserTarget {
+  return {
+    url: tab.url,
+    requestedBy: tab.requestedBy,
+    openedAt: tab.openedAt,
+    updatedAt: tab.updatedAt,
+    version: stateVersion,
+  };
 }

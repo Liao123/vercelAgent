@@ -1,9 +1,14 @@
 import { persistBrowserCdpGuest } from "@/agent/browser/browser-cdp-guest";
+import { setBrowserTabGuest } from "@/agent/browser/browser-tabs";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
-  let body: { guestWebContentsId?: number; browserVersion?: number };
+  let body: {
+    guestWebContentsId?: number;
+    browserVersion?: number;
+    tabId?: string;
+  };
   try {
     body = await request.json();
   } catch {
@@ -19,5 +24,10 @@ export async function POST(request: Request) {
     guestWebContentsId: guestId,
     browserVersion: body.browserVersion,
   });
+
+  if (body.tabId) {
+    await setBrowserTabGuest(body.tabId, guestId);
+  }
+
   return Response.json({ ok: true, guest: state });
 }

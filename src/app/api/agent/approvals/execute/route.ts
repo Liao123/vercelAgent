@@ -11,7 +11,7 @@ import {
 import {
   applyFileMutation,
   applyGitMutation,
-  applyShellCommand,
+  applyShellOperation,
   applyUnifiedPatch,
   describePatchFiles,
   type AppliedFileMutation,
@@ -177,22 +177,40 @@ export async function POST(request: Request) {
     }
 
     if (approval.details.kind === "shell_command") {
-      const result = await applyShellCommand({
+      const result = await applyShellOperation({
         rootPath: workspace.rootPath,
         taskId: approval.taskId,
-        script: approval.details.operation.script,
+        operation: approval.details.operation,
         approvalId: approval.id,
       });
+      const shellOutput = truncateOutput(result.result.output);
       const updatedApproval = recordApprovalExecution(approval.id, {
-        status: "succeeded",
-        summary: `Ran ${result.preview.command}.`,
+        status: result.result.success ? "succeeded" : "failed",
+        summary: result.result.success
+          ? `Ran ${result.preview.command}.`
+          : `Command failed: ${result.preview.command}`,
+        error: result.result.success
+          ? undefined
+          : truncateOutput(
+              shellOutput.split("\n").slice(-8).join("\n") || "Command failed.",
+            ),
         result: {
           kind: "shell_command",
           command: result.result.command,
           success: result.result.success,
-          output: truncateOutput(result.result.output),
+          output: shellOutput,
         },
       });
+      if (!result.result.success) {
+        return Response.json(
+          {
+            error: updatedApproval.execution?.error ?? "Command failed.",
+            approval: updatedApproval,
+            result,
+          },
+          { status: 400 },
+        );
+      }
       return Response.json({ approval: updatedApproval, result });
     }
 

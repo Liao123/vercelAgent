@@ -6,6 +6,12 @@
 export const GOLDEN_UI_QUERY =
   "去掉项目行右侧的加号，侧栏新建会话按钮不要显示加号";
 
+/** A024：demo 页面复刻黄金路径 fixture */
+export const GOLDEN_DESIGN_REPLICATE_QUERY =
+  "照着 https://example.com 复刻一个 landing 页面到 src/app/demo-replicate/page.tsx";
+
+export const DEMO_REPLICATE_PAGE_PATH = "src/app/demo-replicate/page.tsx";
+
 export const SIDEBAR_PATH = "src/components/agent-session-sidebar.tsx";
 export const PANEL_PATH = "src/components/agent-panel.tsx";
 export const COMPOSER_PATH = "src/components/agent-composer.tsx";

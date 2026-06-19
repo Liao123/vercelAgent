@@ -33,4 +33,15 @@ contextBridge.exposeInMainWorld("vecDesktop", {
   typeBrowserSelector: (guestWebContentsId, selector, text) =>
     ipcRenderer.invoke("browser-cdp:type", guestWebContentsId, selector, text),
   getCdpBridgeUrl: () => ipcRenderer.invoke("browser-cdp:bridge-url"),
+  openExternalUrl: (url) => ipcRenderer.invoke("desktop:open-external-url", url),
+  onBrowserGuestOpenUrl: (callback) => {
+    if (typeof callback !== "function") return () => {};
+    const handler = (_event, url) => {
+      if (typeof url === "string" && url.length > 0) callback(url);
+    };
+    ipcRenderer.on("browser:guest-open-url", handler);
+    return () => {
+      ipcRenderer.removeListener("browser:guest-open-url", handler);
+    };
+  },
 });

@@ -12,6 +12,7 @@ import type { BrowserQueryMatch } from "@/agent/browser/browser-query";
 import {
   captureBrowserScreenshotCdp,
   fetchBrowserNetworkCdp,
+  openExternalUrl,
   registerBrowserGuest,
 } from "@/lib/desktop-bridge";
 import { isIgnorableWebviewLoadError } from "@/lib/browser-webview-errors";
@@ -36,7 +37,10 @@ export type BrowserWebviewHandle = {
 type BrowserWebviewProps = {
   url: string;
   version: number;
+  tabId?: string;
   embedded?: boolean;
+  /** 为 false 时禁用指针事件（离屏 Agent 预览不挡住其它面板） */
+  interactive?: boolean;
   onSnapshot?: (meta?: { cdp: boolean }) => void;
   onFail?: (reason?: string) => void;
   onNavigate?: (url: string) => void;
@@ -44,6 +48,8 @@ type BrowserWebviewProps = {
     canGoBack: boolean;
     canGoForward: boolean;
   }) => void;
+  /** target=_blank / window.open：由壳层决定新标签或系统浏览器，避免 Electron 弹窗 */
+  onOpenUrl?: (url: string) => void;
 };
 
 type WebviewElement = HTMLElement & {
@@ -74,7 +80,16 @@ type FailLoadEvent = Event & {
   validatedURL?: string;
 };
 
+type WebviewNewWindowEvent = Event & {
+  url?: string;
+  disposition?: string;
+  preventDefault?: () => void;
+};
+
 const QUERY_POLL_MS = 2500;
+
+const DESKTOP_CHROME_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 async function reportSnapshot(payload: {
   url: string;
@@ -192,16 +207,28 @@ function safeWebviewAction(
   }
 }
 
+function tryFocusWebview(wv: WebviewElement | null) {
+  if (!wv) return;
+  try {
+    wv.focus?.();
+  } catch {
+    /* dom-ready 前 Electron 会抛错，忽略 */
+  }
+}
+
 export const BrowserWebview = forwardRef<BrowserWebviewHandle, BrowserWebviewProps>(
   function BrowserWebview(
     {
       url,
       version,
+      tabId,
       embedded = false,
+      interactive = true,
       onSnapshot,
       onFail,
       onNavigate,
       onNavStateChange,
+      onOpenUrl,
     },
     ref,
   ) {
@@ -240,6 +267,11 @@ export const BrowserWebview = forwardRef<BrowserWebviewHandle, BrowserWebviewPro
     }));
 
     useEffect(() => {
+      if (!interactive || !domReadyRef.current) return;
+      tryFocusWebview(webviewRef.current as WebviewElement | null);
+    }, [interactive]);
+
+    useEffect(() => {
       domReadyRef.current = false;
       consoleBufferRef.current = [];
       loadErrorRef.current = null;
@@ -259,7 +291,8 @@ export const BrowserWebview = forwardRef<BrowserWebviewHandle, BrowserWebviewPro
         let usedCdp = false;
         try {
           const guestId = guestIdFromWebview(wv);
-          if (guestId != null) {
+          // 用户浏览时不挂 CDP debugger，避免部分站点（如百度）检测后禁用点击
+          if (guestId != null && !interactive) {
             await registerBrowserGuest(guestId);
             void fetch("/api/agent/browser/cdp/guest", {
               method: "POST",
@@ -267,6 +300,7 @@ export const BrowserWebview = forwardRef<BrowserWebviewHandle, BrowserWebviewPro
               body: JSON.stringify({
                 guestWebContentsId: guestId,
                 browserVersion: version,
+                tabId,
               }),
             });
           }
@@ -305,7 +339,7 @@ export const BrowserWebview = forwardRef<BrowserWebviewHandle, BrowserWebviewPro
           let screenshotWidth: number | undefined;
           let screenshotHeight: number | undefined;
 
-          if (guestId != null) {
+          if (guestId != null && !interactive) {
             const cdpJpeg = await captureBrowserScreenshotCdp(guestId);
             if (cdpJpeg) {
               usedCdp = true;
@@ -321,7 +355,9 @@ export const BrowserWebview = forwardRef<BrowserWebviewHandle, BrowserWebviewPro
           }
 
           const cdpNetwork =
-            guestId != null ? await fetchBrowserNetworkCdp(guestId) : [];
+            guestId != null && !interactive
+              ? await fetchBrowserNetworkCdp(guestId)
+              : [];
           const harEntries = [
             ...(Array.isArray(injectedHar) ? injectedHar : []),
             ...cdpNetwork,
@@ -367,6 +403,9 @@ export const BrowserWebview = forwardRef<BrowserWebviewHandle, BrowserWebviewPro
       const onDomReady = () => {
         domReadyRef.current = true;
         notifyNavState();
+        if (interactive) {
+          tryFocusWebview(node as WebviewElement);
+        }
         void capture();
       };
 
@@ -393,6 +432,25 @@ export const BrowserWebview = forwardRef<BrowserWebviewHandle, BrowserWebviewPro
         onFail?.(reason);
       };
 
+      const onNewWindow = (event: Event) => {
+        const detail = event as WebviewNewWindowEvent;
+        if (typeof detail.preventDefault === "function") {
+          detail.preventDefault();
+        }
+        const targetUrl = detail.url?.trim();
+        if (!targetUrl) return;
+        if (onOpenUrl) {
+          onOpenUrl(targetUrl);
+          return;
+        }
+        void openExternalUrl(targetUrl).then((ok) => {
+          if (!ok) {
+            window.open(targetUrl, "_blank", "noopener,noreferrer");
+          }
+        });
+      };
+
+      node.addEventListener("new-window", onNewWindow as EventListener);
       node.addEventListener("dom-ready", onDomReady);
       node.addEventListener("did-start-loading", onDidStartLoading);
       node.addEventListener("did-navigate", onDidNavigate);
@@ -400,13 +458,16 @@ export const BrowserWebview = forwardRef<BrowserWebviewHandle, BrowserWebviewPro
       node.addEventListener("did-fail-load", onDidFailLoad);
       node.addEventListener("console-message", onConsoleMessage as EventListener);
 
-      const queryTimer = window.setInterval(() => {
-        const wv = node as WebviewElement;
-        void runPendingQuery(wv, url);
-      }, QUERY_POLL_MS);
+      const queryTimer = interactive
+        ? window.setInterval(() => {
+            const wv = node as WebviewElement;
+            void runPendingQuery(wv, url);
+          }, QUERY_POLL_MS)
+        : null;
 
       return () => {
-        window.clearInterval(queryTimer);
+        if (queryTimer != null) window.clearInterval(queryTimer);
+        node.removeEventListener("new-window", onNewWindow as EventListener);
         node.removeEventListener("dom-ready", onDomReady);
         node.removeEventListener("did-start-loading", onDidStartLoading);
         node.removeEventListener("did-navigate", onDidNavigate);
@@ -417,17 +478,32 @@ export const BrowserWebview = forwardRef<BrowserWebviewHandle, BrowserWebviewPro
           onConsoleMessage as EventListener,
         );
       };
-    }, [url, version, onSnapshot, onFail, onNavigate, onNavStateChange]);
+    }, [url, version, interactive, onSnapshot, onFail, onNavigate, onNavStateChange, onOpenUrl]);
 
     return (
-      <webview
-        key={version}
-        ref={webviewRef as RefObject<HTMLElement>}
-        src={url}
-        allowpopups=""
-        className="h-full w-full bg-white"
-        style={{ display: "inline-flex", width: "100%", height: "100%" }}
-      />
+      <div
+        className="h-full w-full"
+        onPointerDown={() => {
+          if (interactive && domReadyRef.current) {
+            tryFocusWebview(webviewRef.current as WebviewElement | null);
+          }
+        }}
+      >
+        <webview
+          key={version}
+          ref={webviewRef as RefObject<HTMLElement>}
+          src={url}
+          {...({ allowpopups: "" } as Record<string, unknown>)}
+          useragent={DESKTOP_CHROME_UA}
+          className="h-full w-full bg-white"
+          style={{
+            display: "inline-flex",
+            width: "100%",
+            height: "100%",
+            pointerEvents: interactive ? "auto" : "none",
+          }}
+        />
+      </div>
     );
   },
 );

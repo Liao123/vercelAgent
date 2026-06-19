@@ -82,6 +82,45 @@ async function bridgeGet(
   return data;
 }
 
+export async function cdpActivateGuest(guestId: number): Promise<BridgeJson> {
+  return bridgePost("/activate", { guestId });
+}
+
+export async function cdpListGuestPages(): Promise<{
+  pages: Array<{
+    guestId: number;
+    active: boolean;
+    url: string | null;
+    title: string | null;
+  }>;
+  activeGuestId: number | null;
+}> {
+  const base = await getCdpBridgeBaseUrl();
+  if (!base) {
+    throw new Error(`${DESKTOP_HINT}（CDP 桥未启动）`);
+  }
+  const res = await fetch(`${base}/pages`, {
+    signal: AbortSignal.timeout(10_000),
+  });
+  const data = (await res.json().catch(() => ({}))) as BridgeJson;
+  if (!res.ok || data.ok === false) {
+    throw new Error(
+      typeof data.error === "string" ? data.error : "CDP 桥读取 pages 失败",
+    );
+  }
+  const pages = Array.isArray(data.pages) ? data.pages : [];
+  return {
+    pages: pages as Array<{
+      guestId: number;
+      active: boolean;
+      url: string | null;
+      title: string | null;
+    }>,
+    activeGuestId:
+      typeof data.activeGuestId === "number" ? data.activeGuestId : null,
+  };
+}
+
 export async function cdpSend(
   method: string,
   params?: Record<string, unknown>,
@@ -193,4 +232,16 @@ export async function cdpEvaluate(expression: string): Promise<unknown> {
   if (payload?.result?.value !== undefined) return payload.result.value;
   if (payload?.value !== undefined) return payload.value;
   return raw;
+}
+
+export async function cdpPerformanceStartTrace(options?: {
+  reload?: boolean;
+}): Promise<BridgeJson> {
+  return bridgePost("/performance/start", {
+    reload: options?.reload === true,
+  });
+}
+
+export async function cdpPerformanceStopTrace(): Promise<BridgeJson> {
+  return bridgePost("/performance/stop", {});
 }

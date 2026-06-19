@@ -39,6 +39,7 @@ const TOOL_LABELS: Record<string, string> = {
   "file.replace.prepare": "准备文本替换",
   "git.mutation.prepare": "准备 Git 操作",
   "shell.command.prepare": "准备 npm 脚本",
+  "shell.run.prepare": "准备终端命令",
   "patch.prepare": "准备 Patch",
 };
 
@@ -62,6 +63,10 @@ function summarizeToolResult(result: unknown): string | null {
   if (!result || typeof result !== "object") return null;
   const record = result as Record<string, unknown>;
   if (typeof record.summary === "string") return record.summary;
+  if (record.preview && typeof record.preview === "object") {
+    const preview = record.preview as { command?: string };
+    if (typeof preview.command === "string") return preview.command;
+  }
   if (typeof record.path === "string") return record.path;
   if (Array.isArray(record.candidates)) {
     return `${record.candidates.length} 个候选`;
@@ -213,16 +218,109 @@ export function TurnWorkedLine({
   }
 }
 
-export function TurnHighlightLine({ event }: { event: AgentEvent }) {
-  if (event.type === "verification.completed" && !event.result.success) {
+export function TurnHighlightLine({
+  event,
+  pendingCommandApprovalIds,
+  onApproveCommand,
+  onRejectCommand,
+  commandApprovalBusy,
+}: {
+  event: AgentEvent;
+  pendingCommandApprovalIds?: Set<string>;
+  onApproveCommand?: (approvalId: string) => void;
+  onRejectCommand?: (approvalId: string) => void;
+  commandApprovalBusy?: boolean;
+}) {
+  if (event.type === "approval.required") {
+    const command =
+      event.approval.details?.kind === "shell_command"
+        ? event.approval.details.preview.command
+        : null;
+    const isShell = event.approval.details?.kind === "shell_command";
+    const isPending =
+      isShell &&
+      (pendingCommandApprovalIds?.has(event.approval.id) ?? false);
+    const canInlineApprove =
+      isPending && Boolean(onApproveCommand && onRejectCommand);
+
+    if (canInlineApprove) {
+      return (
+        <div className="rounded-xl border border-amber-200/90 bg-amber-50/90 px-3.5 py-3 dark:border-amber-900/60 dark:bg-amber-950/35">
+          <p className="text-[12px] font-medium text-amber-900 dark:text-amber-100">
+            待运行命令
+          </p>
+          <p className="mt-1 font-mono text-[13px] text-zinc-900 dark:text-zinc-100">
+            {command ?? event.approval.title}
+          </p>
+          {event.approval.reason ? (
+            <p className="mt-1.5 text-[12px] leading-relaxed text-zinc-600 dark:text-zinc-400">
+              {event.approval.reason}
+            </p>
+          ) : null}
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={commandApprovalBusy}
+              onClick={() => onRejectCommand?.(event.approval.id)}
+              className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-[12px] font-medium text-zinc-700 transition hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+            >
+              拒绝
+            </button>
+            <button
+              type="button"
+              disabled={commandApprovalBusy}
+              onClick={() => onApproveCommand?.(event.approval.id)}
+              className="rounded-lg bg-amber-600 px-3 py-1.5 text-[12px] font-semibold text-white transition hover:bg-amber-700 disabled:opacity-50"
+            >
+              {commandApprovalBusy ? "运行中…" : "批准并运行"}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <WorkedLine
-        label={`验证失败 · ${event.result.command}`}
-        detail={event.result.output.slice(0, 1500)}
-        tone="error"
+        label={`待授权命令 · ${command ?? event.approval.title}`}
+        detail={[event.approval.reason, command ? `命令：${command}` : null]
+          .filter(Boolean)
+          .join("\n")}
+        tone="neutral"
         defaultOpen
       />
     );
   }
+
+  if (event.type === "approval.executed") {
+    const detail = event.output ?? event.summary;
+    return (
+      <WorkedLine
+        label={
+          event.status === "succeeded"
+            ? `命令已成功 · ${event.command}`
+            : `命令执行失败 · ${event.command}`
+        }
+        detail={detail}
+        tone={event.status === "succeeded" ? "neutral" : "error"}
+        defaultOpen
+      />
+    );
+  }
+
+  if (event.type === "verification.completed") {
+    return (
+      <WorkedLine
+        label={
+          event.result.success
+            ? `命令输出 · ${event.result.command}`
+            : `命令失败 · ${event.result.command}`
+        }
+        detail={event.result.output.slice(0, 2000)}
+        tone={event.result.success ? "neutral" : "error"}
+        defaultOpen={!event.result.success}
+      />
+    );
+  }
+
   return null;
 }

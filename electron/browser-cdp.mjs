@@ -9,6 +9,17 @@ import { app, ipcMain, webContents } from "electron";
 const BRIDGE_PORT = Number(process.env.VEC_CDP_BRIDGE_PORT ?? 19229);
 const MAX_CONSOLE = 80;
 const MAX_NETWORK = 200;
+const MAX_TRACE_EVENTS = 80_000;
+const TRACE_COMPLETE_WAIT_MS = 20_000;
+const PERF_TRACE_CATEGORIES = [
+  "-*",
+  "blink.console",
+  "blink.user_timing",
+  "devtools.timeline",
+  "disabled-by-default-devtools.timeline",
+  "loading",
+  "v8.execute",
+].join(",");
 
 /** @type {Map<number, GuestCdpState>} */
 const guests = new Map();
@@ -63,11 +74,15 @@ async function attachBrowserGuest(contents) {
 
     const state = {
       attached: true,
-      network: [],
+      network: existing?.network ?? [],
       /** @type {Map<string, Record<string, unknown>>} */
-      requests: new Map(),
-      console: [],
-      exceptions: [],
+      requests: existing?.requests ?? new Map(),
+      console: existing?.console ?? [],
+      exceptions: existing?.exceptions ?? [],
+      tracingActive: existing?.tracingActive ?? false,
+      traceChunks: existing?.traceChunks ?? [],
+      /** @type {Array<() => void>} */
+      traceCompleteResolvers: existing?.traceCompleteResolvers ?? [],
     };
     guests.set(contents.id, state);
     activeGuestId = contents.id;
@@ -167,6 +182,24 @@ async function attachBrowserGuest(contents) {
           timestamp: Date.now(),
         });
         if (state.console.length > MAX_CONSOLE) state.console.shift();
+        return;
+      }
+
+      if (method === "Tracing.dataCollected") {
+        const values = params?.value;
+        if (!Array.isArray(values) || !state.traceChunks) return;
+        state.traceChunks.push(...values);
+        if (state.traceChunks.length >= MAX_TRACE_EVENTS) {
+          state.tracingActive = false;
+        }
+        return;
+      }
+
+      if (method === "Tracing.tracingComplete") {
+        state.tracingActive = false;
+        const resolvers = state.traceCompleteResolvers ?? [];
+        state.traceCompleteResolvers = [];
+        for (const resolve of resolvers) resolve();
       }
     });
 
@@ -174,6 +207,70 @@ async function attachBrowserGuest(contents) {
   } catch {
     guests.delete(contents.id);
     return false;
+  }
+}
+
+async function captureGuestScreenshot(guestId, options = {}) {
+  const fullPage = options.fullPage !== false;
+  const id = resolveGuestId(guestId);
+  const wc = id != null ? guestFromId(id) : null;
+  if (!wc) {
+    return { ok: false, error: "WebView 未就绪。请打开右栏浏览器并加载页面。" };
+  }
+  await attachBrowserGuest(wc);
+
+  const baseParams = {
+    format: "jpeg",
+    quality: options.quality ?? 65,
+    fromSurface: true,
+  };
+
+  let params = { ...baseParams };
+  let capturedFullPage = false;
+
+  if (fullPage) {
+    try {
+      const layout = await wc.debugger.sendCommand("Page.getLayoutMetrics");
+      const content = layout?.cssContentSize ?? layout?.contentSize ?? null;
+      if (content?.width && content?.height) {
+        const width = Math.min(Math.ceil(content.width), 2560);
+        const height = Math.min(Math.ceil(content.height), 6000);
+        params = {
+          ...baseParams,
+          captureBeyondViewport: true,
+          clip: { x: 0, y: 0, width, height, scale: 1 },
+        };
+        capturedFullPage = true;
+      }
+    } catch {
+      /* 回退为可视区域截图 */
+    }
+  }
+
+  try {
+    const result = await wc.debugger.sendCommand(
+      "Page.captureScreenshot",
+      params,
+    );
+    const data = result?.data;
+    if (!data || typeof data !== "string") {
+      return { ok: false, error: "截图为空。" };
+    }
+    return {
+      ok: true,
+      jpegBase64: data,
+      guestId: wc.id,
+      fullPage: capturedFullPage,
+      clip: params.clip ?? null,
+    };
+  } catch (error) {
+    if (fullPage && capturedFullPage) {
+      return captureGuestScreenshot(guestId, { fullPage: false, quality: 72 });
+    }
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "截图失败。",
+    };
   }
 }
 
@@ -297,6 +394,209 @@ async function typeSelector(guestId, selector, text) {
   }
 }
 
+async function listGuestPages() {
+  const pages = [];
+  for (const [id] of guests.entries()) {
+    const wc = guestFromId(id);
+    if (!wc || wc.isDestroyed()) continue;
+    let url = null;
+    let title = null;
+    try {
+      url = typeof wc.getURL === "function" ? wc.getURL() : null;
+      const titleEv = await evaluateJson(wc, "document.title || ''");
+      if (titleEv.ok && typeof titleEv.value === "string") {
+        title = titleEv.value;
+      }
+    } catch {
+      /* guest may be loading */
+    }
+    pages.push({
+      guestId: id,
+      active: id === activeGuestId,
+      url,
+      title,
+    });
+  }
+  return { ok: true, pages, activeGuestId };
+}
+
+async function activateGuest(guestId) {
+  const id = Number(guestId);
+  if (!Number.isFinite(id) || !guestFromId(id)) {
+    return { ok: false, error: "WebView guest 不存在。" };
+  }
+  activeGuestId = id;
+  return { ok: true, guestId: activeGuestId };
+}
+
+async function waitForTracingComplete(state, timeoutMs = TRACE_COMPLETE_WAIT_MS) {
+  if (!state?.tracingActive) return true;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    const onComplete = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    if (!state.traceCompleteResolvers) state.traceCompleteResolvers = [];
+    state.traceCompleteResolvers.push(onComplete);
+    if (!state.tracingActive) {
+      clearTimeout(timer);
+      resolve(true);
+    }
+  });
+}
+
+async function readPagePerformanceTiming(wc) {
+  const out = await evaluateJson(
+    wc,
+    `(function() {
+      var nav = performance.getEntriesByType("navigation")[0];
+      var paint = performance.getEntriesByType("paint");
+      var fp = paint.find(function(p) { return p.name === "first-paint"; });
+      var fcp = paint.find(function(p) { return p.name === "first-contentful-paint"; });
+      var lcp = null;
+      try {
+        var lcpEntries = performance.getEntriesByType("largest-contentful-paint");
+        if (lcpEntries && lcpEntries.length) {
+          lcp = lcpEntries[lcpEntries.length - 1].startTime;
+        }
+      } catch (e) {}
+      return {
+        domContentLoaded: nav ? nav.domContentLoadedEventEnd : null,
+        loadEventEnd: nav ? nav.loadEventEnd : null,
+        transferSize: nav ? nav.transferSize : null,
+        encodedBodySize: nav ? nav.encodedBodySize : null,
+        firstPaint: fp ? fp.startTime : null,
+        firstContentfulPaint: fcp ? fcp.startTime : null,
+        lcp: lcp,
+      };
+    })()`,
+  );
+  return out.ok ? out.value : null;
+}
+
+async function startPerformanceTrace(guestId, options = {}) {
+  const id = resolveGuestId(guestId);
+  const wc = id != null ? guestFromId(id) : null;
+  if (!wc) {
+    return { ok: false, error: "WebView 未就绪。请打开右栏浏览器并加载页面。" };
+  }
+  await attachBrowserGuest(wc);
+  const state = guestState(wc.id);
+  if (!state) {
+    return { ok: false, error: "Guest 状态未初始化。" };
+  }
+  if (state.tracingActive) {
+    return {
+      ok: false,
+      error: "性能 trace 已在进行中。请先 devtools.performance_stop_trace。",
+    };
+  }
+
+  state.traceChunks = [];
+  state.tracingActive = true;
+
+  try {
+    await wc.debugger.sendCommand("Tracing.start", {
+      transferMode: "ReturnAsStream",
+      streamCompression: "none",
+      traceConfig: {
+        recordMode: "recordUntilFull",
+        includedCategories: PERF_TRACE_CATEGORIES,
+      },
+    });
+
+    if (options.reload) {
+      await wc.debugger.sendCommand("Page.reload", { ignoreCache: true });
+    }
+
+    return { ok: true, guestId: wc.id, tracing: true, reload: Boolean(options.reload) };
+  } catch (error) {
+    state.tracingActive = false;
+    state.traceChunks = [];
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Tracing.start 失败。",
+    };
+  }
+}
+
+async function stopPerformanceTrace(guestId) {
+  const id = resolveGuestId(guestId);
+  const wc = id != null ? guestFromId(id) : null;
+  if (!wc) {
+    return { ok: false, error: "WebView 未就绪。请打开右栏浏览器并加载页面。" };
+  }
+  await attachBrowserGuest(wc);
+  const state = guestState(wc.id);
+  if (!state) {
+    return { ok: false, error: "Guest 状态未初始化。" };
+  }
+
+  const hadTrace =
+    state.tracingActive || (state.traceChunks?.length ?? 0) > 0;
+  if (!hadTrace) {
+    return { ok: false, error: "没有进行中的性能 trace。请先 performance_start_trace。" };
+  }
+
+  try {
+    if (state.tracingActive) {
+      await wc.debugger.sendCommand("Tracing.end");
+      await waitForTracingComplete(state);
+    }
+  } catch (error) {
+    state.tracingActive = false;
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Tracing.end 失败。",
+    };
+  }
+
+  const chunks = state.traceChunks ?? [];
+  state.traceChunks = [];
+  state.tracingActive = false;
+
+  let metrics = [];
+  try {
+    await wc.debugger.sendCommand("Performance.enable");
+    const payload = await wc.debugger.sendCommand("Performance.getMetrics");
+    metrics = Array.isArray(payload?.metrics) ? payload.metrics : [];
+  } catch {
+    /* Performance domain optional */
+  }
+
+  const pageTiming = await readPagePerformanceTiming(wc);
+
+  let traceFile = null;
+  let traceBytes = 0;
+  let traceTruncated = false;
+  const MAX_TRACE_BYTES = 8_000_000;
+
+  if (chunks.length > 0) {
+    const traceJson = JSON.stringify(chunks);
+    traceBytes = Buffer.byteLength(traceJson, "utf8");
+    if (traceBytes <= MAX_TRACE_BYTES) {
+      const dir = path.join(process.cwd(), ".agent-state", "performance-traces");
+      await fs.mkdir(dir, { recursive: true });
+      traceFile = path.join(dir, `trace-${Date.now()}.json`);
+      await fs.writeFile(traceFile, traceJson, "utf8");
+    } else {
+      traceTruncated = true;
+    }
+  }
+
+  return {
+    ok: true,
+    guestId: wc.id,
+    eventCount: chunks.length,
+    traceBytes,
+    traceFile,
+    traceTruncated,
+    metrics,
+    pageTiming,
+  };
+}
+
 async function readBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -316,6 +616,12 @@ async function handleBridgeRequest(req, res) {
     const guestIdFromQuery = url.includes("guestId=")
       ? Number(new URL(url, "http://127.0.0.1").searchParams.get("guestId"))
       : undefined;
+
+    if (req.method === "GET" && url.startsWith("/pages")) {
+      const out = await listGuestPages();
+      jsonResponse(res, 200, out);
+      return;
+    }
 
     if (req.method === "GET" && url.startsWith("/health")) {
       jsonResponse(res, 200, {
@@ -365,6 +671,12 @@ async function handleBridgeRequest(req, res) {
 
     const body = await readBody(req);
 
+    if (url.startsWith("/activate")) {
+      const out = await activateGuest(body.guestId ?? guestIdFromQuery);
+      jsonResponse(res, out.ok ? 200 : 400, out);
+      return;
+    }
+
     if (url.startsWith("/send")) {
       const out = await sendCdp(body.guestId ?? guestIdFromQuery, body.method, body.params);
       jsonResponse(res, out.ok ? 200 : 400, out);
@@ -391,20 +703,19 @@ async function handleBridgeRequest(req, res) {
     }
 
     if (url.startsWith("/screenshot")) {
-      const out = await sendCdp(
+      const out = await captureGuestScreenshot(
         body.guestId ?? guestIdFromQuery,
-        "Page.captureScreenshot",
-        { format: "jpeg", quality: 72, fromSurface: true },
+        { fullPage: body.fullPage !== false },
       );
       if (!out.ok) {
         jsonResponse(res, 400, out);
         return;
       }
-      const data = out.result?.data;
       jsonResponse(res, 200, {
         ok: true,
-        jpegBase64: typeof data === "string" ? data : null,
+        jpegBase64: out.jpegBase64,
         guestId: out.guestId,
+        fullPage: out.fullPage,
       });
       return;
     }
@@ -449,6 +760,20 @@ async function handleBridgeRequest(req, res) {
       return;
     }
 
+    if (url.startsWith("/performance/start")) {
+      const out = await startPerformanceTrace(body.guestId ?? guestIdFromQuery, {
+        reload: body.reload === true,
+      });
+      jsonResponse(res, out.ok ? 200 : 400, out);
+      return;
+    }
+
+    if (url.startsWith("/performance/stop")) {
+      const out = await stopPerformanceTrace(body.guestId ?? guestIdFromQuery);
+      jsonResponse(res, out.ok ? 200 : 400, out);
+      return;
+    }
+
     jsonResponse(res, 404, { ok: false, error: "Not found" });
   } catch (error) {
     jsonResponse(res, 500, {
@@ -471,12 +796,37 @@ function startCdpBridgeServer() {
   });
 }
 
-export function setupBrowserCdp() {
+export function setupBrowserCdp(getMainWindow = () => null) {
   startCdpBridgeServer();
 
   app.on("web-contents-created", (_event, contents) => {
     if (contents.getType() === "webview") {
-      void attachBrowserGuest(contents);
+      // 延迟 CDP attach：用户浏览时由 capture 按需挂载，减少站点反自动化拦截
+      if (!guests.has(contents.id)) {
+        guests.set(contents.id, {
+          attached: false,
+          network: [],
+          requests: new Map(),
+          console: [],
+          exceptions: [],
+          tracingActive: false,
+          traceChunks: [],
+          traceCompleteResolvers: [],
+        });
+      }
+      activeGuestId = contents.id;
+      contents.setWindowOpenHandler(({ url }) => {
+        if (
+          typeof url === "string" &&
+          (url.startsWith("http://") || url.startsWith("https://"))
+        ) {
+          const win = getMainWindow();
+          if (win && !win.isDestroyed()) {
+            win.webContents.send("browser:guest-open-url", url);
+          }
+        }
+        return { action: "deny" };
+      });
     }
   });
 
@@ -507,17 +857,14 @@ export function setupBrowserCdp() {
   );
 
   ipcMain.handle("browser-cdp:screenshot", async (_event, guestId) => {
-    const out = await sendCdp(guestId, "Page.captureScreenshot", {
-      format: "jpeg",
-      quality: 72,
-      fromSurface: true,
-    });
+    const out = await captureGuestScreenshot(guestId, { fullPage: true });
     if (!out.ok) return out;
-    const data = out.result?.data;
-    if (!data || typeof data !== "string") {
-      return { ok: false, error: "截图为空。" };
-    }
-    return { ok: true, jpegBase64: data, guestId: out.guestId };
+    return {
+      ok: true,
+      jpegBase64: out.jpegBase64,
+      guestId: out.guestId,
+      fullPage: out.fullPage,
+    };
   });
 
   ipcMain.handle("browser-cdp:network", async (_event, guestId) => {
@@ -525,6 +872,12 @@ export function setupBrowserCdp() {
     const state = id != null ? guestState(id) : null;
     return { ok: id != null, guestId: id, entries: state?.network ?? [] };
   });
+
+  ipcMain.handle("browser-cdp:activate", async (_event, guestId) =>
+    activateGuest(guestId),
+  );
+
+  ipcMain.handle("browser-cdp:pages", async () => listGuestPages());
 
   ipcMain.handle("browser-cdp:console", async (_event, guestId) => {
     const id = resolveGuestId(guestId);

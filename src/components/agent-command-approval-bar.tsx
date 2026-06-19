@@ -17,7 +17,7 @@ function describeCommand(approval: ApprovalRecordView): string {
   const details = approval.details;
   if (!details) return approval.title;
   if (details.kind === "shell_command") {
-    return `npm run ${details.operation.script}`;
+    return details.preview.command;
   }
   if (details.kind === "git_mutation") {
     const op = details.operation;

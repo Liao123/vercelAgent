@@ -164,8 +164,6 @@ export function recordToolCall(
     return;
   }
 
-  state.toolFailureStreak = undefined;
-
   if (result && typeof result === "object" && "error" in result) {
     const message = String((result as { error?: unknown }).error);
     state.lastToolError = message;
@@ -192,6 +190,7 @@ export function recordToolCall(
     toolName === "file.mutation" ||
     toolName === "patch.apply"
   ) {
+    state.toolFailureStreak = undefined;
     state.lastPrepareError = undefined;
     if (
       toolName === "file.replace" ||
@@ -201,6 +200,8 @@ export function recordToolCall(
       state.editApplied = true;
       state.approvalPrepared = true;
     }
+  } else {
+    state.toolFailureStreak = undefined;
   }
 }
 

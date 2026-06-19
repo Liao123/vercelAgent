@@ -1,11 +1,12 @@
 import type { DetailedHTMLProps, HTMLAttributes } from "react";
 
-type WebviewProps = DetailedHTMLProps<
-  HTMLAttributes<HTMLElement>,
-  HTMLElement
+type WebviewProps = Omit<
+  DetailedHTMLProps<HTMLAttributes<HTMLElement>, HTMLElement>,
+  "allowpopups"
 > & {
   src?: string;
-  allowpopups?: boolean | "";
+  useragent?: string;
+  allowpopups?: "" | true;
   partition?: string;
 };
 

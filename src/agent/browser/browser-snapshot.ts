@@ -58,7 +58,7 @@ export type BrowserPageSnapshot = {
 const STATE_DIR = ".agent-state";
 const STATE_FILE = "browser-snapshot.json";
 const SCREENSHOT_FILE = "browser-screenshot.jpg";
-const MAX_SCREENSHOT_BYTES = 220_000;
+const MAX_SCREENSHOT_BYTES = 400_000;
 
 let memorySnapshot: BrowserPageSnapshot | null = null;
 

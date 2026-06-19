@@ -17,6 +17,7 @@ import {
   GRACEFUL_FINAL_DEFAULT_SUMMARY,
 } from "@/agent/core/loop-graceful-final";
 import { isUiLocationQuery } from "@/agent/core/prepare-gate";
+import { shouldSkipEditRecoveryForUiPrepare } from "@/agent/core/ui-prepare-nudge";
 import { parseCompactedMemory } from "@/agent/memory/loop-context-compactor";
 import {
   loadStoredPostExecuteVerification,
@@ -41,6 +42,7 @@ import {
   createConfiguredModelProvider,
   type ModelProvider,
 } from "@/agent/model";
+import type { ModelOutput } from "@/agent/model/types";
 import {
   agentMessagesHaveImages,
   buildAgentUserContent,
@@ -91,6 +93,7 @@ import {
 } from "@/agent/core/attached-files";
 import { createLoopSystemPrompt } from "@/agent/prompts/create-loop-system-prompt";
 import { isNativeToolLoopEnabled } from "@/agent/core/loop-protocol";
+import { generateLoopModelWithProgress } from "@/agent/core/loop-model-generate";
 import {
   buildLoopToolDefinitions,
   parseToolCallArguments,
@@ -543,7 +546,9 @@ export async function runAgentLoop(
     plan.updatedAt = nextPlan.updatedAt;
     emit({ type: "plan.updated", taskId: task.id, plan: { ...plan } });
   };
-  emit({ type: "thread.created", threadId: thread.id, thread });
+  if (!input.threadId) {
+    emit({ type: "thread.created", threadId: thread.id, thread });
+  }
   emit({ type: "task.created", taskId: task.id, task });
   emit({ type: "trace.linked", taskId: task.id, traceId: trace.id });
   emit({ type: "turn.created", turnId: turn.id, turn });
@@ -708,6 +713,18 @@ export async function runAgentLoop(
   let reactiveCompactUsed = false;
 
   for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
+    if (iteration > 1) {
+      emitReflection(emit, task.id, {
+        understanding: `继续执行（第 ${iteration}/${maxIterations} 轮）`,
+        blockers: [],
+        plannedNext:
+          runState.toolsCalled.length > 0
+            ? `已调用 ${runState.toolsCalled.length} 次工具，正在继续推理…`
+            : "正在继续推理并选择下一步工具…",
+        source: "runtime",
+      });
+    }
+
     const toolRounds = countToolRounds(runState.toolsCalled);
     const budgetHint = buildSoftRoundBudgetHint(taskPlaybook, toolRounds);
     if (budgetHint && !softBudgetHintInjected && iteration < maxIterations) {
@@ -777,7 +794,7 @@ export async function runAgentLoop(
       }
     }
 
-    let output;
+    let output: ModelOutput | undefined;
     let modelRetryAfterCompact = false;
     do {
       modelRetryAfterCompact = false;
@@ -791,25 +808,30 @@ export async function runAgentLoop(
         const forceFinalIteration = iteration >= maxIterations;
         const nativeTools = isNativeToolLoopEnabled() && !forceFinalIteration;
 
-        output = await provider.generate({
-          messages,
-          model: loopModel,
-          temperature: 0,
-          maxTokens: agentMessagesHaveImages(messages) ? 2000 : 1400,
-          metadata: {
-            taskId: task.id,
-            iteration,
-            forceFinal: forceFinalIteration,
+        output = await generateLoopModelWithProgress(
+          provider,
+          {
+            messages,
+            model: loopModel,
+            temperature: 0,
+            maxTokens: agentMessagesHaveImages(messages) ? 2000 : 1400,
+            metadata: {
+              taskId: task.id,
+              iteration,
+              forceFinal: forceFinalIteration,
+            },
+            ...(nativeTools
+              ? {
+                  tools: buildLoopToolDefinitions(),
+                  toolChoice: "auto" as const,
+                }
+              : forceFinalIteration
+                ? { toolChoice: "none" as const }
+                : {}),
           },
-          ...(nativeTools
-            ? {
-                tools: buildLoopToolDefinitions(),
-                toolChoice: "auto" as const,
-              }
-            : forceFinalIteration
-              ? { toolChoice: "none" as const }
-              : {}),
-        });
+          emit,
+          task.id,
+        );
       } catch (error) {
         if (
           !reactiveCompactUsed &&
@@ -874,11 +896,10 @@ export async function runAgentLoop(
     } while (modelRetryAfterCompact);
 
     if (modelUnavailable) break;
-    emit({
-      type: "model.delta",
-      taskId: task.id,
-      text: output.content || (output.toolCalls?.length ? `[tools: ${output.toolCalls.map((t) => t.name).join(", ")}]` : ""),
-    });
+    if (!output) {
+      summary = "Model call returned no output.";
+      break;
+    }
 
     if (isNativeToolLoopEnabled() && output.toolCalls && output.toolCalls.length > 0) {
       if (iteration >= maxIterations) {

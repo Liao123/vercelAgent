@@ -10,6 +10,8 @@ import { isUiLocationQuery } from "@/agent/core/prepare-gate";
 
 export type TaskPlaybookId =
   | "browser-doc"
+  | "design-replicate"
+  | "capability-extension"
   | "ui-visible-edit"
   | "file-exact-edit"
   | "read-only-audit"
@@ -54,6 +56,38 @@ export function isBrowserDocAnalysisRequest(input: string): boolean {
   return hasUrl && docIntent;
 }
 
+/** A024：demo URL + 复刻/生成页面意图（非 API 文档解析）。 */
+export function isDesignReplicateRequest(input: string): boolean {
+  const text = input.trim();
+  if (!text) return false;
+  if (isBrowserDocAnalysisRequest(text)) return false;
+  if (isExplicitReadOnlyRequest(text)) return false;
+  const hasUrl = /https?:\/\//i.test(text);
+  const replicateIntent =
+    /复刻|照着|模仿|还原|仿照|clone|replicat|照着.*做|生成.*页|做一?个.*页|landing|设计稿|design\s*spec|页面复刻|网页复刻/i.test(
+      text,
+    );
+  const buildIntent =
+    isLikelyCodeEditRequest(text) ||
+    /生成|创建|实现|写到/i.test(text) ||
+    /src\/[^\s]+\.(tsx?|jsx?|vue)/i.test(text);
+  return hasUrl && replicateIntent && buildIntent;
+}
+
+/** Agent 内核 / 工具链自举扩展（改 src/agent + 跑 validate）。 */
+export function isCapabilityExtensionRequest(input: string): boolean {
+  const text = input.trim();
+  if (!text) return false;
+  if (isExplicitReadOnlyRequest(text)) return false;
+  return (
+    /扩展.*能力|自举|自我扩展|加.*工具|shell\.run|agent-loop-tools|缺少.*命令|终端能力|命令行能力|capability[- ]extension/i.test(
+      text,
+    ) &&
+    (/src\/agent|agent-loop-tools|shell-tools|validate:|verify:/i.test(text) ||
+      /实现|添加|支持|对齐.*cursor/i.test(text))
+  );
+}
+
 function matchesUiVisibleEdit(input: string): boolean {
   if (isExplicitReadOnlyRequest(input)) return false;
   if (!isLikelyCodeEditRequest(input)) return false;
@@ -93,6 +127,123 @@ const BROWSER_DOC: TaskPlaybook = {
         "devtools.get_network_requests 已连续失败。请改用 browser.inspect 读取页面正文并直接给出中文整理结果，不要再调 Network。",
       understanding: "Network 工具不可用，应改用 browser.inspect。",
       plannedNext: "调用 browser.inspect 后在本轮或下一轮直接输出最终整理结果。",
+    },
+  ],
+};
+
+const DESIGN_REPLICATE: TaskPlaybook = {
+  id: "design-replicate",
+  title: "Demo 页面复刻",
+  openingPlannedNext:
+    "browser.open(demo URL) → devtools.extract_design_spec → file.read → file.replace/prepare → browser.open 本地页验证。",
+  loopHint:
+    "【任务提示】页面复刻：先打开 demo URL 并 devtools.extract_design_spec（结构化样式，勿凭截图猜），再改 workspace 页面文件，最后 browser.open 本地路由对比验证。",
+  softMaxToolRounds: 10,
+  goldenSteps: [
+    {
+      id: "open-demo",
+      label: "打开 demo 页",
+      tools: ["browser.open", "browser.wait_and_inspect"],
+    },
+    {
+      id: "extract",
+      label: "抽取 design spec",
+      tools: ["devtools.extract_design_spec"],
+    },
+    {
+      id: "read-code",
+      label: "读取目标代码",
+      tools: ["project.index", "file.locate", "file.search", "file.read"],
+    },
+    {
+      id: "write",
+      label: "修改页面代码",
+      tools: [
+        "file.replace",
+        "file.replace.prepare",
+        "file.mutation.prepare",
+        "patch.apply",
+        "patch.prepare",
+      ],
+    },
+    {
+      id: "verify",
+      label: "浏览器验证",
+      tools: [
+        "browser.open",
+        "browser.inspect",
+        "browser.wait_and_inspect",
+        "devtools.get_screenshot",
+      ],
+    },
+  ],
+  circuitBreakers: [
+    {
+      tool: "devtools.extract_design_spec",
+      threshold: 2,
+      redirectTool: "file.read",
+      message:
+        "design spec 已抽取并落盘。请根据 summary 修改代码，不要重复 extract_design_spec。",
+      understanding: "重复抽取 design spec 无助于写码。",
+      plannedNext: "file.read 目标页面 → file.replace/prepare → browser.open 验证。",
+    },
+    {
+      tool: "browser.inspect",
+      threshold: 4,
+      redirectTool: "devtools.extract_design_spec",
+      message:
+        "复刻任务应先 devtools.extract_design_spec 拿结构化布局/样式，browser.inspect 仅用于最终验证。",
+      understanding: "缺少结构化 design spec。",
+      plannedNext: "browser.open demo URL → devtools.extract_design_spec。",
+    },
+  ],
+};
+
+const CAPABILITY_EXTENSION: TaskPlaybook = {
+  id: "capability-extension",
+  title: "Agent 能力自举扩展",
+  openingPlannedNext:
+    "file.read 相关内核文件 → file.replace/patch.apply 改工具注册 → shell.run.prepare 跑 validate → 中文说明是否需重启 dev。",
+  loopHint:
+    "【任务提示】扩展 Agent 能力：先 file.read（agent-loop-tools.ts、shell-tools.ts、prompts），再改代码，用 shell.run.prepare 或 shell.command.prepare 跑 npm run validate:* / verify:* 验证；改 Loop 内核后提醒用户重启 npm run dev 或 dev:desktop。",
+  softMaxToolRounds: 12,
+  goldenSteps: [
+    {
+      id: "read-kernel",
+      label: "读取内核与工具注册",
+      tools: ["file.read", "file.search", "file.locate", "project.index"],
+    },
+    {
+      id: "edit-kernel",
+      label: "修改工具/策略代码",
+      tools: [
+        "file.replace",
+        "file.mutation",
+        "patch.apply",
+        "file.replace.prepare",
+        "patch.prepare",
+      ],
+    },
+    {
+      id: "verify",
+      label: "审批并运行验证命令",
+      tools: ["shell.run.prepare", "shell.command.prepare"],
+    },
+    {
+      id: "final",
+      label: "总结与重启提示",
+      tools: [],
+    },
+  ],
+  circuitBreakers: [
+    {
+      tool: "shell.run.prepare",
+      threshold: 3,
+      redirectTool: "file.read",
+      message:
+        "shell 命令多次未通过。请先 file.read 确认 package.json scripts 与改动是否正确，再 prepare 正确的 validate 命令。",
+      understanding: "验证命令或改动可能不正确。",
+      plannedNext: "file.read package.json 与改动文件 → 修正 → shell.run.prepare。",
     },
   ],
 };
@@ -201,6 +352,16 @@ const ORDERED_PLAYBOOKS: Array<{
     playbook: BROWSER_DOC,
     match: (input) => isBrowserDocAnalysisRequest(input),
     reason: "外链/API 文档解析",
+  },
+  {
+    playbook: DESIGN_REPLICATE,
+    match: (input) => isDesignReplicateRequest(input),
+    reason: "demo 页面复刻",
+  },
+  {
+    playbook: CAPABILITY_EXTENSION,
+    match: (input) => isCapabilityExtensionRequest(input),
+    reason: "Agent 能力自举扩展",
   },
   {
     playbook: READ_ONLY_AUDIT,
@@ -340,6 +501,9 @@ export function buildSoftRoundBudgetHint(
   if (toolRounds < playbook.softMaxToolRounds) return null;
   if (playbook.id === "browser-doc") {
     return "【轮次提示】文档任务已达建议工具轮次。请根据已有 browser 快照直接输出中文 final，不要再调工具。";
+  }
+  if (playbook.id === "design-replicate") {
+    return "【轮次提示】复刻任务已达建议轮次。请根据 design spec 完成 file.replace/prepare，并 browser.open 本地页验证。";
   }
   if (playbook.id === "ui-visible-edit") {
     return "【轮次提示】UI 任务已达建议轮次。请 file.read 后 file.replace/prepare，或总结阻塞原因。";

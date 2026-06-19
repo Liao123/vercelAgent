@@ -152,12 +152,15 @@ export async function emitDirectApplySideEffects(input: {
       },
     });
     if (!verification.success) {
-      input.runState.postExecuteFeedback = postExecuteFeedbackFromStored({
+      const feedback = postExecuteFeedbackFromStored({
         taskId: input.taskId,
         approvalId: `direct:${input.toolName}`,
         verification,
         savedAt: verification.completedAt,
       });
+      if (feedback) {
+        input.runState.postExecuteFeedback = feedback;
+      }
     }
   }
 }

@@ -17,6 +17,7 @@ import {
   isEditTaskSatisfied,
 } from "@/agent/core/loop-direct-apply";
 import { captureUiPrepareHintFromFileRead } from "@/agent/core/ui-prepare-nudge";
+import type { PlanProgressHint } from "@/agent/core/agent-loop-plan";
 import {
   computePlaybookProgress,
   findCircuitBreaker,
@@ -77,7 +78,7 @@ export type AgentLoopToolRunnerDeps = {
     checkpoint?: string,
   ) => void;
   shouldInjectRuntimeReflection: (state: AgentLoopRunState) => boolean;
-  emitPlan: (hint?: { lastAction?: string }) => void;
+  emitPlan: (hint?: PlanProgressHint) => void;
   emitPlaybookProgress: () => void;
   playbook: ResolvedTaskPlaybook;
   fallbackSummary: (error: unknown) => string;

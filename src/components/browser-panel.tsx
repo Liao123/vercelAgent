@@ -30,6 +30,15 @@ import {
   type BrowserWebviewHandle,
 } from "@/components/browser-webview";
 import { useDesktopApp } from "@/lib/use-desktop-app";
+import { subscribeBrowserGuestOpenUrl } from "@/lib/desktop-bridge";
+
+type BrowserTabView = {
+  id: string;
+  url: string;
+  title: string | null;
+  version: number;
+  requestedBy: "user" | "agent" | "system";
+};
 
 type BrowserTargetView = {
   url: string;
@@ -60,16 +69,13 @@ function isSameAppPreviewUrl(input: string): boolean {
   }
 }
 
-function tabLabelFrom(
-  target: BrowserTargetView | null,
-  pageTitle: string | null,
-): string {
+function tabLabelFromTab(tab: BrowserTabView, pageTitle?: string | null): string {
   if (pageTitle?.trim()) return pageTitle.trim();
-  if (!target) return "新标签页";
+  if (!tab.url) return "新标签页";
   try {
-    return new URL(target.url).hostname || target.url;
+    return new URL(tab.url).hostname || tab.url;
   } catch {
-    return target.url;
+    return tab.url;
   }
 }
 
@@ -81,7 +87,8 @@ export function BrowserPanel({
   chromeVisible?: boolean;
 }) {
   const [urlInput, setUrlInput] = useState("");
-  const [target, setTarget] = useState<BrowserTargetView | null>(null);
+  const [tabs, setTabs] = useState<BrowserTabView[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [pageTitle, setPageTitle] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [frameFailed, setFrameFailed] = useState(false);
@@ -98,9 +105,22 @@ export function BrowserPanel({
   const viewportRef = useRef<HTMLDivElement>(null);
   const urlInputRef = useRef<HTMLInputElement>(null);
   const desktopBrowser = useDesktopApp();
-
   const codexMode = desktopBrowser;
   const browserEnabled = codexMode || iframeFallback;
+
+  const activeTab =
+    tabs.find((tab) => tab.id === activeTabId) ??
+    (tabs.length > 0 ? tabs[0] : null);
+
+  const target: BrowserTargetView | null = activeTab?.url
+    ? {
+        url: activeTab.url,
+        requestedBy: activeTab.requestedBy,
+        openedAt: "",
+        updatedAt: "",
+        version: activeTab.version,
+      }
+    : null;
 
   const handleNavStateChange = useCallback(
     (state: { canGoBack: boolean; canGoForward: boolean }) => {
@@ -125,6 +145,9 @@ export function BrowserPanel({
       if (!res.ok) return;
 
       const data = (await res.json()) as {
+        tabs?: BrowserTabView[];
+        activeTabId?: string;
+        version?: number;
         target: BrowserTargetView | null;
         snapshot?: BrowserSnapshotView | null;
       };
@@ -133,16 +156,27 @@ export function BrowserPanel({
       if (data.snapshot?.title) {
         setPageTitle(data.snapshot.title);
       }
-      if (!data.target) return;
-      if (lastSeenVersion.current === data.target.version) return;
 
-      lastSeenVersion.current = data.target.version;
-      setTarget(data.target);
-      setUrlInput(data.target.url);
-      setFrameFailed(false);
-      setFrameFailReason(null);
-      if (data.target.requestedBy === "agent") {
-        setStatusLine("智能体已打开页面。");
+      if (data.tabs?.length) {
+        setTabs(data.tabs);
+        setActiveTabId(data.activeTabId ?? data.tabs[0]?.id ?? null);
+      }
+
+      const version = data.version ?? data.target?.version ?? null;
+      if (version != null && lastSeenVersion.current === version) return;
+
+      if (version != null) lastSeenVersion.current = version;
+
+      const active =
+        data.tabs?.find((tab) => tab.id === data.activeTabId) ??
+        data.tabs?.[0];
+      if (active) {
+        setUrlInput(active.url);
+        setFrameFailed(false);
+        setFrameFailReason(null);
+        if (active.requestedBy === "agent") {
+          setStatusLine("智能体已打开页面。");
+        }
       }
     }
 
@@ -166,6 +200,63 @@ export function BrowserPanel({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [sideMenuOpen, moreMenuOpen]);
+
+  async function openUrlInNewTab(
+    url: string,
+    requestedBy: "user" | "agent" = "user",
+  ) {
+    const normalized = normalizeUrlInput(url);
+    if (!normalized) return;
+    if (isSameAppPreviewUrl(normalized)) {
+      setError("请勿预览本应用地址（会嵌套界面）。");
+      return;
+    }
+    setError(null);
+    try {
+      const res = await fetch("/api/agent/browser/tabs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "new", url: normalized, requestedBy }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "打开 URL 失败。");
+      if (data.tabs) setTabs(data.tabs);
+      setActiveTabId(data.activeTabId);
+      if (data.version != null) lastSeenVersion.current = data.version;
+      const active = data.tabs?.find(
+        (tab: BrowserTabView) => tab.id === data.activeTabId,
+      );
+      if (active?.url) setUrlInput(active.url);
+      setPageTitle(null);
+      setFrameFailed(false);
+      setFrameFailReason(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "打开 URL 失败。");
+    }
+  }
+
+  const handleWebviewOpenUrlRef = useRef<(url: string) => void>(() => {});
+
+  handleWebviewOpenUrlRef.current = (url: string) => {
+    const normalized = normalizeUrlInput(url);
+    if (!normalized) return;
+    if (isSameAppPreviewUrl(normalized)) {
+      setError("请勿预览本应用地址（会嵌套界面）。");
+      return;
+    }
+    // 对齐 Cursor：页面内 target=_blank / window.open → 同级新浏览器 Tab
+    void openUrlInNewTab(normalized);
+  };
+
+  function handleWebviewOpenUrl(url: string) {
+    handleWebviewOpenUrlRef.current(url);
+  }
+
+  useEffect(() => {
+    return subscribeBrowserGuestOpenUrl((url) => {
+      handleWebviewOpenUrlRef.current(url);
+    });
+  }, []);
 
   async function openUrl(e?: FormEvent) {
     e?.preventDefault();
@@ -200,14 +291,21 @@ export function BrowserPanel({
       const res = await fetch("/api/agent/browser", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, requestedBy: "user" }),
+        body: JSON.stringify({
+          url,
+          requestedBy: "user",
+          tabId: activeTabId,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "打开 URL 失败。");
 
-      lastSeenVersion.current = data.target.version;
-      setTarget(data.target);
-      setUrlInput(data.target.url);
+      if (data.tabs) setTabs(data.tabs);
+      if (data.activeTabId) setActiveTabId(data.activeTabId);
+      if (data.target?.version != null) {
+        lastSeenVersion.current = data.target.version;
+      }
+      if (data.target?.url) setUrlInput(data.target.url);
       setPageTitle(null);
       setStatusLine(null);
     } catch (err) {
@@ -217,15 +315,77 @@ export function BrowserPanel({
     }
   }
 
-  function handleNewTab() {
-    setTarget(null);
-    setPageTitle(null);
-    setUrlInput("");
-    setFrameFailed(false);
-    setFrameFailReason(null);
-    setStatusLine(null);
+  async function switchTab(tabId: string) {
+    if (tabId === activeTabId) return;
+    try {
+      const res = await fetch("/api/agent/browser/tabs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "switch", tabId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "切换标签失败。");
+      if (data.tabs) setTabs(data.tabs);
+      setActiveTabId(data.activeTabId);
+      if (data.version != null) lastSeenVersion.current = data.version;
+      const active = data.tabs?.find(
+        (tab: BrowserTabView) => tab.id === data.activeTabId,
+      );
+      if (active) setUrlInput(active.url);
+      setPageTitle(null);
+      setFrameFailed(false);
+      setFrameFailReason(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "切换标签失败。");
+    }
+  }
+
+  async function closeTab(tabId: string) {
+    try {
+      const res = await fetch("/api/agent/browser/tabs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "close", tabId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "关闭标签失败。");
+      if (data.tabs) setTabs(data.tabs);
+      setActiveTabId(data.activeTabId);
+      if (data.version != null) lastSeenVersion.current = data.version;
+      const active = data.tabs?.find(
+        (tab: BrowserTabView) => tab.id === data.activeTabId,
+      );
+      setUrlInput(active?.url ?? "");
+      setPageTitle(null);
+      setFrameFailed(false);
+      setFrameFailReason(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "关闭标签失败。");
+    }
+  }
+
+  async function handleNewTab() {
     setError(null);
-    window.setTimeout(() => urlInputRef.current?.focus(), 0);
+    setStatusLine(null);
+    try {
+      const res = await fetch("/api/agent/browser/tabs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "new" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "新建标签失败。");
+      if (data.tabs) setTabs(data.tabs);
+      setActiveTabId(data.activeTabId);
+      if (data.version != null) lastSeenVersion.current = data.version;
+      setUrlInput("");
+      setPageTitle(null);
+      setFrameFailed(false);
+      setFrameFailReason(null);
+      window.setTimeout(() => urlInputRef.current?.focus(), 0);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "新建标签失败。");
+    }
   }
 
   function handleExpand() {
@@ -249,7 +409,9 @@ export function BrowserPanel({
     ? "flex h-full min-h-0 flex-col bg-white dark:bg-zinc-950"
     : "flex h-full min-h-0 flex-col gap-3 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950";
 
-  const tabLabel = tabLabelFrom(target, pageTitle);
+  const tabLabel = activeTab
+    ? tabLabelFromTab(activeTab, pageTitle)
+    : "新标签页";
 
   return (
     <section className={shellClass}>
@@ -272,14 +434,55 @@ export function BrowserPanel({
         className="flex shrink-0 items-center border-b border-zinc-200 px-1 dark:border-zinc-800"
         style={{ minHeight: "2rem" }}
       >
-        <div className="flex min-w-0 flex-1 items-center gap-1.5 px-1.5 py-0.5">
-          <BrowserGlobeIcon className="h-3.5 w-3.5 shrink-0 text-zinc-500" />
-          <span
-            className="min-w-0 truncate text-[12px] text-zinc-700 dark:text-zinc-300"
-            title={tabLabel}
-          >
-            {tabLabel}
-          </span>
+        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-1 py-0.5">
+          {tabs.map((tab) => {
+            const selected = tab.id === activeTabId;
+            const label = tabLabelFromTab(
+              tab,
+              selected ? pageTitle : tab.title,
+            );
+            return (
+              <div
+                key={tab.id}
+                className={`group/tab inline-flex max-w-[11rem] shrink-0 items-center rounded-md transition ${
+                  selected
+                    ? "bg-zinc-200/90 dark:bg-zinc-700/90"
+                    : "hover:bg-zinc-100 dark:hover:bg-zinc-800/80"
+                }`}
+              >
+                <button
+                  type="button"
+                  title={tab.url || label}
+                  onClick={() => void switchTab(tab.id)}
+                  className={`inline-flex min-w-0 items-center gap-1 rounded-l-md py-0.5 pl-2 pr-1 text-[11px] ${
+                    selected
+                      ? "text-zinc-900 dark:text-zinc-100"
+                      : "text-zinc-600 dark:text-zinc-400"
+                  }`}
+                >
+                  <BrowserGlobeIcon className="h-3 w-3 shrink-0 opacity-70" />
+                  <span className="truncate">{label}</span>
+                </button>
+                <button
+                  type="button"
+                  title="关闭标签"
+                  aria-label={`关闭 ${label}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void closeTab(tab.id);
+                  }}
+                  className={`rounded-r-md px-1.5 py-0.5 text-[13px] leading-none opacity-0 transition hover:bg-zinc-300/80 group-hover/tab:opacity-100 dark:hover:bg-zinc-600/80 ${
+                    selected ? "opacity-70" : ""
+                  } text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100`}
+                >
+                  ×
+                </button>
+              </div>
+            );
+          })}
+          {tabs.length === 0 && (
+            <span className="px-1.5 text-[12px] text-zinc-500">新标签页</span>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-0.5 pr-0.5">
           <BrowserChromeIconButton title="新标签页" onClick={handleNewTab}>
@@ -447,35 +650,44 @@ export function BrowserPanel({
         ref={viewportRef}
         className="min-h-0 flex-1 overflow-hidden bg-white dark:bg-zinc-950"
       >
-        {target && codexMode ? (
-          <BrowserWebview
-            ref={webviewRef}
-            url={target.url}
-            version={target.version}
-            embedded={embedded}
-            onNavStateChange={handleNavStateChange}
-            onNavigate={() => {
-              setFrameFailed(false);
-              setFrameFailReason(null);
-            }}
-            onSnapshot={() => {
-              void fetch("/api/agent/browser")
-                .then((res) => (res.ok ? res.json() : null))
-                .then((data) => {
-                  if (!data?.snapshot) return;
-                  if (data.snapshot.title) {
-                    setPageTitle(data.snapshot.title as string);
-                  }
-                  if (data.snapshot.url) {
-                    setUrlInput(data.snapshot.url as string);
-                  }
-                });
-            }}
-            onFail={(reason) => {
-              setFrameFailed(true);
-              setFrameFailReason(reason ?? null);
-            }}
-          />
+        {codexMode ? (
+          activeTab?.url ? (
+            <BrowserWebview
+              ref={webviewRef}
+              tabId={activeTab.id}
+              url={activeTab.url}
+              version={activeTab.version}
+              embedded={embedded}
+              interactive={chromeVisible}
+              onNavStateChange={handleNavStateChange}
+              onNavigate={() => {
+                setFrameFailed(false);
+                setFrameFailReason(null);
+              }}
+              onSnapshot={() => {
+                void fetch("/api/agent/browser")
+                  .then((res) => (res.ok ? res.json() : null))
+                  .then((data) => {
+                    if (!data?.snapshot) return;
+                    if (data.snapshot.title) {
+                      setPageTitle(data.snapshot.title as string);
+                    }
+                    if (data.snapshot.url) {
+                      setUrlInput(data.snapshot.url as string);
+                    }
+                  });
+              }}
+              onFail={(reason) => {
+                setFrameFailed(true);
+                setFrameFailReason(reason ?? null);
+              }}
+              onOpenUrl={handleWebviewOpenUrl}
+            />
+          ) : (
+            <div className="flex h-full min-h-[120px] items-center justify-center px-6 text-center text-[11px] text-zinc-500">
+              在地址栏输入 URL 后按 Enter，或点击 + 新建标签页。
+            </div>
+          )
         ) : target && iframeFallback ? (
           <iframe
             key={target.version}

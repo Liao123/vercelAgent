@@ -16,6 +16,18 @@ import {
   waitForBrowserQueryResult,
 } from "@/agent/browser";
 import {
+  loadLatestDesignSpec,
+  loadLatestDesignSpecMeta,
+  saveDesignSpec,
+} from "@/agent/browser/design-spec-store";
+import {
+  getBrowserTabsState,
+  listBrowserPages,
+  openBrowserUrlInTabs,
+  switchBrowserTab,
+} from "@/agent/browser/browser-tabs";
+import {
+  cdpActivateGuest,
   cdpAxTree,
   cdpBoxModelForSelector,
   cdpClick,
@@ -23,11 +35,19 @@ import {
   cdpConsoleAndExceptions,
   cdpDomSnapshot,
   cdpInspectAt,
+  cdpListGuestPages,
   cdpNetworkRequests,
+  cdpPerformanceStartTrace,
+  cdpPerformanceStopTrace,
   cdpScreenshotJpegBase64,
   cdpType,
 } from "@/agent/devtools/cdp-client";
 import { isCdpBridgeAvailable } from "@/agent/devtools/cdp-bridge-config";
+import { extractDesignSpecFromPage, summarizeDesignSpec } from "@/agent/devtools/extract-design-spec";
+import {
+  analyzePerformanceInsight,
+  enrichPerformanceStopResult,
+} from "@/agent/devtools/performance-stop-result";
 import { readBrowserNetworkForAgent } from "@/agent/devtools/network-read";
 import { isCdpGuestReady } from "@/agent/devtools/cdp-guest-wait";
 import {
@@ -53,6 +73,7 @@ import {
   prepareFileMutation,
   prepareGitMutation,
   prepareShellCommand,
+  prepareShellRun,
   readTextFile,
   searchText,
   type FileMutationOperation,
@@ -94,10 +115,19 @@ export type AgentLoopToolName =
   | "devtools.get_box_model"
   | "devtools.get_computed_style"
   | "devtools.inspect_element_at"
-  | "file.replace.prepare"
+  | "devtools.list_pages"
+  | "devtools.new_page"
+  | "devtools.switch_page"
+  | "devtools.performance_start_trace"
+  | "devtools.performance_stop_trace"
+  | "devtools.performance_analyze_insight"
+  | "devtools.extract_design_spec"
+  | "devtools.get_persisted_design_spec"
   | "file.mutation.prepare"
+  | "file.replace.prepare"
   | "git.mutation.prepare"
   | "shell.command.prepare"
+  | "shell.run.prepare"
   | "patch.prepare"
   | "file.replace"
   | "file.mutation"
@@ -156,6 +186,21 @@ function numberArg(
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(Math.max(Math.trunc(parsed), min), max);
+}
+
+function booleanArg(
+  args: Record<string, unknown>,
+  key: string,
+  fallback = false,
+): boolean {
+  const value = args[key];
+  if (value === true || value === "true") return true;
+  if (value === false || value === "false") return false;
+  return fallback;
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function compactIndex(index: ProjectIndex) {
@@ -760,11 +805,14 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
     description: "Open an http/https URL in the product browser panel.",
     args: {
       url: "URL to open. Supports http, https, localhost, 127.0.0.1.",
+      newTab:
+        "Optional boolean. When true, open in a new browser tab instead of the active tab.",
     },
     async execute(args) {
       const url = stringArg(args, "url");
+      const newTab = args.newTab === true || args.newTab === "true";
       return {
-        result: await openBrowserUrl({ url, requestedBy: "agent" }),
+        result: await openBrowserUrl({ url, requestedBy: "agent", newTab }),
       };
     },
   },
@@ -930,7 +978,7 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
             ? `${jpegBase64.slice(0, 48)}…`
             : null,
           hint: jpegBase64
-            ? "Full image also in browser.inspect snapshot path when webview posts."
+            ? "Full-page CDP capture (scroll area, max ~6000px height). Off-screen text also in browser.inspect textPreview/domOutline."
             : "Screenshot empty.",
         },
       };
@@ -1083,8 +1131,8 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
       y: "Y coordinate in viewport pixels",
     },
     async execute(args) {
-      const x = numberArg(args, "x");
-      const y = numberArg(args, "y");
+      const x = numberArg(args, "x", 0, 0, 10_000);
+      const y = numberArg(args, "y", 0, 0, 10_000);
       if (!(await isCdpBridgeAvailable())) {
         return {
           result: { ok: false, hint: "CDP bridge offline." },
@@ -1092,6 +1140,215 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
       }
       const node = await cdpInspectAt(x, y);
       return { result: { ok: true, x, y, node } };
+    },
+  },
+  {
+    name: "devtools.list_pages",
+    description:
+      "List open browser tabs (tabId, guestId, url, title, active index). Codex list_pages parity.",
+    args: {},
+    async execute() {
+      const pages = await listBrowserPages();
+      let cdpGuests: unknown = null;
+      if (await isCdpBridgeAvailable()) {
+        try {
+          cdpGuests = await cdpListGuestPages();
+        } catch {
+          /* optional */
+        }
+      }
+      return { result: { pages, cdpGuests } };
+    },
+  },
+  {
+    name: "devtools.new_page",
+    description:
+      "Open a URL in a new browser tab. Codex new_page parity.",
+    args: {
+      url: "http(s) URL for the new tab.",
+    },
+    async execute(args) {
+      const url = stringArg(args, "url");
+      const { tab, state } = await openBrowserUrlInTabs({
+        url,
+        requestedBy: "agent",
+        newTab: true,
+      });
+      return { result: { tab, version: state.version } };
+    },
+  },
+  {
+    name: "devtools.switch_page",
+    description:
+      "Switch active browser tab by tabId, guestId, or zero-based index from list_pages.",
+    args: {
+      tabId: "Tab id from list_pages.",
+      guestId: "WebView guest id from list_pages.",
+      index: "Zero-based tab index from list_pages.",
+    },
+    async execute(args) {
+      const state = await getBrowserTabsState();
+      let tabId = stringArg(args, "tabId");
+      if (!tabId) {
+        const guestId = numberArg(args, "guestId", -1, 0, 999_999);
+        const index = numberArg(args, "index", -1, 0, 99);
+        if (guestId >= 0) {
+          const match = state.tabs.find(
+            (tab) => tab.guestWebContentsId === guestId,
+          );
+          if (match) tabId = match.id;
+        } else if (index >= 0 && index < state.tabs.length) {
+          tabId = state.tabs[index]!.id;
+        }
+      }
+      if (!tabId) {
+        throw new Error("tabId, guestId, or index is required.");
+      }
+      const next = await switchBrowserTab(tabId);
+      const tab = next.tabs.find((item) => item.id === tabId);
+      if (
+        tab?.guestWebContentsId != null &&
+        (await isCdpBridgeAvailable())
+      ) {
+        try {
+          await cdpActivateGuest(tab.guestWebContentsId);
+        } catch {
+          /* guest may not be mounted yet */
+        }
+      }
+      return {
+        result: {
+          activeTabId: next.activeTabId,
+          tab,
+          version: next.version,
+        },
+      };
+    },
+  },
+  {
+    name: "devtools.performance_start_trace",
+    description:
+      "Start a CDP performance trace on the in-app browser page (aligns with chrome-devtools-mcp performance_start_trace). Use before measuring load or interaction. Pair with performance_stop_trace.",
+    args: {
+      reload:
+        "Optional boolean: reload page after trace starts to profile full load.",
+      autoStop:
+        "Optional boolean: auto-stop trace after ~5s and return combined summary.",
+    },
+    async execute(args) {
+      if (!(await isCdpBridgeAvailable())) {
+        return {
+          result: { ok: false, hint: "CDP bridge offline." },
+        };
+      }
+      const reload = booleanArg(args, "reload", false);
+      const autoStop = booleanArg(args, "autoStop", false);
+      const start = await cdpPerformanceStartTrace({ reload });
+      if (!autoStop) {
+        return { result: start };
+      }
+      await sleepMs(5000);
+      const stop = await cdpPerformanceStopTrace();
+      const result = await enrichPerformanceStopResult(stop);
+      return {
+        result: {
+          ...result,
+          autoStop: true,
+        },
+      };
+    },
+  },
+  {
+    name: "devtools.performance_stop_trace",
+    description:
+      "Stop CDP performance trace and return metrics, page timing (FCP/LCP/load), availableInsights list, and optional trace file path.",
+    args: {},
+    async execute() {
+      if (!(await isCdpBridgeAvailable())) {
+        return {
+          result: { ok: false, hint: "CDP bridge offline." },
+        };
+      }
+      const stop = await cdpPerformanceStopTrace();
+      const result = await enrichPerformanceStopResult(stop);
+      return { result };
+    },
+  },
+  {
+    name: "devtools.performance_analyze_insight",
+    description:
+      "Deep-dive a Performance Insight from the last trace recording (aligns with chrome-devtools-mcp performance_analyze_insight). Use insightName from availableInsights after stop_trace.",
+    args: {
+      insightName:
+        "Insight name, e.g. DocumentLatency, LCPBreakdown, LongTasks, LayoutShifts, NetworkSummary, MainThreadTopTasks.",
+      insightSetId:
+        "Optional id from stop_trace (trace file basename). Defaults to last recording.",
+      traceFile:
+        "Optional absolute path to trace JSON; defaults to last stop_trace file.",
+    },
+    async execute(args) {
+      const insightName = stringArg(args, "insightName");
+      if (!insightName) {
+        throw new Error("insightName is required.");
+      }
+      const insightSetId = stringArg(args, "insightSetId");
+      const traceFile = stringArg(args, "traceFile");
+      const result = await analyzePerformanceInsight({
+        insightName,
+        insightSetId: insightSetId || undefined,
+        traceFile: traceFile || undefined,
+      });
+      return { result };
+    },
+  },
+  {
+    name: "devtools.extract_design_spec",
+    description:
+      "Extract structured design spec from the current browser page and persist to .agent-state/design-specs. Use for demo-to-code / page replicate workflows (A024). Returns summary + persist path.",
+    args: {},
+    async execute() {
+      if (!(await isCdpBridgeAvailable())) {
+        return {
+          result: { ok: false, hint: "CDP bridge offline." },
+        };
+      }
+      const spec = await extractDesignSpecFromPage();
+      const meta = await saveDesignSpec(spec);
+      const summary = summarizeDesignSpec(spec);
+      return {
+        result: {
+          ok: true,
+          summary,
+          nodeCount: spec.nodes.length,
+          persisted: meta,
+          hint: "完整 spec 已落盘；写码用 summary，勿凭截图猜样式。",
+        },
+      };
+    },
+  },
+  {
+    name: "devtools.get_persisted_design_spec",
+    description:
+      "Read the latest persisted design spec summary from .agent-state (after extract_design_spec).",
+    args: {},
+    async execute() {
+      const spec = await loadLatestDesignSpec();
+      if (!spec) {
+        return {
+          result: {
+            ok: false,
+            hint: "无 persisted design spec。请先 browser.open demo URL 并 devtools.extract_design_spec。",
+          },
+        };
+      }
+      const meta = await loadLatestDesignSpecMeta();
+      return {
+        result: {
+          ok: true,
+          meta,
+          summary: summarizeDesignSpec(spec),
+        },
+      };
     },
   },
   {
@@ -1184,24 +1441,40 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
   {
     name: "shell.command.prepare",
     description:
-      "Prepare a whitelisted npm script (lint, build, test, typecheck) and create an approval. Does not run the command.",
+      "Prepare an npm script from package.json and create an approval. Does not run until user approves. Prefer script names like validate:agent, verify:smoke, lint, build.",
     args: {
-      script: "One of: lint, build, test, typecheck. Must exist in package.json.",
+      script: "Exact npm script name from package.json (e.g. lint, validate:agent, verify:smoke).",
     },
     async execute(args, context) {
-      const script = stringArg(args, "script") as
-        | "lint"
-        | "build"
-        | "test"
-        | "typecheck";
-      if (!["lint", "build", "test", "typecheck"].includes(script)) {
-        throw new Error("script must be lint, build, test, or typecheck.");
+      const script = stringArg(args, "script").trim();
+      if (!script) {
+        throw new Error("script is required.");
       }
       return {
         result: await prepareShellCommand({
           rootPath: context.workspace.rootPath,
           taskId: context.taskId,
           script,
+          createApproval: true,
+        }),
+      };
+    },
+  },
+  {
+    name: "shell.run.prepare",
+    description:
+      "Prepare an arbitrary workspace shell command and create an approval (Cursor-style terminal). Examples: npm run validate:agent, npx --yes tsx scripts/foo.ts, node scripts/trial.mjs. Blocked patterns are rejected. Does not run until user approves.",
+    args: {
+      command:
+        "Full shell command to run in workspace root (e.g. npm run verify:smoke).",
+    },
+    async execute(args, context) {
+      const command = stringArg(args, "command");
+      return {
+        result: await prepareShellRun({
+          rootPath: context.workspace.rootPath,
+          taskId: context.taskId,
+          command,
           createApproval: true,
         }),
       };

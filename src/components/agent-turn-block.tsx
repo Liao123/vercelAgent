@@ -5,6 +5,7 @@ import { AgentMarkdown } from "@/components/agent-markdown";
 import { TurnReasoningTimeline } from "@/components/agent-turn-reasoning-timeline";
 import { TurnHighlightLine } from "@/components/agent-turn-worked-line";
 import type { AgentTurnFeed } from "@/lib/agent-turn-feed";
+import type { AgentEvent } from "@/agent/types";
 import type { PostExecuteVerification } from "@/agent/verification";
 
 type AgentTurnBlockProps = {
@@ -15,6 +16,10 @@ type AgentTurnBlockProps = {
   onApplyApproval?: (approvalId: string) => void;
   onRejectApproval?: (approvalId: string) => void;
   applyApprovalBusy?: boolean;
+  pendingCommandApprovalIds?: Set<string>;
+  onApproveCommand?: (approvalId: string) => void;
+  onRejectCommand?: (approvalId: string) => void;
+  commandApprovalBusy?: boolean;
   showInlineFileChangeActions?: boolean;
   onFixLintAfterWrite?: (verification: PostExecuteVerification) => void;
 };
@@ -80,12 +85,20 @@ function AssistantMessage({
   streaming = false,
 }: {
   body: string;
-  tone?: "neutral" | "error";
+  tone?: "neutral" | "error" | "success";
   streaming?: boolean;
 }) {
   if (tone === "error") {
     return (
       <div className="whitespace-pre-wrap break-words text-[13px] leading-[1.65] text-red-700 dark:text-red-300">
+        {body}
+      </div>
+    );
+  }
+
+  if (tone === "success") {
+    return (
+      <div className="whitespace-pre-wrap break-words rounded-xl border border-emerald-200/80 bg-emerald-50/90 px-3 py-2.5 text-[13px] leading-[1.65] text-emerald-900 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-100">
         {body}
       </div>
     );
@@ -107,6 +120,10 @@ export function AgentTurnBlock({
   onApplyApproval,
   onRejectApproval,
   applyApprovalBusy = false,
+  pendingCommandApprovalIds,
+  onApproveCommand,
+  onRejectCommand,
+  commandApprovalBusy = false,
   showInlineFileChangeActions = true,
   onFixLintAfterWrite,
 }: AgentTurnBlockProps) {
@@ -132,10 +149,44 @@ export function AgentTurnBlock({
   const summaryTone = turn.status === "failed" ? "error" : "neutral";
   const showStreaming = Boolean(streamingAnswer);
 
-  const failedHighlights = turn.highlights.filter(
-    (event) =>
-      event.type === "verification.completed" && !event.result.success,
+  const approvalChatHighlights = turn.highlights.filter((event) => {
+    if (event.type === "assistant.notice") return true;
+    if (event.type === "approval.required" || event.type === "approval.executed") {
+      return true;
+    }
+    if (event.type === "verification.completed") {
+      return !turn.highlights.some((item) => item.type === "approval.executed");
+    }
+    return false;
+  });
+
+  const executedApprovalIds = new Set(
+    approvalChatHighlights
+      .filter(
+        (event): event is Extract<AgentEvent, { type: "approval.executed" }> =>
+          event.type === "approval.executed",
+      )
+      .map((event) => event.approvalId),
   );
+  const commandNotices = approvalChatHighlights.filter(
+    (event): event is Extract<AgentEvent, { type: "assistant.notice" }> =>
+      event.type === "assistant.notice",
+  );
+  const commandDetailHighlights = approvalChatHighlights.filter((event) => {
+    if (event.type === "assistant.notice") return false;
+    if (
+      event.type === "approval.required" &&
+      executedApprovalIds.has(event.approval.id)
+    ) {
+      return false;
+    }
+    if (event.type === "verification.completed") {
+      return !approvalChatHighlights.some(
+        (item) => item.type === "approval.executed",
+      );
+    }
+    return true;
+  });
 
   return (
     <article className="space-y-4 pb-8">
@@ -169,8 +220,23 @@ export function AgentTurnBlock({
           <AssistantMessage body={completedSummary} tone={summaryTone} />
         )}
 
-        {failedHighlights.map((event, index) => (
-          <TurnHighlightLine key={`hl-${index}`} event={event} />
+        {commandNotices.map((event, index) => (
+          <AssistantMessage
+            key={`notice-${index}`}
+            body={event.message}
+            tone={event.tone === "error" ? "error" : event.tone === "success" ? "success" : "neutral"}
+          />
+        ))}
+
+        {commandDetailHighlights.map((event, index) => (
+          <TurnHighlightLine
+            key={`hl-${event.type}-${index}`}
+            event={event}
+            pendingCommandApprovalIds={pendingCommandApprovalIds}
+            onApproveCommand={onApproveCommand}
+            onRejectCommand={onRejectCommand}
+            commandApprovalBusy={commandApprovalBusy}
+          />
         ))}
 
         {turn.fileChanges && (

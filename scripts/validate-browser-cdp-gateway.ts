@@ -22,17 +22,28 @@ const DEVTOOLS_TOOLS = [
   "devtools.get_box_model",
   "devtools.get_computed_style",
   "devtools.inspect_element_at",
+  "devtools.list_pages",
+  "devtools.new_page",
+  "devtools.switch_page",
+  "devtools.performance_start_trace",
+  "devtools.performance_stop_trace",
+  "devtools.performance_analyze_insight",
+  "devtools.extract_design_spec",
+  "devtools.get_persisted_design_spec",
 ];
 
 async function main(): Promise<void> {
   const cdpMain = await read("electron/browser-cdp.mjs");
   assert.ok(cdpMain.includes("startCdpBridgeServer"), "CDP HTTP bridge");
   assert.ok(cdpMain.includes("/send"), "bridge /send");
-  assert.ok(cdpMain.includes("/click"), "bridge /click");
+  assert.ok(cdpMain.includes("captureGuestScreenshot"), "full page screenshot");
+  assert.ok(cdpMain.includes("captureBeyondViewport"), "CDP beyond viewport");
   assert.ok(cdpMain.includes("/type"), "bridge /type");
   assert.ok(cdpMain.includes("DOMSnapshot.captureSnapshot"), "DOM snapshot CDP");
   assert.ok(cdpMain.includes("Accessibility.getFullAXTree"), "AX tree CDP");
-  assert.ok(cdpMain.includes("cdp-bridge.json"), "bridge state file");
+  assert.ok(cdpMain.includes("listGuestPages"), "CDP list guest pages");
+  assert.ok(cdpMain.includes("/pages"), "bridge /pages");
+  assert.ok(cdpMain.includes("/activate"), "bridge /activate");
 
   const preload = await read("electron/preload.cjs");
   assert.ok(preload.includes("sendBrowserCdp"), "preload sendBrowserCdp");

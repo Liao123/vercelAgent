@@ -69,6 +69,27 @@ export async function captureBrowserScreenshotCdp(
   }
 }
 
+export async function openExternalUrl(url: string): Promise<boolean> {
+  if (!isDesktopApp() || !window.vecDesktop?.openExternalUrl) {
+    return false;
+  }
+  try {
+    const result = await window.vecDesktop.openExternalUrl(url);
+    return Boolean(result?.ok);
+  } catch {
+    return false;
+  }
+}
+
+export function subscribeBrowserGuestOpenUrl(
+  onUrl: (url: string) => void,
+): () => void {
+  if (!isDesktopApp() || !window.vecDesktop?.onBrowserGuestOpenUrl) {
+    return () => {};
+  }
+  return window.vecDesktop.onBrowserGuestOpenUrl(onUrl);
+}
+
 export async function fetchBrowserNetworkCdp(
   guestWebContentsId: number,
 ): Promise<unknown[]> {

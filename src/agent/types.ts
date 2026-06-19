@@ -233,14 +233,20 @@ export type ApprovalGitMutationPreview = {
   workspace?: ApprovalGitWorkspaceSnapshot;
 };
 
-export type ApprovalShellScript = "lint" | "build" | "test" | "typecheck";
+/** package.json scripts 名称（动态读取，不限于 lint/build/test/typecheck）。 */
+export type ApprovalShellScript = string;
+
+export type ShellOperation =
+  | { type: "npm_script"; script: string }
+  | { type: "raw"; command: string };
 
 export type ApprovalShellMutationPreview = {
   command: string;
   risk: ApprovalRisk;
   notes: string[];
-  script: ApprovalShellScript;
   available: boolean;
+  operationType: ShellOperation["type"];
+  script?: string;
 };
 
 export type ApprovalPatchFilePreview = {
@@ -284,7 +290,7 @@ export type ApprovalDetails =
   | {
       kind: "shell_command";
       operationHash: string;
-      operation: { type: "npm_script"; script: ApprovalShellScript };
+      operation: ShellOperation;
       preview: ApprovalShellMutationPreview;
     };
 
@@ -372,6 +378,22 @@ export type AgentEvent =
       result: unknown;
     }
   | { type: "approval.required"; taskId: string; approval: ApprovalRequest }
+  | {
+      type: "approval.executed";
+      taskId: string;
+      approvalId: string;
+      title: string;
+      command: string;
+      status: "succeeded" | "failed";
+      output?: string;
+      summary?: string;
+    }
+  | {
+      type: "assistant.notice";
+      taskId: string;
+      message: string;
+      tone: "success" | "error" | "neutral";
+    }
   | { type: "file.changed"; taskId: string; filePath: string; diff: string }
   | {
       type: "verification.completed";

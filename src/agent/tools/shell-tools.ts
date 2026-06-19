@@ -1,19 +1,19 @@
 /**
- * 受控 Shell 工具（仅白名单 npm scripts，与 verification 一致）。
+ * 受控 Shell 工具：package.json scripts + 任意 workspace 命令（审批后执行）。
  */
 import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { createApprovalRequest, requireApprovedApproval } from "@/agent/approval";
-import type { ApprovalShellScript } from "@/agent/types";
+import type { ApprovalRisk, ShellOperation, VerificationResult } from "@/agent/types";
 import {
-  getVerificationPlan,
-  runVerificationCommand,
-} from "@/agent/verification";
-import type { VerificationResult } from "@/agent/types";
+  classifyNpmScriptRisk,
+  validateShellCommand,
+} from "@/agent/tools/shell-command-policy";
+import { sanitizeShellCommand } from "@/agent/tools/shell-output";
+import { executeShellCommand } from "@/agent/tools/shell-runner";
 
-export type ShellOperation = {
-  type: "npm_script";
-  script: ApprovalShellScript;
-};
+export type { ShellOperation } from "@/agent/types";
 
 export type PreparedShellCommand = {
   operation: ShellOperation;
@@ -22,10 +22,11 @@ export type PreparedShellCommand = {
   approval?: ReturnType<typeof createApprovalRequest>;
   preview: {
     command: string;
-    risk: "medium";
+    risk: ApprovalRisk;
     notes: string[];
-    script: ApprovalShellScript;
     available: boolean;
+    operationType: ShellOperation["type"];
+    script?: string;
   };
 };
 
@@ -53,87 +54,163 @@ export function getShellApprovalAction(operation: ShellOperation): string {
   return `shell.run:${hash}`;
 }
 
-const BLOCKED_NOTES = [
-  "Only npm scripts declared in package.json are allowed.",
-  "Arbitrary shell commands are not supported in the web agent.",
-];
+async function readPackageScripts(rootPath: string): Promise<Record<string, string>> {
+  const raw = await fs.readFile(path.join(rootPath, "package.json"), "utf8");
+  const parsed = JSON.parse(raw) as { scripts?: Record<string, string> };
+  return parsed.scripts ?? {};
+}
 
-export async function prepareShellCommand(input: {
-  rootPath: string;
+function buildPreparedShellCommand(input: {
+  operation: ShellOperation;
   taskId: string;
-  script: ApprovalShellScript;
   createApproval?: boolean;
-}): Promise<PreparedShellCommand> {
-  const operation: ShellOperation = { type: "npm_script", script: input.script };
-  const requiredApprovalAction = getShellApprovalAction(operation);
+  preview: PreparedShellCommand["preview"];
+}): PreparedShellCommand {
+  const requiredApprovalAction = getShellApprovalAction(input.operation);
   const operationHash = requiredApprovalAction.replace("shell.run:", "");
-  const plan = await getVerificationPlan(input.rootPath, [input.script]);
-  const available = plan.available.includes(input.script);
-  const command = `npm run ${input.script}`;
-  const notes = available
-    ? [
-        "Shell command runs in the current workspace directory.",
-        "Output may be large; results are truncated in the UI.",
-      ]
-    : [...BLOCKED_NOTES, `Missing npm script: ${input.script}`];
-
-  const preview = {
-    command,
-    risk: "medium" as const,
-    notes,
-    script: input.script,
-    available,
-  };
-
   return {
-    operation,
+    operation: input.operation,
     operationHash,
     requiredApprovalAction,
     approval:
-      input.createApproval && available
+      input.createApproval && input.preview.available
         ? createApprovalRequest({
             taskId: input.taskId,
-            title: `Run ${command}`,
-            reason: `Execute ${command} in workspace.`,
-            risk: "medium",
+            title: `Run ${input.preview.command}`,
+            reason: `Execute command in workspace: ${input.preview.command}`,
+            risk: input.preview.risk,
             action: requiredApprovalAction,
             details: {
               kind: "shell_command",
               operationHash,
-              operation,
-              preview,
+              operation: input.operation,
+              preview: input.preview,
             },
           })
         : undefined,
-    preview,
+    preview: input.preview,
   };
 }
 
-export async function applyShellCommand(input: {
+export async function prepareShellCommand(input: {
   rootPath: string;
   taskId: string;
-  script: ApprovalShellScript;
+  script: string;
+  createApproval?: boolean;
+}): Promise<PreparedShellCommand> {
+  const script = input.script.trim();
+  const scripts = await readPackageScripts(input.rootPath);
+  const available = script in scripts;
+  const command = `npm run ${script}`;
+  const notes = available
+    ? [
+        "Runs an npm script declared in package.json.",
+        "Shell command runs in the workspace root directory.",
+      ]
+    : [`Missing npm script in package.json: ${script}`];
+
+  const operation: ShellOperation = { type: "npm_script", script };
+  return buildPreparedShellCommand({
+    operation,
+    taskId: input.taskId,
+    createApproval: input.createApproval,
+    preview: {
+      command,
+      risk: classifyNpmScriptRisk(script),
+      notes,
+      available,
+      operationType: "npm_script",
+      script,
+    },
+  });
+}
+
+export async function prepareShellRun(input: {
+  rootPath: string;
+  taskId: string;
+  command: string;
+  createApproval?: boolean;
+}): Promise<PreparedShellCommand> {
+  const sanitized = sanitizeShellCommand(input.command);
+  const validation = validateShellCommand(sanitized);
+  const operation: ShellOperation = {
+    type: "raw",
+    command: validation.command,
+  };
+  const notes = validation.allowed
+    ? [...validation.notes]
+    : [...validation.notes, validation.reason ?? "Command blocked."];
+
+  return buildPreparedShellCommand({
+    operation,
+    taskId: input.taskId,
+    createApproval: input.createApproval,
+    preview: {
+      command: validation.command,
+      risk: validation.risk,
+      notes,
+      available: validation.allowed,
+      operationType: "raw",
+    },
+  });
+}
+
+export async function applyShellOperation(input: {
+  rootPath: string;
+  taskId: string;
+  operation: ShellOperation;
   approvalId: string;
 }): Promise<AppliedShellCommand> {
-  const prepared = await prepareShellCommand({
-    rootPath: input.rootPath,
-    taskId: input.taskId,
-    script: input.script,
-  });
+  const prepared =
+    input.operation.type === "npm_script"
+      ? await prepareShellCommand({
+          rootPath: input.rootPath,
+          taskId: input.taskId,
+          script: input.operation.script,
+        })
+      : await prepareShellRun({
+          rootPath: input.rootPath,
+          taskId: input.taskId,
+          command: input.operation.command,
+        });
+
   if (!prepared.preview.available) {
-    throw new Error(`npm script is not available: ${input.script}`);
+    throw new Error(
+      prepared.preview.notes.find((note) => note.startsWith("Missing npm")) ??
+        prepared.preview.notes.at(-1) ??
+        "Shell command is not available.",
+    );
   }
+
   const approval = requireApprovedApproval(input.approvalId);
   if (approval.action !== prepared.requiredApprovalAction) {
     throw new Error("Approval does not match this shell command.");
   }
-  const result = await runVerificationCommand(input.rootPath, input.script);
-  if (!result.success) {
-    throw new Error(result.output || `Command failed: ${prepared.preview.command}`);
-  }
+
+  const command =
+    input.operation.type === "npm_script"
+      ? `npm run ${input.operation.script}`
+      : input.operation.command;
+
+  const result = await executeShellCommand(input.rootPath, command);
   return {
     ...prepared,
     applied: true,
     result,
   };
+}
+
+/** @deprecated Use applyShellOperation */
+export async function applyShellCommand(input: {
+  rootPath: string;
+  taskId: string;
+  script: string;
+  approvalId: string;
+}): Promise<AppliedShellCommand> {
+  return applyShellOperation({
+    rootPath: input.rootPath,
+    taskId: input.taskId,
+    operation: { type: "npm_script", script: input.script },
+    approvalId: input.approvalId,
+  });
 }

@@ -25,6 +25,7 @@ const PREPARE_TOOLS = new Set([
   "patch.prepare",
   "git.mutation.prepare",
   "shell.command.prepare",
+  "shell.run.prepare",
 ]);
 
 export function createAgentLoopPlan(userRequest: string): AgentPlan {

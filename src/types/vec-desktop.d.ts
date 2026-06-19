@@ -44,6 +44,10 @@ export type VecDesktopBridge = {
     baseUrl?: string;
     port?: number;
   }>;
+  openExternalUrl: (
+    url: string,
+  ) => Promise<{ ok: boolean; error?: string }>;
+  onBrowserGuestOpenUrl: (callback: (url: string) => void) => () => void;
 };
 
 declare global {

@@ -30,8 +30,20 @@
 | **A130** | **CDP HTTP 桥** + 10 个 `devtools.*` 工具（与 Codex/chrome-devtools-mcp 同级读+操作） |
 | **A131** | **TaskPlaybook 内核** | `task-playbooks.ts`：browser-doc / ui-visible-edit / file-exact / read-only；通用熔断 + 轮次预算 + 中间区路径展示 |
 | **A132** | **审查 Tab Cursor 对齐** | 应用更改/放弃更改、空态分场景、文件 ←→ 导航、自动选中首个 diff、`cursor-review-notes.template.json` |
+| **A133** | **浏览器多标签** | `browser-tabs.json`；`devtools.list_pages` / `new_page` / `switch_page`；CDP `/pages` + `/activate`；右栏 Tab 条 |
+| **A140** | **Cursor 级终端 + 自举** | `shell.run.prepare` 任意 workspace 命令（审批后执行）；`shell.command.prepare` 扩至 package.json 全 scripts；`capability-extension` 剧本 |
+| **A141** | **命令审批 UX + 失败 recovery** | 聊天气泡内联「批准并运行」；`assistant.notice` 成功/失败；批准后 Loop 续跑 + 端口占用 recovery 提示；ANSI 清理；`dev` 长进程 ready 检测 |
 
 **产品**：对齐 Cursor 剪贴板附图；最多 4 张，走现有 `referenceImages` + vision 模型链路。
+
+**终端（A140 + A141）**：
+
+- Agent 用 `shell.run.prepare` / `shell.command.prepare` → **聊天气泡或底部** `AgentCommandApprovalBar` → 批准并运行。
+- 执行结果：`approval.executed` + 绿/红 `assistant.notice`；已执行后隐藏重复「待授权」行。
+- 失败后：`maybeResumeLoopAfterApproval` 续跑，续跑 prompt 含「不得只汇报失败就 final」+ 端口占用换 `--port` 等提示（**仍须用户再次批准每条新命令**）。
+- 破坏性命令策略拦截；改 Loop 内核后需重启 dev。
+
+**已知架构差（2026-06-18 实机暴露）**：Claude Code / Cursor 的 Bash 在 **Loop 内** `tool_result` 闭环；本项目仍是 **prepare → 退出 Loop → 批准 → execute → 再开 Loop**。审计表 L6 Shell 曾标 `defer`，导致 A140 只补 UI 未补 harness 语义。下一优先：`trial:shell-recovery` + 读 `claude-code` Bash 链路（见 `agent-kernel-audit.md` L6）。
 
 **实机长线程**（2026-06-18）：`trial:long-thread` 通过 — Task1 4 次压缩（`snip:1,auto`），无 emergency `collapse`。报告：`.agent-state/compare/long-thread-trial.json`
 
@@ -71,8 +83,11 @@ npm run trial:golden-path-sidebar:strict   # 有模型时
 
 | 优先级 | 内容 |
 | --- | --- |
-| **P0 主任务** | **A130–A139**：内置浏览器 + `devtools.*` 对齐 Codex（见下节） |
+| **P0** | **`trial:shell-recovery`**：实机「跑 dev → 端口占用 → Agent 须 prepare 第二条命令（如 `--port 5175`）」；验收脚本待写 |
+| **P0** | **对标 Claude Code Bash**：读 `D:\案例\claude-code-claude\...\query.ts` + Bash 工具；更新 `agent-kernel-audit.md` L6；评估 tool_result 回灌或 dev playbook |
+| P1 | **dev-run playbook**：`task-playbooks.ts` 绑定「启动项目 / 跑 dev」→ 端口冲突 → 查占用 → 换端口 |
 | P2 | Electron 签名 / 自动更新 |
+| P2 | Electron PTY 可视化终端面板（A140 已交付命令审批+执行，缺 xterm UI） |
 | 观测 | 实机 `trial:long-thread` 记录 `layersApplied` 是否出现 `collapse` |
 
 **明确不做**：「接受当前文件」；Claude 全量双轨 CONTEXT_COLLAPSE；首期不移植 chrome-devtools-mcp 全 40+ 工具名（用本项目 `devtools.*` + 同一 CDP 底座）。
@@ -111,7 +126,7 @@ CDP 工具层（A130+ in_progress）
 | box / computed style | `devtools.get_box_model` / `get_computed_style` | ❌ |
 | 坐标探测 | `devtools.inspect_element_at` | ❌ |
 | `performance_start_trace` | CDP Performance（二期） | ❌ |
-| 多标签 | `list_pages` / `new_page` | ❌ 单页 |
+| 多标签 | `list_pages` / `new_page` | ✅ A133 `devtools.list_pages` / `new_page` / `switch_page` |
 
 ### 实施顺序（建议严格执行）
 
@@ -143,7 +158,36 @@ npm run dev:desktop
 | Loop | `src/agent/core/agent-loop.ts` |
 | 压缩 | `src/agent/memory/loop-context-compactor.ts`, `loop-compaction-layers.ts` |
 | 外置 | `src/agent/memory/tool-result-storage.ts` |
+| Shell 执行 | `src/agent/tools/shell-runner.ts`, `shell-output.ts`, `shell-command-policy.ts` |
+| 命令审批 UI | `src/components/agent-panel.tsx`, `agent-turn-worked-line.tsx`, `agent-turn-block.tsx` |
+| 批准后续跑 | `src/lib/approval-loop-continuation.ts`, `src/lib/approval-chat-events.ts` |
 | 审计 | `docs/agent-kernel-audit.md` |
+
+---
+
+## 接续收工（2026-06-18 · 终端实机）
+
+**现象**：用户「跑一下 dev」→ 批准 `npm run dev` → 端口 5173/5174 占用 + ANSI 乱码 → 像「宕机」（实为 Loop 已结束，续跑后模型只总结失败）。
+
+**本批交付（A141）**：
+
+| 范围 | 内容 |
+| --- | --- |
+| 执行层 | ANSI 剥离；`dev/start` 长进程 spawn + `ready`/`Local:` 判成功；端口占用中文提示 |
+| 聊天 UX | 内联「批准并运行 / 拒绝」；`assistant.notice` 气泡；已执行后隐藏「待授权」 |
+| 续跑 | `approval-loop-continuation.ts` 失败 recovery（禁止 failure-only final；嵌套 result 解包） |
+| Prompt | `loop-system-native.md` shell 失败须诊断并重试 |
+| 验证 | `validate:shell-run`、`validate:approval-continuation`；`npm run build` 通过 |
+
+**回家前回归**：
+
+```bash
+npm run validate:agent
+npm run build
+# 实机（可选）：npm run dev → 「跑一下 dev」→ 批准 → 看绿/红气泡 + 失败是否续跑 prepare 新命令
+```
+
+**下次开工第一件事**：读本文 § 已知架构差 → 做 `trial:shell-recovery` 或 dev playbook。
 
 ---
 

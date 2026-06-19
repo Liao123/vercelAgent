@@ -1,8 +1,8 @@
 # 开发智能体项目进度
 
-更新时间：2026-06-17
+更新时间：2026-06-18
 
-> **接续开发入口**：[`docs/agent-handoff.md`](agent-handoff.md)（2026-06-17：A106 侧栏加号黄金路径 + validate:agent 全绿）。
+> **接续开发入口**：[`docs/agent-handoff.md`](agent-handoff.md)（**2026-06-18 收工**：A141 命令审批 UX + shell 失败 recovery；见 handoff § 接续收工 2026-06-18）。
 
 本文档用于记录开发智能体项目的工作项、当前状态、验收标准和执行记录。后续每完成一个工作项，都必须更新本文档。
 
@@ -85,7 +85,7 @@ MVP 阶段对照表见 [`docs/agent-architecture.md` §20](agent-architecture.md
 | A021 | done | 跑通开发闭环 | 需求 -> 定位文件 -> 计划 -> 修改 -> 验证 -> 总结。 |
 | A022 | done | 增加内置浏览器 UI | 产品内可以打开目标网址或本地页面，AI 可以触发打开指定 URL。 |
 | A023 | done | 桌面 WebView 快照 + `browser.inspect` + CDP-lite | Electron `<webview>`、console/DOM/network/query/截图/HAR-lite。 |
-| A024 | deferred | 页面生成/复刻流程 | demo URL + 素材 + design spec -> 修改代码 -> 浏览器验证，先暂缓。 |
+| A024 | in_progress | **页面复刻 v1**：`design-replicate` 剧本 + spec 落盘 + `demo-replicate` 占位页；`validate:design-replicate` |
 | A025 | partial | Electron 桌面端 + CDP-lite | 壳、选文件夹、pack、WebView、CDP-lite 已交付；签名/自动更新/完整 HAR deferred。 |
 | A026 | done | Trace Store 持久化 | Trace 不再只存在内存 Map，支持 SQLite 或文件落盘，重启后可恢复。 |
 | A027 | done | Workspace 项目选择 | 支持用户选择或配置项目路径，而不是固定使用 Next.js 进程 cwd。 |
@@ -515,11 +515,48 @@ node scripts/golden-path-trial.mjs "D:\案例\aiproject"   # 外部项目改 ind
 | A128 | done | 内置浏览器稳定性：禁同源嵌套、忽略 `-3` 导航、快照失败不误报 |
 | A129 | done | **Codex 式 WebView + CDP**（`browser-cdp.mjs`、截图/Network、Cursor Chrome UI） |
 | A130 | done | **CDP HTTP 桥 + devtools.\***（click/type/DOM/AX/network/console） |
-| A131 | todo | performance trace、多标签、extract_design_spec |
+| A131 | done | **TaskPlaybook 内核** + 中间区展示 |
+| A133 | done | **浏览器多标签** + `devtools.list_pages` / `new_page` / `switch_page` |
+| A134 | done | **performance trace** + `extract_design_spec`；`validate:browser-performance` |
+| A135 | done | **`performance_analyze_insight`** + trace 解析（LongTasks/LCP/CLS 等） |
+| A136 | done | **A024 v1** design-replicate 剧本 + design spec 落盘 + 黄金路径 fixture |
+| A140 | done | **Cursor 级终端**：`shell.run.prepare` 任意 workspace 命令 + `shell.command.prepare` 扩至 package.json 全 scripts；`capability-extension` 自举剧本；`validate:shell-run` |
+| A141 | done | **命令审批 UX + shell recovery**：聊天气泡内联批准；`assistant.notice`；`pendingCommandApprovals` 与 events 合并；ANSI/长进程 dev；续跑 recovery prompt；`validate:approval-continuation` |
+| A141-follow | todo | **`trial:shell-recovery`** 实机 E2E；**dev-run playbook**；对标 Claude Code Bash in-loop（见 handoff / kernel-audit L6） |
 | A025 Electron | in_progress | 桌面壳；Codex 浏览器 MVP；A130+ DevTools |
 | 开发闭环 develop | dev only | `?dev=1` 顶部面板，主路径仍为 Loop |
 
 **日常验证**：`npm run validate:agent`；在线 `npm run trial:golden-path-ui`（`--strict` 记录通过率即可）。
+
+## 接续收工（2026-06-18 · 终端实机 + Claude 对标反思）
+
+**阶段结论**：A140 命令链路已通，但实机「跑 dev + 端口占用」暴露 **harness 语义未对齐 Cursor/Claude Code**（非模型笨）：shell 走审批支线，失败后易「总结即停」。A141 补 UI/输出/续跑 prompt，**架构债仍在**（Bash 不在 Loop 内闭环）。
+
+**本批完成（A141）**：
+
+| 文件/模块 | 变更摘要 |
+| --- | --- |
+| `shell-output.ts` / `shell-runner.ts` | ANSI 清理；`isLongRunningNpmScript`；dev ready 检测；端口占用提示 |
+| `approval-loop-continuation.ts` | 失败后 recovery hint；嵌套 `result` 解包；禁止 failure-only final |
+| `approval-chat-events.ts` | 命令结果 `assistant.notice` |
+| `agent-panel.tsx` | 批准后续跑；`pushShellExecutionToChat`；events 合并 pending 命令审批 |
+| `agent-turn-worked-line.tsx` | 聊天气泡内联「批准并运行 / 拒绝」 |
+| `agent-turn-block.tsx` | 已执行后隐藏重复待授权；notice 渲染 |
+| `loop-system-native.md` | shell 失败须诊断并重试 |
+| `validate:approval-continuation.ts` | 续跑 prompt 静态验收 |
+
+**验收**：`npm run validate:shell-run`、`validate:approval-continuation`、`npm run build` 通过。
+
+**未完成 / 下次优先**：
+
+1. `trial:shell-recovery`（端口占用 → 第二条 prepare，需模型 + 实机）
+2. `task-playbooks.ts` **dev-run** 剧本
+3. 读 Claude Code Bash + 更新 `agent-kernel-audit.md` L6（Shell 从 defer 改为 align 计划）
+4. P2：Electron PTY 可视化终端
+
+**本地状态**：`.agent-state/`、`.agent-traces/` 勿提交；改 Loop 内核后重启 `npm run dev` / `dev:desktop`。
+
+---
 
 ## 接续收工（2026-05-29）
 

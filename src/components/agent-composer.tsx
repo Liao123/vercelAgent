@@ -58,6 +58,7 @@ type AgentComposerProps = {
   onRemoveAttachedFile: (index: number) => void;
   maxAttachedFiles: number;
   approvalStatus: string | null;
+  approvalStatusTone?: "success" | "error" | "neutral";
   workspaceAtEnabled?: boolean;
   recentAttachedPaths?: string[];
   onPickAttachedPath?: (path: string) => void;
@@ -93,6 +94,7 @@ export function AgentComposer({
   onRemoveAttachedFile,
   maxAttachedFiles,
   approvalStatus,
+  approvalStatusTone = "neutral",
   workspaceAtEnabled = false,
   recentAttachedPaths = [],
   onPickAttachedPath,
@@ -646,7 +648,17 @@ export function AgentComposer({
 
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-500">
           {approvalStatus && (
-            <span className="text-emerald-600 dark:text-emerald-400">{approvalStatus}</span>
+            <span
+              className={
+                approvalStatusTone === "error"
+                  ? "text-red-600 dark:text-red-400"
+                  : approvalStatusTone === "success"
+                    ? "text-emerald-600 dark:text-emerald-400"
+                    : "text-zinc-500 dark:text-zinc-400"
+              }
+            >
+              {approvalStatus}
+            </span>
           )}
         </div>
       </div>

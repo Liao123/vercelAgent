@@ -16,8 +16,9 @@ type AgentRightRailProps = {
   onTabChange: (tab: AgentRightRailTab) => void;
 };
 
+/** Electron webview 是原生层，不能用 inset-0 铺满右栏（会挡住文件树等点击） */
 const OFFSCREEN_BROWSER_CLASS =
-  "pointer-events-none fixed left-[-12000px] top-0 z-0 h-[800px] w-[1000px] overflow-hidden opacity-[0.02]";
+  "pointer-events-none fixed -left-[12000px] top-0 z-[-1] h-[600px] w-[800px] min-h-0 overflow-hidden opacity-0";
 
 const TABS: {
   id: AgentRightRailTab;
@@ -132,11 +133,13 @@ export function AgentRightRail({
 
       <div className="relative min-h-0 flex-1 overflow-hidden" role="tabpanel">
         {tab === "review" && (
-          <div className="flex h-full min-h-0 flex-col">{reviewPanel}</div>
+          <div className="relative z-0 flex h-full min-h-0 flex-col">
+            {reviewPanel}
+          </div>
         )}
 
         {tab === "files" && (
-          <div className="flex h-full min-h-0 flex-col overflow-hidden">
+          <div className="relative z-0 flex h-full min-h-0 flex-col overflow-hidden">
             {!workspaceEnabled ? (
               <p className="px-3 py-6 text-center text-[11px] text-zinc-500">
                 设置 Workspace 后可浏览项目文件
@@ -156,7 +159,7 @@ export function AgentRightRail({
         <div
           className={
             tab === "browser"
-              ? "flex h-full min-h-0 flex-col overflow-hidden"
+              ? "relative z-0 flex h-full min-h-0 flex-col overflow-hidden"
               : OFFSCREEN_BROWSER_CLASS
           }
           aria-hidden={tab !== "browser"}

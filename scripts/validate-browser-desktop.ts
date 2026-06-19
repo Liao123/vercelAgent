@@ -18,6 +18,7 @@ async function main(): Promise<void> {
   );
 
   const mainSrc = await read("electron/main.mjs");
+  const cdpMain = await read("electron/browser-cdp.mjs");
   const preload = await read("electron/preload.cjs");
   assert.ok(mainSrc.includes("webviewTag: true"), "electron webviewTag");
   assert.ok(mainSrc.includes("setupBrowserCdp"), "browser CDP setup");
@@ -61,8 +62,20 @@ async function main(): Promise<void> {
     "webview collects HAR-lite entries",
   );
   assert.ok(
-    webview.includes("allowpopups=\"\""),
-    "webview allowpopups attribute",
+    cdpMain.includes("setWindowOpenHandler"),
+    "guest window open → new tab ipc",
+  );
+  assert.ok(
+    webview.includes("new-window"),
+    "webview handles new-window instead of popups",
+  );
+  assert.ok(
+    webview.includes("allowpopups"),
+    "webview allowpopups so target=_blank fires handlers; popups denied in main",
+  );
+  assert.ok(
+    webview.includes("pointerEvents"),
+    "webview toggles pointer events when offscreen",
   );
   assert.ok(
     webview.includes("isIgnorableWebviewLoadError"),
