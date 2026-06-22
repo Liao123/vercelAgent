@@ -7,6 +7,7 @@ import type { AgentUiContext } from "@/agent/types";
 import type { WorkspaceSnapshotInput } from "@/agent/workspace/workspace-snapshot-prompt";
 import { formatWorkspaceSnapshotForPrompt } from "@/agent/workspace/workspace-snapshot-prompt";
 import { isNarrowWorkspaceMetadataFromSignals } from "@/agent/core/evidence-gate";
+import { isWorkspaceGroundedUserRequest } from "@/agent/core/workspace-grounding";
 import { isExplicitReadOnlyRequest, isLikelyCodeEditRequest } from "@/agent/core/agent-loop-state";
 import { narrowMetadataPlanSteps } from "@/agent/workspace/framework-metadata-catalog";
 
@@ -333,7 +334,8 @@ export function normalizeTaskReasoning(
     next.canAnswerNow &&
     input.hasThreadMemory &&
     input.filesReadCount === 0 &&
-    input.toolsCalledCount === 0
+    input.toolsCalledCount === 0 &&
+    isWorkspaceGroundedUserRequest(input.userRequest)
   ) {
     next.canAnswerNow = false;
     if (!next.evidenceNeeded.some((item) => item.includes("disk") || item.includes("磁盘"))) {

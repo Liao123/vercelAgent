@@ -7,6 +7,7 @@ import {
   isLikelyCodeEditRequest,
 } from "@/agent/core/agent-loop-state";
 import { isUiLocationQuery } from "@/agent/core/prepare-gate";
+import { isWorkspaceGroundedUserRequest } from "@/agent/core/workspace-grounding";
 
 export type TaskPlaybookId =
   | "browser-doc"
@@ -79,6 +80,7 @@ export function isDesignReplicateRequest(input: string): boolean {
 export function isDevRunRequest(input: string): boolean {
   const text = input.trim();
   if (!text) return false;
+  if (!isWorkspaceGroundedUserRequest(text)) return false;
   if (isExplicitReadOnlyRequest(text)) return false;
   if (isCapabilityExtensionRequest(text)) return false;
   if (isBrowserDocAnalysisRequest(text)) return false;

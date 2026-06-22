@@ -78,8 +78,46 @@
 | **A157** | `done` | 压缩/记忆 pin `taskReasoning` | P2 | 长线程不失意图 |
 | **A158** | `done` | 语义索引提质（缓存 + scoped query） | P1 | 少重复全量 walk |
 | **A159** | `done` | Shell 策略分层（输出分类 + 续跑指令） | P1 | 失败续跑更稳，不绑 Next 句式 |
+| **A160** | `done` | 命令底栏 `AgentCommandApprovalBar` | P2 | 底栏 + 气泡双入口批准 |
+| **A161** | `done` | 低风控 shell 自动批准（Composer ⚙ 默认关） | P2 | validate/lint 少点一次 |
+| **A162** | `done` | 失效 workspace 路径回退 | P0 | 修 workspace API 500 |
+| **A163** | `done` | 咨询类任务证据 gate 豁免 | P1 | 产品规划不再须 file.read |
+| **A164** | `todo` | Workspace grounding 去词表化 | P1 | 见下文 |
 
-**建议实施顺序（A153+）**：A154 → A153 → A155 → A156 → A157 → A158 → A159。
+**建议下次**：A164 → 实机 advisory trial → P0 Bash 闭环 / 任务取消。
+
+---
+
+## A164 — Workspace grounding 去词表化（待做）
+
+**背景（A163）**：`workspace-grounding.ts` 用「商业计划/团购/…」负向词表 + `reasoningRequiresWorkspaceGather` 区分咨询 vs 读盘任务。能修产品规划误拦，但**仍有领域词维护债**，不符合 D049 终局。
+
+**目标**：规则只答「要不要 workspace 取证」；意图分类尽量交给推理 schema。
+
+**方案**：
+
+1. **主判（优先）**  
+   - `evaluateFinalEvidenceGate`：若 `evidenceNeeded.length === 0` 且 `!reasoningRequiresWorkspaceGather(reasoning)` → 一律放行 final（与 userRequest 词表无关）。  
+   - A163 已部分实现；A164 把它提升为**唯一主路径**，词表仅作 tie-break。
+
+2. **推理 schema（可选增强）**  
+   - `TaskReasoning` 增 `grounding: "workspace" | "none"` 或 `intent: "advisory"`。  
+   - `normalizeTaskReasoning` 仅在模型漏标时用极简硬信号兜底（路径、扩展名、`src/`）。
+
+3. **删除/瘦身**  
+   - 逐步移除 `isWorkspaceGroundedUserRequest` 里「商业计划、团购、海鲜…」等领域词。  
+   - 保留：`\.(tsx?|jsx?…)`、`src/`、`package.json`、`网站标题` 等**与仓库强相关**信号。
+
+4. **Playbook**  
+   - `dev-run` / `read-only-audit` 等继续复用 grounding 主函数，不另写句式。
+
+**完成标准**：
+
+- [ ] 主路径不依赖负向词表即可通过 `validate:loop-reasoning` 咨询用例  
+- [ ] 网站标题 / metadata QA 用例仍须 gather（不退化 A145–A148）  
+- [ ] 文档 D054 更新为 done；handoff 收工 3–5 行  
+
+**关键路径**：`workspace-grounding.ts`, `evidence-gate.ts`, `loop-reasoning.ts`, `validate-loop-reasoning.ts`
 
 ---
 

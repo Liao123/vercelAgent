@@ -54,6 +54,11 @@
 | A157 | done | 压缩/记忆 pin `[TASK_REASONING_PIN]` |
 | A158 | done | Project index 会话缓存 + scoped `query`；`validate:project-index` |
 | A159 | done | Shell 输出分层策略（already/port/timeout/generic）+ 续跑提示接入 |
+| A160 | done | 命令底栏 `AgentCommandApprovalBar`（输入框上方黄条 + 聊天气泡双入口） |
+| A161 | done | 低风控 shell 自动批准（Composer ⚙ 默认关；validate/lint/git status） |
+| A162 | done | 失效 workspace 路径回退 + `staleConfiguredPath` 提示（修 workspace 500） |
+| A163 | done | 咨询/规划类任务豁免 workspace 证据 gate；dev-run 不绑非代码问句 |
+| A164 | todo | Workspace grounding 去词表化：`advisory` intent / 推理字段主判 + 词表兜底删除 |
 | A024 | done | `trial:design-replicate` 实机通过；playbook 写盘前强制 extract spec |
 | A025 | done | Electron 壳 + CDP 浏览器 + 打包链路；`validate:desktop-smoke` |
 

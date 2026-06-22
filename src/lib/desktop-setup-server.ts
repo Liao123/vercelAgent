@@ -4,7 +4,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getApiConfig } from "@/lib/openai-config";
-import { getConfiguredWorkspacePath } from "@/agent/workspace/workspace-config";
+import {
+  getConfiguredWorkspacePath,
+  isWorkspaceDirectory,
+} from "@/agent/workspace/workspace-config";
 
 export type DesktopSetupStatus = {
   modelConfigured: boolean;
@@ -38,12 +41,15 @@ export async function getDesktopSetupStatus(): Promise<DesktopSetupStatus> {
       .catch(() => false),
     getConfiguredWorkspacePath(),
   ]);
+  const workspaceConfigured = workspacePath
+    ? await isWorkspaceDirectory(workspacePath)
+    : false;
 
   return {
     modelConfigured: getApiConfig() !== null,
     envLocalExists,
     envExampleExists,
-    workspaceConfigured: Boolean(workspacePath),
+    workspaceConfigured,
     configDir,
     envLocalFile,
     envExampleFile,

@@ -2,6 +2,8 @@
  * 命令审批 UI：按钮可见性 + 执行反馈 turn 路由。
  */
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { appendApprovalExecutionEvents, appendCommandApprovalRejectedEvents } from "../src/lib/approval-chat-events";
 import {
   collectPendingCommandApprovals,
@@ -179,6 +181,20 @@ assert.equal(
   ]).length,
   0,
   "bar clears after reject even when only event had pending",
+);
+
+const panel = fs.readFileSync(
+  path.join(process.cwd(), "src/components/agent-panel.tsx"),
+  "utf8",
+);
+assert.ok(panel.includes("AgentCommandApprovalBar"), "triple layout wires command bar");
+assert.ok(
+  panel.includes("pendingCommandApprovals"),
+  "panel derives pending shell approvals for bar",
+);
+assert.ok(
+  fs.existsSync(path.join(process.cwd(), "src/components/agent-command-approval-bar.tsx")),
+  "command approval bar component exists",
 );
 
 console.log("validate-command-approval-ui: passed");

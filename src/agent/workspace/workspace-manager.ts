@@ -8,7 +8,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { getGitRoot, getGitStatus } from "@/agent/tools/git-tools";
 import { readProjectRules, type ProjectRuleFile } from "@/agent/tools/project-rules";
-import { getConfiguredWorkspacePath } from "@/agent/workspace/workspace-config";
+import { resolveWorkspaceRootPath } from "@/agent/workspace/workspace-config";
 import { normalizeWorkspaceKey } from "@/lib/workspace-path";
 import type { GitStatusSnapshot } from "@/lib/git-status";
 
@@ -23,6 +23,8 @@ export type WorkspaceInfo = {
   packageName: string | null;
   rules: ProjectRuleFile[];
   git: GitStatusSnapshot | null;
+  /** workspace.json 中记录但已不存在的路径；UI 应提示用户重新选择 */
+  staleConfiguredPath: string | null;
 };
 
 async function fileExists(filePath: string): Promise<boolean> {
@@ -75,7 +77,8 @@ function detectFramework(dependencies: Record<string, string>): string | null {
 }
 
 export async function getCurrentWorkspace(): Promise<WorkspaceInfo> {
-  const rootPath = (await getConfiguredWorkspacePath()) ?? process.cwd();
+  const resolved = await resolveWorkspaceRootPath();
+  const rootPath = resolved.rootPath;
   const [packageManager, packageInfo, rules, gitRootPath, gitStatusResult] =
     await Promise.all([
       detectPackageManager(rootPath),
@@ -109,5 +112,6 @@ export async function getCurrentWorkspace(): Promise<WorkspaceInfo> {
     packageName: packageInfo.name,
     rules,
     git,
+    staleConfiguredPath: resolved.staleConfiguredPath,
   };
 }

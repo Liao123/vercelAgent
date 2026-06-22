@@ -6,6 +6,10 @@ import { isDirectMutationToolName } from "@/agent/core/loop-direct-apply";
 import type { AgentLoopRunState } from "@/agent/core/agent-loop-state";
 import type { TaskReasoning } from "@/agent/core/loop-reasoning";
 import {
+  isWorkspaceGroundedUserRequest,
+  reasoningRequiresWorkspaceGather,
+} from "@/agent/core/workspace-grounding";
+import {
   formatMetadataCatalogHints,
   hasMetadataRoleInPaths,
   pathMatchesMetadataRole,
@@ -80,12 +84,18 @@ export function hasGatherEvidenceThisTask(state: AgentLoopRunState): boolean {
   return state.toolsCalled.some((tool) => GATHER_EVIDENCE_TOOLS.has(tool));
 }
 
-function isFactualReadOnlyReasoning(reasoning?: TaskReasoning): boolean {
+function isFactualReadOnlyReasoning(
+  reasoning?: TaskReasoning,
+  userRequest?: string,
+): boolean {
   if (!reasoning) return false;
-  return (
-    (reasoning.intent === "qa" || reasoning.intent === "analysis") &&
-    reasoning.risk === "read_only"
-  );
+  if (!(reasoning.intent === "qa" || reasoning.intent === "analysis")) {
+    return false;
+  }
+  if (reasoning.risk !== "read_only") return false;
+  if (userRequest && !isWorkspaceGroundedUserRequest(userRequest)) return false;
+  if (!reasoningRequiresWorkspaceGather(reasoning)) return false;
+  return true;
 }
 
 function isScopedProjectIndexCall(args: Record<string, unknown>): boolean {
@@ -133,7 +143,7 @@ function isReadOnlyTaskEligibleForEvidenceComplete(
   ) {
     return false;
   }
-  return isFactualReadOnlyReasoning(reasoning);
+  return isFactualReadOnlyReasoning(reasoning, state.userRequest);
 }
 
 export function isTaskEvidenceSufficient(state: AgentLoopRunState): boolean {
@@ -177,7 +187,7 @@ export function isNarrowWorkspaceMetadataFromSignals(
   reasoning: TaskReasoning | undefined,
   userRequest: string,
 ): boolean {
-  if (!isFactualReadOnlyReasoning(reasoning)) return false;
+  if (!isFactualReadOnlyReasoning(reasoning, userRequest)) return false;
   if (reasoning?.intent === "browser") return false;
   const blob = [
     reasoning?.understanding ?? "",
@@ -270,7 +280,7 @@ export function evaluateToolEvidenceGate(
 
   if (
     toolName === "project.index" &&
-    isFactualReadOnlyReasoning(state.taskReasoning) &&
+    isFactualReadOnlyReasoning(state.taskReasoning, state.userRequest) &&
     !isScopedProjectIndexCall(args) &&
     state.toolsCalled.filter((tool) => tool === "project.index").length >= 1 &&
     !state.toolsCalled.includes("file.read")
@@ -345,7 +355,7 @@ export function evaluateFinalEvidenceGate(
   }
 
   const reasoning = state.taskReasoning;
-  if (!isFactualReadOnlyReasoning(reasoning)) {
+  if (!isFactualReadOnlyReasoning(reasoning, state.userRequest)) {
     return { allowed: true };
   }
 

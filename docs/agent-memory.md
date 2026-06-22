@@ -35,6 +35,8 @@ Codex/Cursor 式开发智能体：中文需求 → 定位文件 → 改码 → �
 | D050 | **Metadata catalog**：页面元数据/包名用 `framework-metadata-catalog` 的 role+framework，禁止在 gate 写死 layout/index 路径；日历事实走 `RUNTIME_FACTS` 注入 |
 | D051 | **Project index 会话缓存 + scoped query**：同 workspace TTL 内复用 index；`project.index(query)` 做定位；窄 QA gate 只拦重复**全量** index，探索类由 `TaskReasoning` 结构化信号判定 |
 | D052 | **Shell 分层恢复策略**：shell 续跑提示基于结构化 tier（already/port/timeout/generic），playbook 与 prompt 仅声明“按输出分层处理”，不写死 Next/3000 句式 |
+| D053 | **Workspace 路径韧性**：`.agent-state/workspace.json` 失效时回退 `process.cwd()` 并暴露 `staleConfiguredPath`；读规则/树不得因 ENOENT 打穿 API |
+| D054 | **Workspace grounding 分两阶段**：A163 用词表+`reasoningRequiresWorkspaceGather` 修咨询误拦（过渡）；**A164** 主靠 `evidenceNeeded`/gather 计划字段，删领域负向词表（终局） |
 
 细节已收敛：旧版逐条 A0xx 完成日志已删，以 git 与 `agent-progress.md` A106+ 为准。
 
@@ -54,5 +56,6 @@ Codex/Cursor 式开发智能体：中文需求 → 定位文件 → 改码 → �
 
 ## 待补充
 
+- **A164** workspace grounding 去词表化（见 handoff / roadmap / D054）
 - 多 workspace 策略终局
 - Electron 工作区选择器与 Web 路径粘贴的长期分工

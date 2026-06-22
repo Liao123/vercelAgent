@@ -59,19 +59,25 @@ async function findAgentRuleFiles(rootPath: string): Promise<string[]> {
   const found: string[] = [];
 
   async function visit(directory: string): Promise<void> {
-    const entries = await fs.readdir(directory, { withFileTypes: true });
-    for (const entry of entries) {
-      if (IGNORED_RULE_DIRS.has(entry.name)) continue;
-      const absolutePath = path.join(directory, entry.name);
+    try {
+      const entries = await fs.readdir(directory, { withFileTypes: true });
+      for (const entry of entries) {
+        if (IGNORED_RULE_DIRS.has(entry.name)) continue;
+        const absolutePath = path.join(directory, entry.name);
 
-      if (entry.isDirectory()) {
-        await visit(absolutePath);
-        continue;
-      }
+        if (entry.isDirectory()) {
+          await visit(absolutePath);
+          continue;
+        }
 
-      if (entry.isFile() && entry.name === "AGENTS.md") {
-        found.push(toWorkspaceRelative(rootPath, absolutePath));
+        if (entry.isFile() && entry.name === "AGENTS.md") {
+          found.push(toWorkspaceRelative(rootPath, absolutePath));
+        }
       }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") return;
+      throw error;
     }
   }
 

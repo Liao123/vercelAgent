@@ -10,8 +10,21 @@ import { normalizeWorkspaceKey } from "@/lib/workspace-path";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  const workspace = await getCurrentWorkspace();
-  return Response.json({ workspace });
+  try {
+    const workspace = await getCurrentWorkspace();
+    const warning = workspace.staleConfiguredPath
+      ? `Configured workspace path no longer exists: ${workspace.staleConfiguredPath}. Using ${workspace.rootPath} until you pick a folder again.`
+      : null;
+    return Response.json({ workspace, warning });
+  } catch (error) {
+    return Response.json(
+      {
+        error:
+          error instanceof Error ? error.message : "Failed to load workspace.",
+      },
+      { status: 500 },
+    );
+  }
 }
 
 export async function POST(request: Request) {

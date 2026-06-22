@@ -13,6 +13,7 @@ import { formatCompactMethod, formatCompactionLayers } from "@/lib/compaction-la
 import { AgentEventTimeline } from "@/components/agent-event-timeline";
 import { AgentReviewPanel } from "@/components/agent-review-panel";
 import { AgentComposer } from "@/components/agent-composer";
+import { AgentCommandApprovalBar } from "@/components/agent-command-approval-bar";
 import {
   useAgentWorkspaceBridge,
   type TraceRestorePayload,
@@ -95,6 +96,10 @@ import {
   readAutoApplyFileChanges,
 } from "@/lib/agent-file-auto-apply";
 import {
+  canAutoApproveShellCommand,
+  readAutoApproveShellCommands,
+} from "@/lib/agent-shell-auto-approve";
+import {
   approvalDetailsPayloadBytes,
   needsApprovalDetailsHydration,
 } from "@/agent/approval/approval-list-summary";
@@ -136,7 +141,15 @@ type WorkspaceInfoView = {
   packageManager: string;
   packageName: string | null;
   git?: GitStatusSnapshot | null;
+  staleConfiguredPath?: string | null;
 };
+
+function workspaceStatusFromPayload(workspace: WorkspaceInfoView): string {
+  if (workspace.staleConfiguredPath) {
+    return `已配置的工作区不存在：${workspace.staleConfiguredPath}。已临时使用 ${workspace.rootPath}，请重新选择文件夹。`;
+  }
+  return "已读取当前 Workspace。";
+}
 
 type EventBucket = {
   plans: AgentEvent[];
@@ -941,7 +954,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
         if (!res.ok || cancelled) return;
         setWorkspace(data.workspace);
         setWorkspacePath(data.workspace.rootPath);
-        setWorkspaceStatus("已自动读取 Workspace。");
+        setWorkspaceStatus(workspaceStatusFromPayload(data.workspace));
       } catch {
         // 手动「读取」按钮会展示失败原因。
       } finally {
@@ -1002,7 +1015,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
       if (!res.ok) throw new Error(data.error ?? "Failed to load workspace.");
       setWorkspace(data.workspace);
       setWorkspacePath(data.workspace.rootPath);
-      setWorkspaceStatus("已读取当前 Workspace。");
+      setWorkspaceStatus(workspaceStatusFromPayload(data.workspace));
     } catch (err) {
       setError(err instanceof Error ? err.message : "读取 Workspace 失败。");
     } finally {
@@ -1404,9 +1417,18 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
               currentTaskOnly: false,
             });
             if (isCommandLikeApproval(nextApproval)) {
-              setApprovalStatus(
-                "请在上方对话中的「批准并运行」执行命令。",
-              );
+              const autoShellEnabled = readAutoApproveShellCommands();
+              const autoShell =
+                autoShellEnabled &&
+                canAutoApproveShellCommand(nextApproval, autoShellEnabled);
+              if (autoShell) {
+                setApprovalStatus("低风控命令，正在自动运行…");
+                void approveAndExecute(nextApproval);
+              } else {
+                setApprovalStatus(
+                  "可在下方或对话中点击「批准并运行」执行命令。",
+                );
+              }
             } else {
               const autoApply =
                 readAutoApplyFileChanges() &&
@@ -2384,6 +2406,12 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
             multiple
             className="hidden"
             onChange={(e) => void onPickReferenceImages(e)}
+          />
+          <AgentCommandApprovalBar
+            approvals={pendingCommandApprovals}
+            busy={loadingApprovals}
+            onApprove={approveCommandFromTurn}
+            onReject={(id) => void resolveApproval(id, "rejected")}
           />
           <AgentComposer
             request={request}

@@ -4,6 +4,7 @@
  * A028：模型按 JSON 协议选择安全工具，runtime 执行后继续把观察结果喂回模型。
  */
 import { runAgentLoop } from "@/agent/core";
+import type { ShellLoopResumeInput } from "@/agent/core/shell-loop-resume";
 import { createAgentEventStream } from "@/agent/protocol/stream";
 import type { AgentUiContext } from "@/agent/types";
 
@@ -55,6 +56,41 @@ function parseUiContextFromBody(
     }
   }
   return ctx;
+}
+
+function parseShellResumeFromBody(raw: unknown): ShellLoopResumeInput | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const body = raw as {
+    approvalId?: unknown;
+    result?: {
+      command?: unknown;
+      success?: unknown;
+      output?: unknown;
+      completedAt?: unknown;
+    };
+  };
+  if (typeof body.approvalId !== "string" || !body.approvalId.trim()) {
+    return undefined;
+  }
+  const result = body.result;
+  if (!result || typeof result !== "object") return undefined;
+  if (typeof result.command !== "string" || !result.command.trim()) {
+    return undefined;
+  }
+  if (typeof result.success !== "boolean") return undefined;
+  if (typeof result.output !== "string") return undefined;
+  return {
+    approvalId: body.approvalId.trim(),
+    result: {
+      command: result.command.trim(),
+      success: result.success,
+      output: result.output,
+      completedAt:
+        typeof result.completedAt === "string" && result.completedAt.trim()
+          ? result.completedAt.trim()
+          : new Date().toISOString(),
+    },
+  };
 }
 
 export async function POST(request: Request) {
@@ -164,7 +200,7 @@ export async function POST(request: Request) {
     attachedPaths,
     attachedSelections,
     strictPrepare: body.strictPrepare === true,
-    shellResume: body.shellResume,
+    shellResume: parseShellResumeFromBody(body.shellResume),
     onEvent: (event) => writer.emit(event),
   })
     .then(() => {

@@ -28,6 +28,10 @@ import {
   syncTaskEvidenceComplete,
 } from "../src/agent/core/evidence-gate";
 import {
+  isWorkspaceGroundedUserRequest,
+  reasoningRequiresWorkspaceGather,
+} from "../src/agent/core/workspace-grounding";
+import {
   collectPlaybookAcceleratorHints,
   resolveTaskPlaybook,
 } from "../src/agent/core/task-playbooks";
@@ -263,6 +267,32 @@ async function main(): Promise<void> {
   qaState.metaExplainMode = true;
   const metaAllowed = evaluateFinalEvidenceGate(qaState);
   assert.equal(metaAllowed.allowed, true);
+
+  const advisoryRequest =
+    "帮我设计一个水产品团购产品方案和商业计划，面向四五线城市微信社群";
+  assert.equal(isWorkspaceGroundedUserRequest(advisoryRequest), false);
+  const advisoryState = createAgentLoopRunState(advisoryRequest);
+  advisoryState.taskReasoning = {
+    understanding: "用户要商业与产品规划，不依赖仓库代码事实",
+    intent: "analysis",
+    risk: "read_only",
+    evidenceNeeded: [],
+    planSteps: ["输出 PRD 大纲", "列出 MVP 功能", "给出运营节奏"],
+    ambiguity: null,
+    canAnswerNow: true,
+    plannedNext: "直接中文 final 输出方案",
+    source: "model",
+  };
+  assert.equal(
+    reasoningRequiresWorkspaceGather(advisoryState.taskReasoning!),
+    false,
+  );
+  const advisoryFinal = evaluateFinalEvidenceGate(advisoryState);
+  assert.equal(
+    advisoryFinal.allowed,
+    true,
+    "advisory tasks must not require file.read gather",
+  );
 
   const indexState = createAgentLoopRunState("标题");
   indexState.taskReasoning = {

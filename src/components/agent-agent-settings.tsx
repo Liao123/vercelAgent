@@ -6,6 +6,10 @@ import {
   writeAutoApplyFileChanges,
 } from "@/lib/agent-file-auto-apply";
 import {
+  readAutoApproveShellCommands,
+  writeAutoApproveShellCommands,
+} from "@/lib/agent-shell-auto-approve";
+import {
   readAutoReloopOnLintFail,
   writeAutoReloopOnLintFail,
 } from "@/lib/agent-lint-reloop";
@@ -53,6 +57,7 @@ export function AgentAgentSettings({
 }: AgentAgentSettingsProps) {
   const [open, setOpen] = useState(false);
   const [autoApply, setAutoApply] = useState(() => readAutoApplyFileChanges());
+  const [autoShell, setAutoShell] = useState(() => readAutoApproveShellCommands());
   const [autoLintReloop, setAutoLintReloop] = useState(() => readAutoReloopOnLintFail());
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -108,6 +113,16 @@ export function AgentAgentSettings({
               onChange={(value) => {
                 writeAutoApplyFileChanges(value);
                 setAutoApply(value);
+                onPrefsChange?.();
+              }}
+            />
+            <SettingRow
+              label="低风控命令自动运行"
+              description="默认关：开启后 validate/lint/test/git status 等只读命令免点批准（dev/build/install 仍须批准）"
+              checked={autoShell}
+              onChange={(value) => {
+                writeAutoApproveShellCommands(value);
+                setAutoShell(value);
                 onPrefsChange?.();
               }}
             />

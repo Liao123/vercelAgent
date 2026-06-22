@@ -15,8 +15,60 @@ export type WorkspaceConfig = {
   updatedAt: string;
 };
 
+export type ResolvedWorkspaceRoot = {
+  /** 实际用于读盘/跑命令的根目录 */
+  rootPath: string;
+  /** workspace.json 里记录的路径（可能已失效） */
+  configuredPath: string | null;
+  /** 配置存在但目录已不存在时为该路径，否则 null */
+  staleConfiguredPath: string | null;
+};
+
 function configPath(): string {
   return path.join(process.cwd(), CONFIG_DIR, CONFIG_FILE);
+}
+
+export async function isWorkspaceDirectory(rootPath: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(rootPath);
+    return stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 解析当前 workspace 根目录：配置路径失效时回退 process.cwd()，避免 ENOENT 打穿 API。
+ */
+export async function resolveWorkspaceRootPath(): Promise<ResolvedWorkspaceRoot> {
+  const configuredPath = await getConfiguredWorkspacePath();
+  if (!configuredPath) {
+    return {
+      rootPath: process.cwd(),
+      configuredPath: null,
+      staleConfiguredPath: null,
+    };
+  }
+  if (await isWorkspaceDirectory(configuredPath)) {
+    return {
+      rootPath: configuredPath,
+      configuredPath,
+      staleConfiguredPath: null,
+    };
+  }
+  return {
+    rootPath: process.cwd(),
+    configuredPath,
+    staleConfiguredPath: configuredPath,
+  };
+}
+
+export async function clearConfiguredWorkspacePath(): Promise<void> {
+  try {
+    await fs.unlink(configPath());
+  } catch {
+    // missing config is fine
+  }
 }
 
 export async function getConfiguredWorkspacePath(): Promise<string | null> {

@@ -2,7 +2,72 @@
 
 更新时间：2026-06-22
 
-> 下次开工：**本文 → [`agent-generic-capability-roadmap.md`](agent-generic-capability-roadmap.md)（通用能力 A147+）→ `npm run validate:agent`**。
+> 下次开工：**本文** → **A164**（`workspace-grounding` 去词表化，见下）→ `npm run validate:agent`。改 Loop 后重启 dev。
+
+---
+
+## 待办（下次优先 · A164）
+
+**目标**：A163 咨询类 gate 豁免再通用化——少维护中英文词表，主靠推理结构化字段。
+
+| 项 | 说明 |
+| --- | --- |
+| **主路径** | `evidenceNeeded` 为空且 `planSteps`/`plannedNext` 无 gather 工具名 → `evaluateFinalEvidenceGate` 不拦 final |
+| **推理 schema** | 可选新增 `intent: advisory \| generative`（或 `grounding: workspace \| none`），gate 只认字段 |
+| **词表瘦身** | `isWorkspaceGroundedUserRequest` 负向词表逐步删，仅保留路径/扩展名等硬信号作兜底 |
+| **回归** | `validate:loop-reasoning` 增商业/法律/写码三例；可选 `trial:advisory-qa`（路径指标：无 gather 可 final） |
+| **锚点** | `src/agent/core/workspace-grounding.ts`、`evidence-gate.ts`、`loop-reasoning.ts` |
+
+**现状（A163，已交付）**：词表 + `reasoningRequiresWorkspaceGather` 双层；够用但有领域词维护债。详见 [`agent-generic-capability-roadmap.md`](agent-generic-capability-roadmap.md) **A164**、**D054**。
+
+---
+
+## 接续收工（2026-06-22 · A163 咨询类任务证据 gate）
+
+**现象**：产品/商业规划类长问句被标成 `qa+read_only` → final 被拦「须 file.read」；偶发误 `npm run dev`。
+
+**交付**：`workspace-grounding.ts` 区分 workspace 取证 vs 生成类任务；`evaluateFinalEvidenceGate` / `normalizeTaskReasoning` 仅对 grounded 任务强制 gather；`dev-run` playbook 不对咨询类问句触发。
+
+```bash
+npm run validate:loop-reasoning
+```
+
+---
+
+## 接续收工（2026-06-22 · A162 失效 Workspace 路径）
+
+**现象**：`.agent-state/workspace.json` 指向已删除目录（如 `d:\案例\ai项目\zyxm`）→ `GET /api/agent/workspace` 500（`project-rules` `ENOENT`）。
+
+**交付**：`resolveWorkspaceRootPath` 失效回退 `process.cwd()` + `staleConfiguredPath` 提示；`project-rules` 防御性 `readdir`；面板提示重新选文件夹。
+
+```bash
+npm run validate:workspace-stale-path
+npm run validate:agent
+```
+
+**用户操作**：Composer 左下角重新选择工作区文件夹，或 POST `/api/agent/workspace` 写入新 `rootPath`。
+
+---
+
+## 接续收工（2026-06-22 · A161 低风控 shell 自动运行）
+
+**交付**：Composer ⚙「低风控命令自动运行」（默认关）；`validate:*` / lint / test / `git status` 等 `risk=low` 可免点批准；dev/build/install 仍须手动批准。`validate:shell-auto-approve`。
+
+```bash
+npm run validate:shell-auto-approve
+npm run validate:command-approval-ui
+```
+
+---
+
+## 接续收工（2026-06-22 · A160 命令底栏）
+
+**交付**：`AgentCommandApprovalBar` 固定在输入框上方；待运行 shell 命令可底栏或聊天气泡「批准并运行」；`validate:command-approval-ui` 纳入 `validate:agent`。顺带修复 `loop/route.ts` `shellResume.completedAt` 类型归一化。
+
+```bash
+npm run validate:command-approval-ui
+npm run validate:agent && npm run build
+```
 
 ---
 
@@ -150,9 +215,10 @@ npm run build
 
 | 项 | 说明 |
 | --- | --- |
+| **A164** | **下次优先**：`workspace-grounding` 去词表化（见文首待办 + roadmap） |
 | ~~trial:shell-recovery~~ | ✅ 2026-06-18 实机 PASSED |
-| **A147–A152** | 通用能力与速度；方案与清单见 [`agent-generic-capability-roadmap.md`](agent-generic-capability-roadmap.md) |
-| **对标 Claude Bash** | 读 `claude-code` query.ts + Bash；Loop 内 tool_result 回灌（A151，长期） |
+| ~~A147–A159~~ | ✅ done |
+| **对标 Claude Bash** | Loop 内 tool_result 真闭环（A151 已 Phase B，长期） |
 | P2 PTY 终端 UI | 审批+执行已有，缺 xterm 面板 |
 
 ---
@@ -188,6 +254,7 @@ npm run build
 | 区域 | 路径 |
 | --- | --- |
 | Loop | `src/agent/core/agent-loop.ts` |
+| **Grounding / 证据 gate** | `workspace-grounding.ts`, `evidence-gate.ts`（A164 待去词表） |
 | Shell | `src/agent/tools/shell-runner.ts`, `shell-output.ts` |
 | 命令审批 UI | `src/components/agent-panel.tsx`, `agent-turn-worked-line.tsx` |
 | 批准后续跑 | `src/lib/approval-loop-continuation.ts` |
