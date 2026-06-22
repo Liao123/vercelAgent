@@ -221,12 +221,14 @@ export function TurnWorkedLine({
 export function TurnHighlightLine({
   event,
   pendingCommandApprovalIds,
+  executedCommandApprovalIds,
   onApproveCommand,
   onRejectCommand,
   commandApprovalBusy,
 }: {
   event: AgentEvent;
   pendingCommandApprovalIds?: Set<string>;
+  executedCommandApprovalIds?: Set<string>;
   onApproveCommand?: (approvalId: string) => void;
   onRejectCommand?: (approvalId: string) => void;
   commandApprovalBusy?: boolean;
@@ -237,9 +239,17 @@ export function TurnHighlightLine({
         ? event.approval.details.preview.command
         : null;
     const isShell = event.approval.details?.kind === "shell_command";
+    const alreadyExecuted =
+      executedCommandApprovalIds?.has(event.approval.id) ?? false;
     const isPending =
       isShell &&
+      !alreadyExecuted &&
       (pendingCommandApprovalIds?.has(event.approval.id) ?? false);
+
+    if (isShell && !isPending) {
+      return null;
+    }
+
     const canInlineApprove =
       isPending && Boolean(onApproveCommand && onRejectCommand);
 

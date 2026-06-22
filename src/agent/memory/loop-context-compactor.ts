@@ -595,6 +595,96 @@ export function parseCompactedMemory(content: string): ParsedCompactedMemory | n
   };
 }
 
+function mergeTaskMemorySummaries(prior: string, taskTurn: string): string {
+  const merged = [
+    prior.trim() ? `### Earlier in thread\n${prior.trim()}` : "",
+    taskTurn.trim() ? `### Latest task\n${taskTurn.trim()}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  if (merged.length <= SUMMARY_MERGE_MAX_CHARS) return merged;
+  return `${merged.slice(0, SUMMARY_MERGE_MAX_CHARS)}\n...[memory truncated at ${SUMMARY_MERGE_MAX_CHARS} chars]`;
+}
+
+function buildTaskTurnSummary(userRequest: string, summary: string): string {
+  return [
+    `**User request:** ${userRequest.trim()}`,
+    `**Agent outcome:** ${summary.trim()}`,
+  ].join("\n");
+}
+
+/** 任务结束时写入/更新 thread 滚动记忆（短对话未触发压缩时也能续聊）。 */
+export function buildThreadMemoryAfterTask(input: {
+  messages: AgentMessage[];
+  userRequest: string;
+  summary: string;
+  priorMemoryContent?: string;
+  filesReadPaths?: string[];
+  prepareHint?: UiPrepareHint | null;
+  compactRound: number;
+}): {
+  memoryContent: string;
+  summaryId: string;
+  round: number;
+  method: "deterministic";
+  summaryPreview: string;
+} {
+  const priorMemory = input.priorMemoryContent
+    ? parseCompactedMemory(input.priorMemoryContent)
+    : null;
+  const priorRound = priorMemory?.round ?? 0;
+  const round =
+    input.compactRound > priorRound ? input.compactRound : priorRound + 1;
+
+  const pinnedFacts = mergePinnedFacts(
+    priorMemory?.pinnedFacts ?? emptyPinnedFacts(),
+    extractPinnedFactsFromMessages(input.messages),
+  );
+  const pinnedFileSnippets = mergePinnedFileSnippets(
+    priorMemory?.pinnedFileSnippets ?? [],
+    extractFileReadSnippetsFromMessages(input.messages, {
+      filesReadPaths: input.filesReadPaths,
+    }),
+  );
+  const pinnedPrepareHint = mergePrepareHints(
+    priorMemory?.pinnedPrepareHint ?? null,
+    mergePrepareHints(
+      extractPrepareHintFromMessages(input.messages),
+      input.prepareHint ?? null,
+    ),
+  );
+  const userAnchors = extractUserMessageAnchors(input.messages);
+  const summaryBody = mergeTaskMemorySummaries(
+    priorMemory?.summaryBody ?? "",
+    buildTaskTurnSummary(input.userRequest, input.summary),
+  );
+  const changedFiles = uniqueFiles([
+    ...(priorMemory?.changedFiles ?? []),
+    ...(input.filesReadPaths ?? []),
+    ...pinnedFacts.filePaths,
+  ]);
+
+  const memoryContent = buildStructuredCompactedMemory({
+    round,
+    method: "deterministic",
+    pinnedFacts,
+    summaryBody,
+    changedFiles,
+    pinnedFileSnippets,
+    pinnedPrepareHint,
+    userAnchors,
+  });
+
+  return {
+    memoryContent,
+    summaryId: newId("summary"),
+    round,
+    method: "deterministic",
+    summaryPreview: memoryContent.slice(0, SUMMARY_PREVIEW_CHARS),
+  };
+}
+
 export function buildStructuredCompactedMemory(input: {
   round: number;
   method: LoopContextCompactMethod;

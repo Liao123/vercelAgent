@@ -66,6 +66,7 @@ import {
 } from "@/agent/types";
 import { isSemanticCompactEnabled } from "@/agent/memory/loop-compaction-config";
 import {
+  buildThreadMemoryAfterTask,
   buildToolObservationMessage,
   compactAgentLoopMessages,
   createLoopCompactEventPayload,
@@ -1175,6 +1176,40 @@ export async function runAgentLoop(
     updatedAt: nowIso(),
     summary,
   };
+
+  const existingMemory = getThreadMemory(thread.id);
+  const taskMemory = buildThreadMemoryAfterTask({
+    messages,
+    userRequest: effectiveUserRequest,
+    summary,
+    priorMemoryContent:
+      existingMemory?.memoryContent ?? priorThreadMemory?.memoryContent,
+    filesReadPaths: runState.filesRead,
+    prepareHint:
+      runState.prepareHint && !runState.approvalPrepared
+        ? runState.prepareHint
+        : undefined,
+    compactRound: contextCompactRound,
+  });
+  saveThreadMemory({
+    threadId: thread.id,
+    workspaceId: workspace.id,
+    summaryId: taskMemory.summaryId,
+    memoryContent: taskMemory.memoryContent,
+    round: taskMemory.round,
+    method: taskMemory.method,
+    updatedAt: nowIso(),
+    lastTaskId: task.id,
+    lastUserRequest: effectiveUserRequest,
+    title: thread.title,
+    summaryPreview: taskMemory.summaryPreview,
+  });
+  thread.contextSummary = taskMemory.summaryPreview;
+  updateTraceThread(trace.id, {
+    contextSummary: taskMemory.summaryPreview,
+    updatedAt: nowIso(),
+  });
+
   const latestMemory = getThreadMemory(thread.id);
   const completedThread: Thread = {
     ...thread,

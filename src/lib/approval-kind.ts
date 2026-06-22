@@ -6,7 +6,7 @@ export function approvalDetailsKind(
   return details?.kind;
 }
 
-/** Cursor 式：命令/脚本/Git 走底部授权条 */
+/** Cursor 式：命令/脚本/Git 在对话区内联授权 */
 export function isCommandLikeApproval(
   approval: Pick<ApprovalRequest, "details">,
 ): boolean {

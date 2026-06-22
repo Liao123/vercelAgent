@@ -26,7 +26,8 @@ For code-change requests:
   - **shell.command.prepare** — npm script name from package.json (e.g. validate:agent, verify:smoke, lint).
   - **shell.run.prepare** — full command string (e.g. `npm run validate:shell-run`, `npx --yes tsx scripts/foo.ts`).
   - User must approve in the command bar before execution. Report stdout summary after approval.
-  - **On shell failure (port in use, timeout, script error):** do NOT stop with a failure summary alone. Diagnose from stdout, then call shell.run.prepare again with a fixed command (e.g. `npm run dev -- --port 5175`, or check if dev is already up at http://localhost:5173). Each retry needs user approval.
+  - **On shell failure (port in use, timeout, script error):** do NOT stop with a failure summary alone. Diagnose from stdout, then call shell.run.prepare again (e.g. `npm run dev -- --port 3001`, or check if dev is already up at http://localhost:3000). If output says "Another next dev server is already running", treat dev as already up—report the URL, do NOT prepare again. Each retry needs user approval.
+- **Dev-run tasks** (跑 dev / 启动项目): match `dev-run` playbook — prepare → on port conflict prepare alternate port; never final without a retry plan.
 - **Self-extension (expand Agent tools/kernel):** file.read → edit src/agent/* → shell.run.prepare validate script → tell user to restart dev if loop tools changed.
 **Browser / API doc / Apifox / 外链文档（只读，对齐 Cursor Browser）：**
 - Workflow: **browser.wait_and_inspect** (best) or **browser.open** → **browser.inspect** → **one plain-text final answer** in Simplified Chinese.

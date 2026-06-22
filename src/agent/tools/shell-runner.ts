@@ -1,7 +1,8 @@
 /**
  * 在 workspace 内执行已审批的 shell 命令。
+ * Windows：对齐 Cursor，后台静默 spawn（不用 detached，避免弹 CMD 窗）。
  */
-import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { promisify } from "node:util";
 import type { VerificationResult } from "@/agent/types";
 import { nowIso } from "@/agent/types";
@@ -14,7 +15,9 @@ import {
   decodeChunk,
   formatShellOutputForDisplay,
   isLongRunningNpmScript,
+  looksLikeDevAlreadyRunning,
   looksLikeDevServerReady,
+  looksLikeDevServerTerminalFailure,
   parseNpmRunCommand,
   sanitizeShellCommand,
 } from "@/agent/tools/shell-output";
@@ -22,8 +25,46 @@ import {
 const execFileAsync = promisify(execFile);
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
-const LONG_RUNNING_READY_MS = 20_000;
+const LONG_RUNNING_READY_MS = 45_000;
 const MAX_BUFFER = 10 * 1024 * 1024;
+
+function npmExecutable(): string {
+  return process.platform === "win32" ? "npm.cmd" : "npm";
+}
+
+/** 短命令：exec npm；Windows 需 shell 才能调 .cmd，但 windowsHide 保持静默。 */
+function silentExecOptions(cwd: string): Parameters<typeof execFileAsync>[2] {
+  return {
+    cwd,
+    windowsHide: true,
+    maxBuffer: MAX_BUFFER,
+    timeout: DEFAULT_TIMEOUT_MS,
+    encoding: "buffer",
+    shell: process.platform === "win32",
+  };
+}
+
+/**
+ * 长进程 spawn 选项。
+ * Windows：禁止 detached（会弹 CMD 窗），保留 shell + windowsHide 静默。
+ * Unix：detached + unref，dev 可脱离 API 请求继续跑。
+ */
+function longRunningSpawnOptions(rootPath: string): SpawnOptions {
+  if (process.platform === "win32") {
+    return {
+      cwd: rootPath,
+      shell: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    };
+  }
+  return {
+    cwd: rootPath,
+    shell: false,
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  };
+}
 
 async function runNpmScript(
   rootPath: string,
@@ -31,18 +72,10 @@ async function runNpmScript(
   passThroughArgs: string[] = [],
 ): Promise<{ stdout: Buffer | string; stderr: Buffer | string }> {
   const args = ["run", script, ...passThroughArgs];
-  return execFileAsync(
-    process.platform === "win32" ? "npm.cmd" : "npm",
-    args,
-    {
-      cwd: rootPath,
-      windowsHide: true,
-      maxBuffer: MAX_BUFFER,
-      timeout: DEFAULT_TIMEOUT_MS,
-      shell: process.platform === "win32",
-      encoding: "buffer",
-    },
-  ) as Promise<{ stdout: Buffer; stderr: Buffer }>;
+  return execFileAsync(npmExecutable(), args, silentExecOptions(rootPath)) as Promise<{
+    stdout: Buffer;
+    stderr: Buffer;
+  }>;
 }
 
 async function runLongRunningNpmScript(
@@ -51,7 +84,6 @@ async function runLongRunningNpmScript(
   passThroughArgs: string[] = [],
 ): Promise<{ stdout: string; stderr: string; success: boolean }> {
   const args = ["run", script, ...passThroughArgs];
-  const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
 
   return new Promise((resolve) => {
     let output = "";
@@ -62,29 +94,49 @@ async function runLongRunningNpmScript(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (success && child && child.exitCode === null) {
-        child.unref();
+      if (child) {
+        if (success && child.exitCode === null && !looksLikeDevAlreadyRunning(output)) {
+          child.unref();
+        } else if (!success && child.exitCode === null) {
+          try {
+            child.kill();
+          } catch {
+            /* ignore */
+          }
+        }
       }
       const formatted = formatShellOutputForDisplay(output);
+      const alreadyRunning = looksLikeDevAlreadyRunning(formatted);
+      const effectiveSuccess = success || alreadyRunning;
+      let message = formatted;
+      if (alreadyRunning) {
+        message = appendPortBusyHint(formatted);
+      } else if (effectiveSuccess) {
+        message = `${formatted}\n\n（开发服务已在后台运行，输出不再阻塞 Agent。）`;
+      } else {
+        message =
+          appendPortBusyHint(formatted) ||
+          "命令无控制台输出（可能启动超时或被系统拦截）。若目标是 dev，请先检查 http://localhost:3000。";
+      }
       resolve({
-        stdout: success
-          ? `${formatted}\n\n（开发服务已在后台运行，输出不再阻塞 Agent。）`
-          : appendPortBusyHint(formatted),
+        stdout: message,
         stderr: "",
-        success,
+        success: effectiveSuccess,
       });
     };
 
-    child = spawn(npmBin, args, {
-      cwd: rootPath,
-      shell: process.platform === "win32",
-      detached: true,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
+    child = spawn(npmExecutable(), args, longRunningSpawnOptions(rootPath));
 
     const append = (chunk: Buffer) => {
       output += decodeChunk(chunk);
+      if (looksLikeDevAlreadyRunning(output)) {
+        finish(true);
+        return;
+      }
+      if (looksLikeDevServerTerminalFailure(output)) {
+        finish(false);
+        return;
+      }
       if (looksLikeDevServerReady(output)) {
         finish(true);
       }
@@ -100,6 +152,10 @@ async function runLongRunningNpmScript(
 
     child.on("exit", (code) => {
       if (settled) return;
+      if (looksLikeDevAlreadyRunning(output)) {
+        finish(true);
+        return;
+      }
       if (code === 0 || looksLikeDevServerReady(output)) {
         finish(true);
         return;
@@ -108,6 +164,10 @@ async function runLongRunningNpmScript(
     });
 
     const timer = setTimeout(() => {
+      if (looksLikeDevAlreadyRunning(output)) {
+        finish(true);
+        return;
+      }
       if (looksLikeDevServerReady(output)) {
         finish(true);
         return;
@@ -128,13 +188,7 @@ async function runRawShell(
   return execFileAsync(
     process.platform === "win32" ? "cmd.exe" : "sh",
     process.platform === "win32" ? ["/d", "/s", "/c", wrapped] : ["-lc", wrapped],
-    {
-      cwd: rootPath,
-      windowsHide: true,
-      maxBuffer: MAX_BUFFER,
-      timeout: DEFAULT_TIMEOUT_MS,
-      encoding: "buffer",
-    },
+    silentExecOptions(rootPath),
   ) as Promise<{ stdout: Buffer; stderr: Buffer }>;
 }
 

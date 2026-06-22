@@ -6,6 +6,7 @@ import {
   isBrowserDocAnalysisRequest,
   isCapabilityExtensionRequest,
   isDesignReplicateRequest,
+  isDevRunRequest,
   resolveTaskPlaybook,
 } from "../src/agent/core/task-playbooks";
 import { GOLDEN_UI_QUERY, GOLDEN_DESIGN_REPLICATE_QUERY } from "./golden-path-fixtures";
@@ -52,6 +53,10 @@ async function main(): Promise<void> {
     "扩展 Agent 命令行能力，对齐 Cursor，改 agent-loop-tools 并跑 validate:shell-run",
   );
   assert.equal(extPb.id, "capability-extension");
+
+  assert.ok(isDevRunRequest("跑一下 dev 能跑吗"), "dev run detect");
+  const devPb = resolveTaskPlaybook("跑一下 dev能跑吗");
+  assert.equal(devPb.id, "dev-run");
 
   const uiPb = resolveTaskPlaybook(GOLDEN_UI_QUERY);
   assert.equal(uiPb.id, "ui-visible-edit");

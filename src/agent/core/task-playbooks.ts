@@ -12,6 +12,7 @@ export type TaskPlaybookId =
   | "browser-doc"
   | "design-replicate"
   | "capability-extension"
+  | "dev-run"
   | "ui-visible-edit"
   | "file-exact-edit"
   | "read-only-audit"
@@ -72,6 +73,26 @@ export function isDesignReplicateRequest(input: string): boolean {
     /生成|创建|实现|写到/i.test(text) ||
     /src\/[^\s]+\.(tsx?|jsx?|vue)/i.test(text);
   return hasUrl && replicateIntent && buildIntent;
+}
+
+/** 启动 dev / 验证项目能否跑起来（只跑命令，不改代码）。 */
+export function isDevRunRequest(input: string): boolean {
+  const text = input.trim();
+  if (!text) return false;
+  if (isExplicitReadOnlyRequest(text)) return false;
+  if (isCapabilityExtensionRequest(text)) return false;
+  if (isBrowserDocAnalysisRequest(text)) return false;
+  if (isDesignReplicateRequest(text)) return false;
+  if (isLikelyCodeEditRequest(text) && /src\/[^\s]+\.(tsx?|jsx?)/i.test(text)) {
+    return false;
+  }
+  return (
+    /npm\s+run\s+dev\b/i.test(text) ||
+    /\bdev(?::desktop)?\b/i.test(text) ||
+    /(跑|启动|开|起|运行).{0,12}(dev|开发服|本地服|项目)/i.test(text) ||
+    /(dev|开发服).{0,12}(能跑|能否|能不能|跑起来|跑吗|启动)/i.test(text) ||
+    /跑起来了吗|能跑起来吗|跑一下\s*dev/i.test(text)
+  );
 }
 
 /** Agent 内核 / 工具链自举扩展（改 src/agent + 跑 validate）。 */
@@ -195,6 +216,46 @@ const DESIGN_REPLICATE: TaskPlaybook = {
         "复刻任务应先 devtools.extract_design_spec 拿结构化布局/样式，browser.inspect 仅用于最终验证。",
       understanding: "缺少结构化 design spec。",
       plannedNext: "browser.open demo URL → devtools.extract_design_spec。",
+    },
+  ],
+};
+
+const DEV_RUN: TaskPlaybook = {
+  id: "dev-run",
+  title: "启动开发服务",
+  openingPlannedNext:
+    "file.read package.json scripts（可选）→ shell.run.prepare `npm run dev` → 根据输出判断成功/失败；失败时换端口或确认已在运行。",
+  loopHint:
+    "【任务提示】启动 dev（本项目为 Next.js，默认 3000）：优先 shell.run.prepare `npm run dev`。若输出 Port 3000 is in use：先让用户试 http://localhost:3000；若提示 Another next dev server is already running，说明 dev 已在跑，直接汇报 URL 勿再 prepare。仍失败则 shell.run.prepare `npm run dev -- --port 3001`。命令失败禁止只 final，须 prepare 下一条命令（需用户批准）。",
+  softMaxToolRounds: 8,
+  goldenSteps: [
+    {
+      id: "inspect",
+      label: "确认 dev 脚本",
+      tools: ["file.read", "project.index"],
+    },
+    {
+      id: "run",
+      label: "准备运行 dev",
+      tools: ["shell.run.prepare", "shell.command.prepare"],
+    },
+    {
+      id: "recover",
+      label: "失败则换端口或诊断",
+      tools: ["shell.run.prepare", "shell.command.prepare"],
+    },
+    { id: "final", label: "汇报 URL 或阻塞原因", tools: [] },
+  ],
+  circuitBreakers: [
+    {
+      tool: "shell.run.prepare",
+      threshold: 2,
+      redirectTool: "file.read",
+      message:
+        "dev 命令连续 prepare 仍未成功。请先 file.read package.json 确认 dev 脚本，再 prepare 带 --port 的命令。",
+      understanding: "可能脚本名或端口策略不对。",
+      plannedNext:
+        "file.read package.json → shell.run.prepare `npm run dev -- --port 3001`。",
     },
   ],
 };
@@ -362,6 +423,11 @@ const ORDERED_PLAYBOOKS: Array<{
     playbook: CAPABILITY_EXTENSION,
     match: (input) => isCapabilityExtensionRequest(input),
     reason: "Agent 能力自举扩展",
+  },
+  {
+    playbook: DEV_RUN,
+    match: (input) => isDevRunRequest(input),
+    reason: "启动 dev / 验证能否跑起来",
   },
   {
     playbook: READ_ONLY_AUDIT,

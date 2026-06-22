@@ -17,6 +17,7 @@ type AgentTurnBlockProps = {
   onRejectApproval?: (approvalId: string) => void;
   applyApprovalBusy?: boolean;
   pendingCommandApprovalIds?: Set<string>;
+  executedCommandApprovalIds?: Set<string>;
   onApproveCommand?: (approvalId: string) => void;
   onRejectCommand?: (approvalId: string) => void;
   commandApprovalBusy?: boolean;
@@ -121,6 +122,7 @@ export function AgentTurnBlock({
   onRejectApproval,
   applyApprovalBusy = false,
   pendingCommandApprovalIds,
+  executedCommandApprovalIds,
   onApproveCommand,
   onRejectCommand,
   commandApprovalBusy = false,
@@ -233,6 +235,7 @@ export function AgentTurnBlock({
             key={`hl-${event.type}-${index}`}
             event={event}
             pendingCommandApprovalIds={pendingCommandApprovalIds}
+            executedCommandApprovalIds={executedCommandApprovalIds}
             onApproveCommand={onApproveCommand}
             onRejectCommand={onRejectCommand}
             commandApprovalBusy={commandApprovalBusy}

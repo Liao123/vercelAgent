@@ -324,62 +324,89 @@ function splitTurnEvents(events: AgentEvent[]): {
   return { worked, narrative, detail, highlights };
 }
 
-export function groupEventsIntoTurns(events: AgentEvent[]): AgentTurnFeed[] {
-  const turns: AgentTurnFeed[] = [];
-  let current: {
-    taskId: string;
-    userRequest: string;
-    referenceImages?: string[];
-    createdAt: string;
-    events: AgentEvent[];
-  } | null = null;
+function buildTurnFeed(input: {
+  taskId: string;
+  userRequest: string;
+  referenceImages?: string[];
+  createdAt: string;
+  events: AgentEvent[];
+}): AgentTurnFeed {
+  const { worked, narrative, detail, highlights } = splitTurnEvents(input.events);
+  const outcome = resolveTurnSummary(input.events);
+  return {
+    taskId: input.taskId,
+    userRequest: input.userRequest,
+    referenceImages: input.referenceImages,
+    createdAt: input.createdAt,
+    completedAt: outcome.completedAt,
+    status: outcome.status,
+    summary: outcome.summary,
+    error: outcome.error,
+    streamingPreview: outcome.streamingPreview,
+    workedEvents: worked,
+    narrativeEvents: narrative,
+    detailEvents: detail,
+    highlights,
+    changeChips: collectChangeChips(input.events),
+    fileChanges: collectTurnFileChanges(input.events),
+    postExecuteVerification: postExecuteVerificationFromTurnEvents(input.events),
+    playbook: extractPlaybookFromEvents(input.events),
+    workedStats: countWorkedStats(worked),
+  };
+}
 
-  const flush = () => {
-    if (!current) return;
-    const { worked, narrative, detail, highlights } = splitTurnEvents(current.events);
-    const outcome = resolveTurnSummary(current.events);
-    turns.push({
-      taskId: current.taskId,
-      userRequest: current.userRequest,
-      referenceImages: current.referenceImages,
-      createdAt: current.createdAt,
-      completedAt: outcome.completedAt,
-      status: outcome.status,
-      summary: outcome.summary,
-      error: outcome.error,
-      streamingPreview: outcome.streamingPreview,
-      workedEvents: worked,
-      narrativeEvents: narrative,
-      detailEvents: detail,
-      highlights,
-      changeChips: collectChangeChips(current.events),
-      fileChanges: collectTurnFileChanges(current.events),
-      postExecuteVerification: postExecuteVerificationFromTurnEvents(
-        current.events,
-      ),
-      playbook: extractPlaybookFromEvents(current.events),
-      workedStats: countWorkedStats(worked),
-    });
-    current = null;
+export function groupEventsIntoTurns(events: AgentEvent[]): AgentTurnFeed[] {
+  const taskMeta = new Map<
+    string,
+    { userRequest: string; referenceImages?: string[]; createdAt: string }
+  >();
+  const taskOrder: string[] = [];
+  const eventsByTask = new Map<string, AgentEvent[]>();
+  let activeTaskId: string | null = null;
+
+  const pushToTask = (taskId: string, event: AgentEvent) => {
+    if (!eventsByTask.has(taskId)) eventsByTask.set(taskId, []);
+    eventsByTask.get(taskId)!.push(event);
   };
 
   for (const event of events) {
     if (event.type === "task.created") {
-      flush();
-      current = {
-        taskId: event.taskId,
+      taskMeta.set(event.taskId, {
         userRequest: event.task.userRequest,
         referenceImages: event.task.referenceImages,
         createdAt: event.task.createdAt,
-        events: [event],
-      };
+      });
+      if (!taskOrder.includes(event.taskId)) {
+        taskOrder.push(event.taskId);
+      }
+      activeTaskId = event.taskId;
+      pushToTask(event.taskId, event);
       continue;
     }
-    if (current) current.events.push(event);
+
+    const taskId =
+      "taskId" in event && typeof event.taskId === "string"
+        ? event.taskId
+        : activeTaskId;
+    if (taskId) {
+      pushToTask(taskId, event);
+    }
   }
 
-  flush();
-  return turns;
+  return taskOrder
+    .map((taskId) => {
+      const meta = taskMeta.get(taskId);
+      const taskEvents = eventsByTask.get(taskId) ?? [];
+      if (!meta || taskEvents.length === 0) return null;
+      return buildTurnFeed({
+        taskId,
+        userRequest: meta.userRequest,
+        referenceImages: meta.referenceImages,
+        createdAt: meta.createdAt,
+        events: taskEvents,
+      });
+    })
+    .filter((turn): turn is AgentTurnFeed => turn != null);
 }
 
 export function formatTurnDuration(

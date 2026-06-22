@@ -112,3 +112,31 @@ export function appendApprovalExecutionEvents(
     }),
   ];
 }
+
+/** 用户拒绝命令后写入聊天流，确保底部黄条立即消失。 */
+export function appendCommandApprovalRejectedEvents(
+  current: AgentEvent[],
+  input: {
+    taskId: string;
+    approval: ApprovalRequest;
+  },
+): AgentEvent[] {
+  const command = shellCommandFromApproval(input.approval);
+  return [
+    ...current,
+    {
+      type: "approval.executed" as const,
+      taskId: input.taskId,
+      approvalId: input.approval.id,
+      title: input.approval.title,
+      command,
+      status: "failed" as const,
+      output: "用户已拒绝运行此命令。",
+    },
+    buildAssistantNoticeEvent({
+      taskId: input.taskId,
+      message: `命令已拒绝：${command}`,
+      tone: "neutral",
+    }),
+  ];
+}

@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import {
   buildStructuredCompactedMemory,
+  buildThreadMemoryAfterTask,
   compactAgentLoopMessages,
 } from "../src/agent/memory/loop-context-compactor";
 import {
@@ -99,6 +100,48 @@ async function main() {
     "task2 compaction keeps task1 approval in pinned memory",
   );
   assert.equal(messageText(compacted.messages[2]), TASK2_REQUEST);
+
+  const shortTurnMemory = buildThreadMemoryAfterTask({
+    messages: [
+      { role: "system", content: "You are a coding agent." },
+      { role: "user", content: TASK1_REQUEST },
+      {
+        role: "assistant",
+        content: "已定位首页组件，等待用户确认是否去掉鹊桥。",
+      },
+    ],
+    userRequest: TASK1_REQUEST,
+    summary: "已定位首页组件，等待用户确认是否去掉鹊桥。",
+    compactRound: 0,
+  });
+  assert.ok(
+    shortTurnMemory.memoryContent.includes(TASK1_REQUEST),
+    "short task saves user request without compaction",
+  );
+  assert.ok(
+    shortTurnMemory.memoryContent.includes("等待用户确认"),
+    "short task saves agent outcome without compaction",
+  );
+
+  const turn2Memory = buildThreadMemoryAfterTask({
+    messages: [
+      { role: "system", content: "You are a coding agent." },
+      { role: "user", content: TASK2_REQUEST },
+      { role: "assistant", content: "approval id 是 approval_task1-aaaa-bbbb。" },
+    ],
+    userRequest: TASK2_REQUEST,
+    summary: "approval id 是 approval_task1-aaaa-bbbb。",
+    priorMemoryContent: shortTurnMemory.memoryContent,
+    compactRound: 0,
+  });
+  assert.ok(
+    turn2Memory.memoryContent.includes(TASK1_REQUEST),
+    "second turn keeps first user request in thread memory",
+  );
+  assert.ok(
+    turn2Memory.memoryContent.includes(TASK2_REQUEST),
+    "second turn records latest user request",
+  );
 
   console.log("validate-thread-continuation: all assertions passed");
   console.log(

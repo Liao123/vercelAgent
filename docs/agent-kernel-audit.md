@@ -4,7 +4,7 @@
 
 > **范围**：用户看不见的运行时机制（控制循环、协议、压缩、记忆、写盘、纠偏、上下文注入）。  
 > **不覆盖**：三栏 UI、审查 Tab、`AgentEvent` 展示层（那是 L1 的投影）。  
-> **联动**：[`agent-kernel-gap-claude-code.md`](agent-kernel-gap-claude-code.md)（已交付项）、[`agent-cursor-codex-gap.md`](agent-cursor-codex-gap.md)（产品体感）。
+> **联动**：[`agent-handoff.md`](agent-handoff.md)（接续/P0）、[`agent-progress.md`](agent-progress.md)（台账）。
 
 参考：
 
@@ -175,7 +175,7 @@ vec-next：`compressionThresholdRatio` + `MIDDLE_MSG_TRIGGER=8` + `MIDDLE_TOKEN_
 | 改文件 | `Write`/`Edit` 直接 | 编辑器 apply | `*.prepare` → approval → execute | 🔒 | **产品决策**：默认 direct write（P0） |
 | prepare 门禁 | 无 | 无 | `assertPrepareGate`（仅 strict） | ✅ 已关默认 | keep strict only |
 | 权限 | `canUseTool` + permission mode | 终端授权 | 风险级 + auto-apply | ⚠️ | keep |
-| Shell | Bash + 2300 行安全 | terminal harness | `shell.command.prepare` | 🔒 | defer |
+| Shell | Bash in-loop + `tool_result` | terminal harness | prepare→approve→execute→续跑（A141 dev-run playbook + recovery） | ⚠️ | **align** P0：`trial:shell-recovery`；长期评估 Bash 回灌 |
 | Git | 直接 / 策略 | IDE git | `git.mutation.prepare` | ⚠️ | keep |
 
 ### L7 运行时纠偏（vec-next 最重）
@@ -219,7 +219,7 @@ vec-next：`compressionThresholdRatio` + `MIDDLE_MSG_TRIGGER=8` + `MIDDLE_TOKEN_
 | **A113** | L7 | 纠偏瘦身 | done | 默认关 recovery/final-nudge；checkpoint 仅失败时加重 |
 | **A114** | L2 | 原生 tool loop | done | 默认 OpenAI `tools`/`tool_calls`；`AGENT_LOOP_JSON_PROTOCOL=1` 回退；`validate:native-tool-loop` |
 | **A115** | L3 | 大 tool 结果外置 | done | `.agent-state/tool-results/` + stub；`AGENT_TOOL_RESULT_EXTERNALIZE=0` 回退截断；`validate:tool-result-externalize` |
-| **A116** | L4 | collapse 投影调研 | done | 结论 defer 全量移植 → [`agent-collapse-projection-spike.md`](agent-collapse-projection-spike.md)；可选 A118 soft collapse |
+| **A116** | L4 | collapse 投影调研 | done | 结论：**defer** 全量移植；已有 A118 soft collapse |
 | **A117** | L8 | open tabs 注入 | done | `@` 附着 + 审查选区 → `openEditorPaths` / `activeEditorPath`；`validate:open-tabs-inject` |
 | **A118** | L4 | soft tool-collapse | done | middle 过旧 tool 观测折叠；`validate:soft-tool-collapse` |
 | **A119** | L3 | 压缩层离线基准 | done | `validate:compaction-benchmark` → `.agent-state/compare/compaction-benchmark.json` |
@@ -261,6 +261,5 @@ npm run trial:semantic-compare     # 确定性 vs semantic
 ## 6. 审计维护约定
 
 - 每完成一项内核改动：更新本文 **§2 差距列** 与 **§3 backlog 状态**。
-- 产品可见差异仍写 [`agent-cursor-codex-gap.md`](agent-cursor-codex-gap.md)。
-- Claude 已交付能力清单写 [`agent-kernel-gap-claude-code.md`](agent-kernel-gap-claude-code.md)。
-- Collapse 投影调研（A116）：[`agent-collapse-projection-spike.md`](agent-collapse-projection-spike.md)。
+- 产品待办与收工：[`agent-handoff.md`](agent-handoff.md)；台账：[`agent-progress.md`](agent-progress.md)。
+- A116 collapse：**defer** 全量移植；保留 A118 soft collapse。

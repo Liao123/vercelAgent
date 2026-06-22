@@ -1,6 +1,8 @@
 /**
  * 用户批准并执行命令/操作后，构造 Loop 续跑请求（对齐 Cursor 授权后继续）。
  */
+import { suggestAlternateDevPort } from "@/agent/tools/shell-output";
+
 type ApprovalLike = {
   id: string;
   title: string;
@@ -74,10 +76,25 @@ function buildShellFailureRecoveryHint(
   ];
 
   if (/port \d+ is in use|eaddrinuse|address already in use|端口.*占用/.test(blob)) {
+    const cmd =
+      typeof resultRow === "object" &&
+      resultRow &&
+      "command" in resultRow &&
+      typeof (resultRow as { command?: string }).command === "string"
+        ? (resultRow as { command: string }).command
+        : approval.title;
+    const alt = suggestAlternateDevPort(cmd);
     hints.push(
-      "端口占用：先判断 dev 是否已在运行（让用户访问 http://localhost:5173）；若需重启，可 prepare `npm run dev -- --port 5175` 或读 vite.config 改端口；也可先 prepare 查占用进程（Windows: netstat -ano | findstr :5173）。",
+      "端口占用：先判断 dev 是否已在运行（让用户访问 http://localhost:3000）；若需重启，先结束 node 进程，再 prepare 带 `--port` 的命令。",
+      alt
+        ? `下一步建议命令（须 shell.run.prepare + 用户批准）：\`${alt}\``
+        : "也可 prepare 查占用：Windows `netstat -ano | findstr :3000`。",
     );
-  } else if (/timed out|timeout|未在.*内就绪/.test(blob)) {
+  } else if (/another next dev server is already running|已有.*dev.*运行/.test(blob)) {
+    hints.push(
+      "本仓库 Next.js dev 已在运行，任务目标已达成：直接告诉用户访问 http://localhost:3000（或输出里的 Local URL），不要再次 prepare dev 除非用户明确要求重启。",
+    );
+  } else if (/timed out|timeout|未在.*内就绪|无控制台输出/.test(blob)) {
     hints.push(
       "命令超时：dev 类服务可能仍在启动；可延长等待、检查输出是否已有 Local:/ready，或指定 --port 后重试。",
     );

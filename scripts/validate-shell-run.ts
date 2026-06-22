@@ -74,6 +74,16 @@ async function main(): Promise<void> {
     true,
   );
 
+  const shellRunner = await read("src/agent/tools/shell-runner.ts");
+  const longRunSpawn = shellRunner.match(
+    /function longRunningSpawnOptions[\s\S]*?^}/m,
+  )?.[0] ?? "";
+  const winSection =
+    longRunSpawn.split('if (process.platform === "win32")')[1]?.split("\n  return {")[0] ??
+    "";
+  assert.ok(!winSection.includes("detached"), "Windows branch has no detached");
+  assert.ok(longRunSpawn.includes("detached: true"), "Unix branch keeps detached");
+
   const npmHash = getShellApprovalAction({
     type: "npm_script",
     script: "lint",

@@ -52,12 +52,14 @@ npm run pack:desktop:dir
 
 ## 文档
 
-- [架构规划](docs/agent-architecture.md)
-- [项目进度](docs/agent-progress.md)
-- [开发准确度路线图（Cursor/Codex 对照）](docs/agent-accuracy-roadmap.md)
-- [本地记忆 / 决策](docs/agent-memory.md)
-- [Electron 桌面端](docs/agent-electron.md)
-- [桌面版快速上手](docs/desktop-quickstart.md)
+| 文档 | 用途 |
+| --- | --- |
+| [接续备忘](docs/agent-handoff.md) | **下次开工先读** |
+| [项目进度](docs/agent-progress.md) | 工作项状态 |
+| [本地记忆](docs/agent-memory.md) | 架构决策 |
+| [内核审计](docs/agent-kernel-audit.md) | vs Claude/Cursor |
+| [架构规划](docs/agent-architecture.md) | 长期参考 |
+| [桌面版](docs/desktop-quickstart.md) | 用户上手 |
 
 ## 部署到 Vercel
 

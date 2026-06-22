@@ -21,7 +21,6 @@ import { DiffView } from "@/components/diff-view";
 import { PrepareEvidenceView } from "@/components/prepare-evidence-view";
 import { snapshotDiffHint } from "@/lib/snapshot-diff-text";
 import { GitStatusView } from "@/components/git-status-view";
-import { AgentCommandApprovalBar } from "@/components/agent-command-approval-bar";
 import {
   AgentRightRail,
   type AgentRightRailTab,
@@ -62,7 +61,12 @@ import {
   findUserRequestForTask,
   shouldResumeLoopAfterApprovalExecute,
 } from "@/lib/approval-loop-continuation";
-import { appendApprovalExecutionEvents, buildCommandResultNotice } from "@/lib/approval-chat-events";
+import { appendApprovalExecutionEvents, buildCommandResultNotice, appendCommandApprovalRejectedEvents } from "@/lib/approval-chat-events";
+import {
+  collectPendingCommandApprovals,
+  extractShellVerificationResult,
+  isAwaitingCommandExecution,
+} from "@/lib/command-approval-state";
 import { summarizeShellFailureOutput } from "@/agent/tools/shell-output";
 import { useDesktopApp } from "@/lib/use-desktop-app";
 import { extractAtMentionPaths } from "@/lib/composer-at-mention";
@@ -687,6 +691,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
   });
   const [loadingWorkspace, setLoadingWorkspace] = useState(false);
   const [loadingApprovals, setLoadingApprovals] = useState(false);
+  const [refreshingApprovalList, setRefreshingApprovalList] = useState(false);
   const [approvalStatus, setApprovalStatus] = useState<string | null>(null);
   const [approvalStatusTone, setApprovalStatusTone] = useState<
     "success" | "error" | "neutral"
@@ -1134,14 +1139,13 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
       : undefined;
 
   async function loadApprovals() {
-    if (loadingApprovals) return;
+    if (refreshingApprovalList) return;
 
-    setLoadingApprovals(true);
-    setApprovalStatus(null);
+    setRefreshingApprovalList(true);
     setError(null);
 
     try {
-      const res = await fetch("/api/agent/approvals");
+      const res = await fetch("/api/agent/approvals?full=1");
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "读取审批失败。");
       setApprovals((current) =>
@@ -1154,7 +1158,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     } catch (err) {
       setError(err instanceof Error ? err.message : "读取审批失败。");
     } finally {
-      setLoadingApprovals(false);
+      setRefreshingApprovalList(false);
     }
   }
 
@@ -1176,17 +1180,26 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "处理审批失败。");
-      setApprovals((current) => {
-        const next = current.map((approval) =>
-          approval.id === approvalId ? data.approval : approval,
+      const resolved = data.approval as ApprovalRecordView;
+      setApprovals((current) => upsertApproval(current, resolved));
+      if (status === "rejected" && isCommandLikeApproval(resolved)) {
+        const taskId = resolved.taskId ?? currentTaskId ?? "shell_manual";
+        setEvents((current) =>
+          appendCommandApprovalRejectedEvents(current, {
+            taskId,
+            approval: resolved,
+          }),
         );
-        return sortApprovals(next);
-      });
-      setApprovalStatus(
-        status === "approved"
-          ? "已批准。请点击本条右侧的「执行」才会真正修改磁盘上的代码。"
-          : "已拒绝。",
-      );
+        setApprovalStatus("命令已拒绝。");
+        setApprovalStatusTone("neutral");
+      } else {
+        setApprovalStatus(
+          status === "approved"
+            ? "已批准。请点击本条右侧的「执行」才会真正修改磁盘上的代码。"
+            : "已拒绝。",
+        );
+        setApprovalStatusTone("neutral");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "处理审批失败。");
     } finally {
@@ -1361,7 +1374,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
             });
             if (isCommandLikeApproval(nextApproval)) {
               setApprovalStatus(
-                "请在对话区底部授权条点击「批准并运行」执行命令。",
+                "请在上方对话中的「批准并运行」执行命令。",
               );
             } else {
               const autoApply =
@@ -1464,26 +1477,11 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     execPayload: Record<string, unknown>,
   ) {
     if (!isCommandLikeApproval(approval)) return;
-    const applied = execPayload.result as { result?: VerificationResult } | undefined;
-    const execution = (execPayload.approval as ApprovalRecordView | undefined)?.execution;
-    const fromApplied = applied?.result;
-    const fromExecution = execution?.result as
-      | { command?: string; success?: boolean; output?: string }
-      | undefined;
-    const result: VerificationResult | null = fromApplied
-      ? fromApplied
-      : fromExecution &&
-          typeof fromExecution.success === "boolean" &&
-          typeof fromExecution.output === "string"
-        ? {
-            command: fromExecution.command ?? approval.title,
-            success: fromExecution.success,
-            output: fromExecution.output,
-            completedAt: new Date().toISOString(),
-          }
-        : null;
+    const result = extractShellVerificationResult(execPayload, approval);
     if (!result) return;
     const taskId = approval.taskId ?? currentTaskId ?? "shell_manual";
+    const execution = (execPayload.approval as ApprovalRecordView | undefined)
+      ?.execution;
     setEvents((current) =>
       appendApprovalExecutionEvents(current, {
         taskId,
@@ -1524,12 +1522,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
         throw new Error(patchData.error ?? "批准失败。");
       }
       const approved = patchData.approval as ApprovalRecordView;
-      setApprovals((current) => {
-        const next = current.map((item) =>
-          item.id === approval.id ? approved : item,
-        );
-        return sortApprovals(next);
-      });
+      setApprovals((current) => upsertApproval(current, approved));
 
       const execRes = await fetch("/api/agent/approvals/execute", {
         method: "POST",
@@ -1540,12 +1533,9 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
       const executedApproval = (execData.approval as ApprovalRecordView | undefined) ?? approval;
       if (!execRes.ok) {
         if (execData.approval) {
-          setApprovals((current) => {
-            const next = current.map((item) =>
-              item.id === approval.id ? execData.approval : item,
-            );
-            return sortApprovals(next);
-          });
+          setApprovals((current) =>
+            upsertApproval(current, execData.approval as ApprovalRecordView),
+          );
         }
         if (isCommandLikeApproval(approval)) {
           const failedResult =
@@ -1579,12 +1569,9 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
         }
         throw new Error(execData.error ?? "执行失败。");
       }
-      setApprovals((current) => {
-        const next = current.map((item) =>
-          item.id === approval.id ? execData.approval : item,
-        );
-        return sortApprovals(next);
-      });
+      setApprovals((current) =>
+        upsertApproval(current, execData.approval as ApprovalRecordView),
+      );
       const verification = execData.postExecuteVerification as
         | PostExecuteVerification
         | undefined;
@@ -1640,7 +1627,9 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
       setError("找不到待运行的命令审批，请刷新后重试。");
       return;
     }
-    if (approval.status !== "pending") {
+    if (
+      !isAwaitingCommandExecution(approval, executedCommandApprovalIds)
+    ) {
       setError("该命令已处理。");
       return;
     }
@@ -1692,21 +1681,15 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
       const data = await res.json();
       if (!res.ok) {
         if (data.approval) {
-          setApprovals((current) => {
-            const next = current.map((item) =>
-              item.id === approval.id ? data.approval : item,
-            );
-            return sortApprovals(next);
-          });
+          setApprovals((current) =>
+            upsertApproval(current, data.approval as ApprovalRecordView),
+          );
         }
         throw new Error(data.error ?? "执行审批失败。");
       }
-      setApprovals((current) => {
-        const next = current.map((item) =>
-          item.id === approval.id ? data.approval : item,
-        );
-        return sortApprovals(next);
-      });
+      setApprovals((current) =>
+        upsertApproval(current, data.approval as ApprovalRecordView),
+      );
       const verification = data.postExecuteVerification as
         | PostExecuteVerification
         | undefined;
@@ -1869,22 +1852,25 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     !running;
 
   const pendingCount = approvals.filter((a) => a.status === "pending").length;
-  const pendingCommandApprovals = useMemo(() => {
-    const fromEvents = events
-      .filter(
-        (event): event is Extract<AgentEvent, { type: "approval.required" }> =>
-          event.type === "approval.required",
-      )
-      .map((event) => approvalFromRequiredEvent(event))
-      .filter((approval) => isCommandLikeApproval(approval));
-    return mergeApprovalLists(fromEvents, approvals).filter(
-      (approval) =>
-        approval.status === "pending" && isCommandLikeApproval(approval),
-    );
-  }, [events, approvals]);
+  const pendingCommandApprovals = useMemo(
+    () => collectPendingCommandApprovals(events, approvals),
+    [events, approvals],
+  );
   const pendingCommandApprovalIds = useMemo(
     () => new Set(pendingCommandApprovals.map((approval) => approval.id)),
     [pendingCommandApprovals],
+  );
+  const executedCommandApprovalIds = useMemo(
+    () =>
+      new Set(
+        events
+          .filter(
+            (event): event is Extract<AgentEvent, { type: "approval.executed" }> =>
+              event.type === "approval.executed",
+          )
+          .map((event) => event.approvalId),
+      ),
+    [events],
   );
   const reviewApprovals = useMemo(() => {
     if (layout !== "triple") return approvals;
@@ -2000,10 +1986,10 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
         <button
           type="button"
           onClick={() => void loadApprovals()}
-          disabled={loadingApprovals}
+          disabled={refreshingApprovalList}
           className="rounded-md border border-zinc-300 px-2 py-1 text-xs text-zinc-700 transition hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
         >
-          {loadingApprovals ? "刷新中" : "刷新"}
+          {refreshingApprovalList ? "刷新中" : "刷新"}
         </button>
       </div>
           {!reviewCompact && (
@@ -2327,6 +2313,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
                 onRejectApproval={(id) => void resolveApproval(id, "rejected")}
                 applyApprovalBusy={loadingApprovals}
                 pendingCommandApprovalIds={pendingCommandApprovalIds}
+                executedCommandApprovalIds={executedCommandApprovalIds}
                 onApproveCommand={approveCommandFromTurn}
                 onRejectCommand={(id) => void resolveApproval(id, "rejected")}
                 commandApprovalBusy={loadingApprovals}
@@ -2346,12 +2333,6 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
             multiple
             className="hidden"
             onChange={(e) => void onPickReferenceImages(e)}
-          />
-          <AgentCommandApprovalBar
-            pending={pendingCommandApprovals}
-            loading={loadingApprovals}
-            onApproveAndExecute={(a) => void approveAndExecute(a)}
-            onReject={(id) => void resolveApproval(id, "rejected")}
           />
           <AgentComposer
             request={request}
