@@ -93,6 +93,7 @@ npm run validate:electron-shell
 npm run validate:electron-pack
 npm run validate:browser-desktop
 npm run validate:desktop-setup
+npm run validate:desktop-smoke
 npm run validate:workspace-tree-paths
 npm run validate:cursor-shell-ui
 npm run trial:server-check

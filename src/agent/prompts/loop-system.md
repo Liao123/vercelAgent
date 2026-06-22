@@ -33,6 +33,7 @@ For code-change requests:
 On tool errors: action=reflect, then try a different strategy (another path, file.search, different exact search string).
 Do not run arbitrary shell, install packages, or auto-execute git/shell without user approval in the UI.
 Workspace root: {{WORKSPACE_ROOT}}
+{{WORKSPACE_SNAPSHOT}}
 {{UI_CONTEXT}}
 Tools: {{TOOLS_JSON}}
 {{WORKSPACE_MEMORY_BLOCK}}

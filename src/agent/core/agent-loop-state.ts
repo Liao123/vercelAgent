@@ -1,6 +1,8 @@
 /**
  * Agent Loop 运行态：供反思检查点生成结构化摘要（不猜用户句式）。
  */
+import type { TaskReasoning } from "@/agent/core/loop-reasoning";
+
 export type AgentLoopRunState = {
   userRequest: string;
   likelyEditRequest: boolean;
@@ -37,6 +39,15 @@ export type AgentLoopRunState = {
   strictPrepare?: boolean;
   /** 同一工具连续失败次数（熔断空转） */
   toolFailureStreak?: { tool: string; error: string; count: number };
+  /** 首轮模型结构化推理（通用 intent / 证据 / 计划） */
+  taskReasoning?: TaskReasoning;
+  reasoningCompleted?: boolean;
+  /** 用户要可展示思考过程（meta），允许凭 thread memory final */
+  metaExplainMode?: boolean;
+  /** 只读任务证据已齐，应直接 final（通用收口） */
+  taskEvidenceComplete?: boolean;
+  /** A153：workspace 检测到的框架（供 metadata catalog） */
+  workspaceFramework?: string | null;
 };
 
 export function createAgentLoopRunState(userRequest: string): AgentLoopRunState {
@@ -225,6 +236,22 @@ export function buildRuntimeCheckpoint(state: AgentLoopRunState): string {
     `Edit applied: ${state.editApplied ? "yes" : "no"}`,
     `Files read: ${state.filesRead.length > 0 ? state.filesRead.join(", ") : "(none yet)"}`,
   ];
+  if (state.metaExplainMode) {
+    lines.push("Meta explain mode: expand visible reasoning for the user.");
+  }
+  if (state.taskEvidenceComplete) {
+    lines.push(
+      "Task evidence complete: gather is sufficient — respond with Chinese final (no more tools).",
+    );
+  }
+  if (state.taskReasoning) {
+    lines.push(
+      `Task intent: ${state.taskReasoning.intent} · risk: ${state.taskReasoning.risk}`,
+    );
+    if (state.taskReasoning.planSteps.length > 0) {
+      lines.push(`Plan: ${state.taskReasoning.planSteps.join(" → ")}`);
+    }
+  }
 
   if (state.postExecuteFeedback) {
     lines.push(formatPostExecuteFeedbackBlock(state.postExecuteFeedback));

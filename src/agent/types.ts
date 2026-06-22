@@ -423,6 +423,13 @@ export type AgentEvent =
       at?: string;
     }
   | { type: "task.completed"; taskId: string; task: Task; summary: string }
+  | {
+      type: "task.awaiting_approval";
+      taskId: string;
+      threadId: string;
+      approvalId: string;
+      task: Task;
+    }
   | { type: "task.failed"; taskId: string; task?: Task; error: string };
 
 /** Agent 产品 UI 运行时上下文（由前端传入 Loop，非用户 workspace 代码）。 */
@@ -437,6 +444,11 @@ export type AgentUiContext = {
   openEditorPaths?: string[];
   /** 当前焦点文件（审查区选区或最近 @ 文件）。 */
   activeEditorPath?: string;
+  /** 产品浏览器面板当前活动标签（用户说「这个网站/当前页面」时优先 browser.inspect）。 */
+  browserActiveTab?: {
+    url: string;
+    title?: string | null;
+  };
 };
 
 export function nowIso(): string {

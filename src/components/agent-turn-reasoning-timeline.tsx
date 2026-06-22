@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { formatModelErrorMessage } from "@/lib/model-error-message";
 import type { AgentEvent } from "@/agent/types";
 import {
   formatTimelineHeaderLabel,
@@ -170,7 +171,10 @@ function ReasoningStepContent({
         <p>{step.reflection.understanding}</p>
         {step.reflection.blockers.length > 0 && (
           <p className="text-red-600 dark:text-red-400">
-            阻塞：{step.reflection.blockers.join("；")}
+            阻塞：
+            {step.reflection.blockers
+              .map((item) => formatModelErrorMessage(item))
+              .join("；")}
           </p>
         )}
         <p>

@@ -4,6 +4,7 @@
  * 当前项目已有 OpenAI 兼容中转和 DeepSeek 配置，所以先用这个 provider
  * 承接现有 /api/chat 能力。后续可再加 Responses API 或其他模型 provider。
  */
+import { formatModelErrorMessage } from "@/lib/model-error-message";
 import { extractAssistantText } from "@/lib/extract-assistant-text";
 import type { ApiConfig } from "@/lib/openai-config";
 import { parseAssistantPayload } from "@/lib/parse-message";
@@ -64,7 +65,9 @@ export class ChatCompletionsProvider implements ModelProvider {
 
     const rawText = await response.text();
     if (!response.ok) {
-      throw new Error(`${this.config.provider} API error: ${rawText}`);
+      throw new Error(
+        `${this.config.provider} API error: ${formatModelErrorMessage(rawText)}`,
+      );
     }
 
     let data: ChatCompletionResponse;
@@ -119,7 +122,7 @@ export class ChatCompletionsProvider implements ModelProvider {
     });
 
     if (!response.ok) {
-      yield { type: "error", error: await response.text() };
+      yield { type: "error", error: formatModelErrorMessage(await response.text()) };
       return;
     }
 

@@ -9,6 +9,54 @@ import type { AgentUiContext } from "@/agent/types";
 
 export const dynamic = "force-dynamic";
 
+function parseUiContextFromBody(
+  raw: unknown,
+): AgentUiContext | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const body = raw as {
+    layout?: string;
+    activeRoute?: string;
+    openEditorPaths?: unknown;
+    activeEditorPath?: unknown;
+    browserActiveTab?: unknown;
+  };
+  const layout = body.layout;
+  if (layout !== "default" && layout !== "workspace" && layout !== "triple") {
+    return undefined;
+  }
+  const ctx: AgentUiContext = {
+    layout,
+    activeRoute:
+      typeof body.activeRoute === "string" && body.activeRoute.trim()
+        ? body.activeRoute.trim()
+        : "/",
+  };
+  if (Array.isArray(body.openEditorPaths)) {
+    const openEditorPaths = body.openEditorPaths.filter(
+      (item): item is string => typeof item === "string" && item.trim().length > 0,
+    );
+    if (openEditorPaths.length > 0) {
+      ctx.openEditorPaths = openEditorPaths.map((p) => p.replaceAll("\\", "/"));
+    }
+  }
+  if (
+    typeof body.activeEditorPath === "string" &&
+    body.activeEditorPath.trim()
+  ) {
+    ctx.activeEditorPath = body.activeEditorPath.trim().replaceAll("\\", "/");
+  }
+  if (body.browserActiveTab && typeof body.browserActiveTab === "object") {
+    const tab = body.browserActiveTab as { url?: unknown; title?: unknown };
+    if (typeof tab.url === "string" && tab.url.trim()) {
+      ctx.browserActiveTab = {
+        url: tab.url.trim(),
+        title: typeof tab.title === "string" ? tab.title : null,
+      };
+    }
+  }
+  return ctx;
+}
+
 export async function POST(request: Request) {
   let body: {
     userRequest?: string;
@@ -16,7 +64,7 @@ export async function POST(request: Request) {
     maxIterations?: number;
     model?: string;
     threadId?: string;
-    uiContext?: { layout?: string; activeRoute?: string };
+    uiContext?: unknown;
     attachedPaths?: string[];
     attachedSelections?: Array<{
       path: string;
@@ -25,6 +73,15 @@ export async function POST(request: Request) {
       selectedText?: string;
     }>;
     strictPrepare?: boolean;
+    shellResume?: {
+      approvalId: string;
+      result: {
+        command: string;
+        success: boolean;
+        output: string;
+        completedAt?: string;
+      };
+    };
   };
   try {
     body = await request.json();
@@ -41,7 +98,11 @@ export async function POST(request: Request) {
       )
     : undefined;
 
-  if (!userRequest && (!referenceImages || referenceImages.length === 0)) {
+  if (
+    !userRequest &&
+    !body.shellResume &&
+    (!referenceImages || referenceImages.length === 0)
+  ) {
     return Response.json(
       { error: "userRequest or referenceImages is required." },
       { status: 400 },
@@ -55,20 +116,7 @@ export async function POST(request: Request) {
       ? body.threadId.trim()
       : undefined;
 
-  const layout = body.uiContext?.layout;
-  const uiContext: AgentUiContext | undefined =
-    layout === "default" ||
-    layout === "workspace" ||
-    layout === "triple"
-      ? {
-          layout,
-          activeRoute:
-            typeof body.uiContext?.activeRoute === "string" &&
-            body.uiContext.activeRoute.trim()
-              ? body.uiContext.activeRoute.trim()
-              : "/",
-        }
-      : undefined;
+  const uiContext = parseUiContextFromBody(body.uiContext);
 
   const attachedPaths = Array.isArray(body.attachedPaths)
     ? body.attachedPaths.filter(
@@ -116,6 +164,7 @@ export async function POST(request: Request) {
     attachedPaths,
     attachedSelections,
     strictPrepare: body.strictPrepare === true,
+    shellResume: body.shellResume,
     onEvent: (event) => writer.emit(event),
   })
     .then(() => {

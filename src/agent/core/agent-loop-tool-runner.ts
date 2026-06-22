@@ -21,8 +21,13 @@ import type { PlanProgressHint } from "@/agent/core/agent-loop-plan";
 import {
   computePlaybookProgress,
   findCircuitBreaker,
+  findPlaybookToolRedirect,
   type ResolvedTaskPlaybook,
 } from "@/agent/core/task-playbooks";
+import {
+  evaluateToolEvidenceGate,
+  syncTaskEvidenceComplete,
+} from "@/agent/core/evidence-gate";
 import { buildToolObservationMessage } from "@/agent/memory/loop-context-compactor";
 import type { AppliedFileMutation } from "@/agent/tools/file-mutations";
 import type { PatchResult } from "@/agent/tools/patch-tools";
@@ -82,12 +87,17 @@ export type AgentLoopToolRunnerDeps = {
   emitPlaybookProgress: () => void;
   playbook: ResolvedTaskPlaybook;
   fallbackSummary: (error: unknown) => string;
+  pushUserNudge?: (content: string) => void;
 };
 
 export type AgentLoopToolRunResult = {
   observationText: string;
   observationMessage: AgentMessage;
   toolContext: AgentLoopToolContext;
+  pendingShellApproval?: {
+    approvalId: string;
+    command: string;
+  };
 };
 
 export async function runAgentLoopToolCall(input: {
@@ -174,8 +184,109 @@ export async function runAgentLoopToolCall(input: {
     };
   }
 
+  const playbookRedirect = findPlaybookToolRedirect(
+    deps.playbook,
+    tool.name,
+    deps.runState.toolsCalled,
+  );
+  if (playbookRedirect) {
+    const observation = {
+      error: playbookRedirect.message,
+      useInstead: playbookRedirect.redirectTool,
+    };
+    recordToolCall(deps.runState, tool.name, observation, observation.error);
+    deps.emit({
+      type: "tool.completed",
+      taskId: deps.taskId,
+      toolCall: completeLoopToolCallRecord(toolCall, observation.error),
+      result: observation,
+    });
+    deps.emitPlaybookProgress();
+    const observationMessage = buildToolObservationMessage(
+      tool.name,
+      observation,
+      observationCtx,
+    );
+    deps.runState.reflectionRounds += 1;
+    deps.emitReflection({
+      understanding: playbookRedirect.understanding,
+      blockers: [observation.error],
+      plannedNext: playbookRedirect.plannedNext,
+      source: "runtime",
+    });
+    return {
+      observationText:
+        typeof observationMessage.content === "string"
+          ? observationMessage.content
+          : JSON.stringify(observationMessage.content),
+      observationMessage,
+      toolContext: deps.getToolContext(),
+    };
+  }
+
+  const evidenceGate = evaluateToolEvidenceGate(tool.name, input.args, deps.runState);
+  if (!evidenceGate.allowed) {
+    const proceedToFinal = evidenceGate.proceedToFinal === true;
+    if (proceedToFinal) {
+      deps.runState.taskEvidenceComplete = true;
+    }
+    const observation = proceedToFinal
+      ? {
+          skipped_by_gate: true,
+          reason: evidenceGate.message,
+          instruction: evidenceGate.plannedNext,
+        }
+      : { error: evidenceGate.message };
+    recordToolCall(
+      deps.runState,
+      tool.name,
+      observation,
+      proceedToFinal ? undefined : evidenceGate.message,
+    );
+    deps.emit({
+      type: "tool.completed",
+      taskId: deps.taskId,
+      toolCall: completeLoopToolCallRecord(
+        toolCall,
+        proceedToFinal ? undefined : evidenceGate.message,
+      ),
+      result: observation,
+    });
+    deps.emitPlaybookProgress();
+    const observationMessage = buildToolObservationMessage(
+      tool.name,
+      observation,
+      observationCtx,
+    );
+    if (!proceedToFinal) {
+      deps.runState.reflectionRounds += 1;
+    }
+    deps.emitReflection({
+      understanding: evidenceGate.understanding,
+      blockers: proceedToFinal ? [] : [evidenceGate.message],
+      plannedNext: proceedToFinal
+        ? `【证据已齐】${evidenceGate.plannedNext}`
+        : evidenceGate.plannedNext,
+      source: "runtime",
+    });
+    if (proceedToFinal) {
+      deps.pushUserNudge?.(
+        `【证据已齐】${evidenceGate.plannedNext} 请直接输出中文 final，不要再调用任何工具。`,
+      );
+    }
+    return {
+      observationText:
+        typeof observationMessage.content === "string"
+          ? observationMessage.content
+          : JSON.stringify(observationMessage.content),
+      observationMessage,
+      toolContext: deps.getToolContext(),
+    };
+  }
+
   try {
     let toolContext = deps.getToolContext();
+    let pendingShellApproval: AgentLoopToolRunResult["pendingShellApproval"];
     const toolResult = await tool.execute(input.args, toolContext);
     if (toolResult.context) {
       toolContext = toolResult.context;
@@ -190,6 +301,7 @@ export async function runAgentLoopToolCall(input: {
     });
     recordToolCall(deps.runState, tool.name, toolResult.result);
     deps.emitPlaybookProgress();
+    syncTaskEvidenceComplete(deps.runState);
 
     if (
       tool.name === "file.read" &&
@@ -221,6 +333,20 @@ export async function runAgentLoopToolCall(input: {
         taskId: deps.taskId,
         approval,
       });
+      if (approval.details?.kind === "shell_command") {
+        const preview =
+          toolResult.result &&
+          typeof toolResult.result === "object" &&
+          "preview" in toolResult.result
+            ? (toolResult.result as { preview?: { command?: string } }).preview
+            : undefined;
+        pendingShellApproval = {
+          approvalId: approval.id,
+          command:
+            preview?.command ??
+            (approval.title.replace(/^Run\s+/i, "").trim() || approval.title),
+        };
+      }
     }
 
     if (
@@ -307,7 +433,12 @@ export async function runAgentLoopToolCall(input: {
       deps.emitPlan({ lastAction: "tool" });
     }
 
-    return { observationText, observationMessage, toolContext };
+    return {
+      observationText,
+      observationMessage,
+      toolContext,
+      pendingShellApproval,
+    };
   } catch (error) {
     const observation = { error: deps.fallbackSummary(error) };
     recordToolCall(deps.runState, tool.name, observation, observation.error);

@@ -31,6 +31,10 @@ Codex/Cursor 式开发智能体：中文需求 → 定位文件 → 改码 → �
 | D038–D041 | 在线 UI 试用、recovery 过滤、prepare nudge、压缩钉住 hint |
 | D042–D047 | post-execute 回灌 Loop、末轮 nudge、文件树、命令底栏授权、自动写盘、lint 再 Loop |
 | D048 | **Shell 架构债**：非 Loop 内 Bash；prepare→批准→execute→续跑；P0 `trial:shell-recovery` |
+| D049 | **通用优先**：规则管边界、模型管意图；禁止句式→工具硬路由；trial 量路径不绑答案；方案见 [`agent-generic-capability-roadmap.md`](agent-generic-capability-roadmap.md) |
+| D050 | **Metadata catalog**：页面元数据/包名用 `framework-metadata-catalog` 的 role+framework，禁止在 gate 写死 layout/index 路径；日历事实走 `RUNTIME_FACTS` 注入 |
+| D051 | **Project index 会话缓存 + scoped query**：同 workspace TTL 内复用 index；`project.index(query)` 做定位；窄 QA gate 只拦重复**全量** index，探索类由 `TaskReasoning` 结构化信号判定 |
+| D052 | **Shell 分层恢复策略**：shell 续跑提示基于结构化 tier（already/port/timeout/generic），playbook 与 prompt 仅声明“按输出分层处理”，不写死 Next/3000 句式 |
 
 细节已收敛：旧版逐条 A0xx 完成日志已删，以 git 与 `agent-progress.md` A106+ 为准。
 

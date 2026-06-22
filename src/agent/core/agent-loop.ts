@@ -79,6 +79,7 @@ import {
   saveThreadMemory,
 } from "@/agent/memory/thread-memory-store";
 import { getCurrentWorkspace } from "@/agent/workspace";
+import { workspaceToSnapshotInput } from "@/agent/workspace/workspace-snapshot-prompt";
 import {
   isEditRecoveryEnabled,
   isEditTaskSatisfied,
@@ -107,10 +108,41 @@ import {
 import type { AgentUiContext } from "@/agent/types";
 import {
   buildSoftRoundBudgetHint,
+  collectPlaybookAcceleratorHints,
   computePlaybookProgress,
   countToolRounds,
   resolveTaskPlaybook,
 } from "@/agent/core/task-playbooks";
+import {
+  attachReasoningToRunState,
+  buildPostReasoningHint,
+  buildAdaptiveReasoningSkipHint,
+  buildReasoningTurnUserMessage,
+  evaluateReasoningTurn,
+  formatReasoningForMessages,
+  isMetaExplainRequest,
+  normalizeTaskReasoning,
+  parseTaskReasoning,
+  reasoningToReflection,
+} from "@/agent/core/loop-reasoning";
+import {
+  formatModelErrorMessage,
+  formatModelFailureSummary,
+} from "@/lib/model-error-message";
+import { evaluateFinalEvidenceGate } from "@/agent/core/evidence-gate";
+import { canParallelizeGatherBatch } from "@/agent/core/parallel-gather";
+import {
+  isShellLoopResumeEnabled,
+  saveLoopShellCheckpoint,
+  consumeLoopShellCheckpoint,
+  type PendingShellApproval,
+} from "@/agent/core/loop-shell-checkpoint";
+import {
+  buildShellExecutionResumeMessage,
+  pendingShellFromToolRun,
+  type ShellLoopResumeInput,
+} from "@/agent/core/shell-loop-resume";
+import { buildApprovalLoopContinuationRequest } from "@/lib/approval-loop-continuation";
 
 export type AgentLoopInput = {
   userRequest: string;
@@ -128,6 +160,8 @@ export type AgentLoopInput = {
   attachedSelections?: EditorSelectionContext[];
   /** 为 true 时禁止 edit.recovery，强制模型走 prepare（与试用 --strict 对齐） */
   strictPrepare?: boolean;
+  /** A151：shell 批准后同 Loop 上下文续跑（需有效 checkpoint） */
+  shellResume?: ShellLoopResumeInput;
   onEvent?: (event: AgentEvent) => void;
 };
 
@@ -328,8 +362,20 @@ function completeToolCall(call: ToolCallRecord, error?: string): ToolCallRecord 
   };
 }
 
+function taskReasoningPinFromRunState(
+  taskReasoning?: import("@/agent/core/loop-reasoning").TaskReasoning,
+) {
+  if (!taskReasoning) return null;
+  return {
+    intent: taskReasoning.intent,
+    risk: taskReasoning.risk,
+    evidenceNeeded: taskReasoning.evidenceNeeded,
+    ambiguity: taskReasoning.ambiguity,
+  };
+}
+
 function fallbackSummary(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return formatModelErrorMessage(error);
 }
 
 function observationMessage(
@@ -460,9 +506,10 @@ export async function runAgentLoop(
 
   const now = nowIso();
   const workspace = await getCurrentWorkspace();
+  const workspaceSnapshot = workspaceToSnapshotInput(workspace);
   const { cleanRequest, attachedPaths: parsedAttachedPaths, attachedSelections: parsedSelections } =
     parseAtPathsFromRequest(input.userRequest);
-  const effectiveUserRequest = cleanRequest || input.userRequest;
+  let effectiveUserRequest = cleanRequest || input.userRequest;
   const attachedPaths = mergeAttachedPaths(
     input.attachedPaths,
     parsedAttachedPaths,
@@ -474,6 +521,40 @@ export async function runAgentLoop(
   const priorThreadMemory = input.threadId
     ? getThreadMemory(input.threadId)
     : undefined;
+
+  const shellCheckpoint =
+    input.shellResume &&
+    input.threadId &&
+    isShellLoopResumeEnabled()
+      ? consumeLoopShellCheckpoint(input.threadId, input.shellResume.approvalId)
+      : null;
+
+  if (
+    input.shellResume &&
+    input.threadId &&
+    isShellLoopResumeEnabled() &&
+    !shellCheckpoint
+  ) {
+    effectiveUserRequest = buildApprovalLoopContinuationRequest(
+      {
+        id: input.shellResume.approvalId,
+        title: input.shellResume.result.command,
+        details: { kind: "shell_command" },
+        execution: {
+          status: input.shellResume.result.success ? "succeeded" : "failed",
+          result: {
+            kind: "shell_command",
+            command: input.shellResume.result.command,
+            success: input.shellResume.result.success,
+            output: input.shellResume.result.output,
+          },
+        },
+      },
+      { result: input.shellResume.result },
+      priorThreadMemory?.lastUserRequest ?? null,
+    );
+  }
+
   const thread: Thread = {
     id: input.threadId ?? newId("thread"),
     workspaceId: workspace.id,
@@ -490,7 +571,7 @@ export async function runAgentLoop(
     url.startsWith("data:image/"),
   );
   const task: Task = {
-    id: newId("task"),
+    id: shellCheckpoint?.taskId ?? newId("task"),
     threadId: thread.id,
     workspaceId: workspace.id,
     userRequest: effectiveUserRequest,
@@ -518,10 +599,19 @@ export async function runAgentLoop(
     updatedAt: now,
   });
   const plan = createAgentLoopPlan(effectiveUserRequest);
-  const runState = createAgentLoopRunState(effectiveUserRequest);
+  const runState = shellCheckpoint
+    ? {
+        ...shellCheckpoint.runState,
+        approvalPrepared: false,
+      }
+    : createAgentLoopRunState(effectiveUserRequest);
+  if (!shellCheckpoint) {
+    runState.metaExplainMode = isMetaExplainRequest(effectiveUserRequest);
+  }
   if (input.strictPrepare) {
     runState.strictPrepare = true;
   }
+  runState.workspaceFramework = workspaceSnapshot.framework ?? null;
   const storedPostExecute = await loadStoredPostExecuteVerification(
     workspace.rootPath,
   );
@@ -583,23 +673,59 @@ export async function runAgentLoop(
   };
   emitPlaybookProgress();
 
-  const openingReflection: AgentReflection = {
-    understanding: `${taskPlaybook.title}：${effectiveUserRequest}`,
-    blockers: postExecuteFeedback ? [postExecuteFeedback.summary] : [],
-    plannedNext: postExecuteFeedback
-      ? "先读 checkpoint 中 post-execute 失败摘要，修复相关文件后再 file.replace.prepare。"
-      : attachedPaths.length > 0
-        ? `已预读 ${attachedPaths.length} 个附加文件；${taskPlaybook.openingPlannedNext}`
-        : taskPlaybook.openingPlannedNext,
-    source: "runtime",
-  };
-  emitReflection(emit, task.id, openingReflection);
-  emitPlan();
+  const playbookHints = collectPlaybookAcceleratorHints(
+    effectiveUserRequest,
+    runState,
+  );
 
-  const messages: AgentMessage[] = [
+  let messages: AgentMessage[];
+
+  if (shellCheckpoint && input.shellResume) {
+    effectiveUserRequest = shellCheckpoint.effectiveUserRequest;
+    task.userRequest = effectiveUserRequest;
+    messages = [...shellCheckpoint.messages];
+    recordToolCall(
+      runState,
+      shellCheckpoint.pendingShell.toolName,
+      input.shellResume.result,
+    );
+    messages.push({
+      role: "user",
+      content: buildShellExecutionResumeMessage({
+        pendingShell: shellCheckpoint.pendingShell,
+        result: input.shellResume.result,
+        priorUserRequest: shellCheckpoint.effectiveUserRequest,
+      }),
+    });
+    emitReflection(emit, task.id, {
+      understanding: `Shell 命令已执行（${input.shellResume.result.success ? "成功" : "失败"}），同 Loop 上下文续跑。`,
+      blockers: input.shellResume.result.success
+        ? []
+        : [input.shellResume.result.output.slice(0, 240) || "命令失败"],
+      plannedNext: "根据 shell 输出继续完成原定任务。",
+      source: "runtime",
+    });
+    emitPlan({ lastAction: "tool" });
+  } else {
+  const reasoningMode = evaluateReasoningTurn({
+    userRequest: effectiveUserRequest,
+    likelyEditRequest: runState.likelyEditRequest,
+    metaExplain: runState.metaExplainMode === true,
+    hasReferenceImages: referenceImages.length > 0,
+    hasPreloadedAttachments: attachedPaths.length > 0,
+    hasPostExecuteFeedback: Boolean(postExecuteFeedback),
+    isFixContinuation: isPostExecuteFixContinuation(effectiveUserRequest),
+    hasThreadMemory: Boolean(priorThreadMemory?.memoryContent),
+  });
+
+  messages = [
     {
       role: "system",
-      content: createLoopSystemPrompt(workspace.rootPath, input.uiContext),
+      content: createLoopSystemPrompt(
+        workspace.rootPath,
+        input.uiContext,
+        workspaceSnapshot,
+      ),
     },
   ];
   if (priorThreadMemory?.memoryContent) {
@@ -618,7 +744,6 @@ export async function runAgentLoop(
   }
   const userMessageText = [
     effectiveUserRequest,
-    taskPlaybook.loopHint ?? "",
     attachedPaths.length > 0
       ? formatAttachedFilesUserNote(attachedPaths, attachedSelections)
       : "",
@@ -674,7 +799,135 @@ export async function runAgentLoop(
       messages.push(observationMessage("file.read", result, workspace.rootPath, toolCall.id));
     }
   }
-  pushReflectionToMessages(messages, openingReflection, buildRuntimeCheckpoint(runState));
+
+  if (reasoningMode === "full") {
+    messages.push({
+      role: "user",
+      content: buildReasoningTurnUserMessage({
+        userRequest: effectiveUserRequest,
+        playbookHints,
+        uiContext: input.uiContext,
+        hasThreadMemory: Boolean(priorThreadMemory?.memoryContent),
+        metaExplain: runState.metaExplainMode === true,
+        workspaceSnapshot,
+      }),
+    });
+    try {
+      const loopModel =
+        input.model ??
+        (agentMessagesHaveImages(messages)
+          ? getApiConfig()?.visionModel
+          : undefined);
+      const reasoningOutput = await generateLoopModelWithProgress(
+        provider,
+        {
+          messages,
+          model: loopModel,
+          temperature: 0,
+          maxTokens: 900,
+          toolChoice: "none",
+          metadata: { taskId: task.id, reasoningTurn: true },
+        },
+        emit,
+        task.id,
+      );
+      const parsed = parseTaskReasoning(reasoningOutput.content);
+      if (parsed) {
+        const normalized = normalizeTaskReasoning(parsed, {
+          userRequest: effectiveUserRequest,
+          metaExplain: runState.metaExplainMode === true,
+          hasThreadMemory: Boolean(priorThreadMemory?.memoryContent),
+          filesReadCount: runState.filesRead.length,
+          toolsCalledCount: runState.toolsCalled.length,
+          workspaceFramework: runState.workspaceFramework,
+        });
+        attachReasoningToRunState(runState, normalized);
+        const reflection = reasoningToReflection(normalized);
+        emitReflection(emit, task.id, reflection);
+        pushReflectionToMessages(
+          messages,
+          reflection,
+          buildRuntimeCheckpoint(runState),
+        );
+        messages.push({
+          role: "assistant",
+          content: formatReasoningForMessages(normalized),
+        });
+        const postHint = buildPostReasoningHint(
+          normalized,
+          runState.metaExplainMode === true,
+        );
+        if (postHint) {
+          messages.push({ role: "user", content: postHint });
+        }
+        emitPlan({ lastAction: "reflect" });
+      } else if (reasoningOutput.content?.trim()) {
+        messages.push({
+          role: "assistant",
+          content: reasoningOutput.content.trim(),
+        });
+      }
+    } catch {
+      const fallbackReflection: AgentReflection = {
+        understanding: effectiveUserRequest,
+        blockers: postExecuteFeedback ? [postExecuteFeedback.summary] : [],
+        plannedNext: postExecuteFeedback
+          ? "先读 checkpoint 中 post-execute 失败摘要，修复相关文件后再 file.replace.prepare。"
+          : "推理轮失败，请根据用户请求按需调用工具。",
+        source: "runtime",
+      };
+      emitReflection(emit, task.id, fallbackReflection);
+      pushReflectionToMessages(
+        messages,
+        fallbackReflection,
+        buildRuntimeCheckpoint(runState),
+      );
+    }
+  } else if (reasoningMode === "skip") {
+    messages.push({
+      role: "user",
+      content: buildAdaptiveReasoningSkipHint({
+        userRequest: effectiveUserRequest,
+        playbookHints,
+        uiContext: input.uiContext,
+        hasThreadMemory: Boolean(priorThreadMemory?.memoryContent),
+        workspaceSnapshot,
+      }),
+    });
+    const skipReflection: AgentReflection = {
+      understanding: effectiveUserRequest,
+      blockers: [],
+      plannedNext:
+        "自适应跳过 JSON 推理轮；仍须歧义分解与 gather 后再 final。",
+      source: "runtime",
+    };
+    emitReflection(emit, task.id, skipReflection);
+    pushReflectionToMessages(
+      messages,
+      skipReflection,
+      buildRuntimeCheckpoint(runState),
+    );
+    emitPlan({ lastAction: "reflect" });
+  } else {
+    const openingReflection: AgentReflection = {
+      understanding: `${taskPlaybook.title}：${effectiveUserRequest}`,
+      blockers: postExecuteFeedback ? [postExecuteFeedback.summary] : [],
+      plannedNext: postExecuteFeedback
+        ? "先读 checkpoint 中 post-execute 失败摘要，修复相关文件后再 file.replace.prepare。"
+        : attachedPaths.length > 0
+          ? `已预读 ${attachedPaths.length} 个附加文件，请按需继续。`
+          : "请根据用户请求按需调用工具。",
+      source: "runtime",
+    };
+    emitReflection(emit, task.id, openingReflection);
+    pushReflectionToMessages(
+      messages,
+      openingReflection,
+      buildRuntimeCheckpoint(runState),
+    );
+    emitPlan();
+  }
+  }
 
   let toolContext: AgentLoopToolContext = {
     workspace,
@@ -700,28 +953,42 @@ export async function runAgentLoop(
     emitPlaybookProgress,
     playbook: taskPlaybook,
     fallbackSummary,
+    pushUserNudge: (content) => {
+      messages.push({ role: "user", content });
+    },
   };
 
   let summary = GRACEFUL_FINAL_DEFAULT_SUMMARY;
   let softBudgetHintInjected = false;
   const maxIterations = Math.min(
-    Math.max(input.maxIterations ?? DEFAULT_MAX_ITERATIONS, 1),
+    Math.max(
+      shellCheckpoint?.maxIterations ?? input.maxIterations ?? DEFAULT_MAX_ITERATIONS,
+      1,
+    ),
     MAX_LOOP_ITERATION_CAP,
   );
+  const resumedIteration = shellCheckpoint?.iteration ?? 0;
+  let pausedForShellApproval = false;
+  let pausedShellApprovalId: string | null = null;
 
   let modelUnavailable = false;
   let contextCompactRound = 0;
   let reactiveCompactUsed = false;
 
-  for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
-    if (iteration > 1) {
+  for (let iteration = resumedIteration + 1; iteration <= maxIterations; iteration += 1) {
+    const shouldEmitProgressReflection =
+      iteration > 1 &&
+      (runState.lastToolError != null ||
+        runState.lastPrepareError != null ||
+        runState.toolsCalled.length > 0);
+    if (shouldEmitProgressReflection) {
       emitReflection(emit, task.id, {
         understanding: `继续执行（第 ${iteration}/${maxIterations} 轮）`,
         blockers: [],
         plannedNext:
           runState.toolsCalled.length > 0
-            ? `已调用 ${runState.toolsCalled.length} 次工具，正在继续推理…`
-            : "正在继续推理并选择下一步工具…",
+            ? `已调用 ${runState.toolsCalled.length} 次工具，正在继续…`
+            : "正在选择下一步…",
         source: "runtime",
       });
     }
@@ -744,6 +1011,7 @@ export async function runAgentLoop(
         runState.prepareHint && !runState.approvalPrepared
           ? runState.prepareHint
           : undefined,
+      taskReasoning: taskReasoningPinFromRunState(runState.taskReasoning),
     });
     if (shouldApplyCompactionMessages(compactResult)) {
       messages.length = 0;
@@ -851,6 +1119,7 @@ export async function runAgentLoop(
               runState.prepareHint && !runState.approvalPrepared
                 ? runState.prepareHint
                 : undefined,
+            taskReasoning: taskReasoningPinFromRunState(runState.taskReasoning),
             forceCompact: true,
           });
           if (shouldApplyCompactionMessages(reactiveCompact)) {
@@ -884,11 +1153,12 @@ export async function runAgentLoop(
         }
 
         modelUnavailable = true;
-        summary = `Model call failed: ${fallbackSummary(error)}`;
+        const modelError = formatModelErrorMessage(error);
+        summary = formatModelFailureSummary(error);
         emitReflection(emit, task.id, {
-          understanding: runState.userRequest,
-          blockers: [summary],
-          plannedNext: "运行时将在无模型情况下尝试磁盘恢复。",
+          understanding: "模型调用失败，任务已暂停。",
+          blockers: [modelError],
+          plannedNext: "请检查 API 配置或网络后重试；推理已完成时可重发同一问题。",
           source: "runtime",
         });
         emitPlan({ lastAction: "reflect" });
@@ -926,7 +1196,7 @@ export async function runAgentLoop(
         })),
       });
 
-      for (const toolCall of output.toolCalls) {
+      const preparedCalls = output.toolCalls.map((toolCall) => {
         let args: Record<string, unknown> = {};
         try {
           args = parseToolCallArguments(toolCall.arguments);
@@ -939,26 +1209,99 @@ export async function runAgentLoop(
             fallbackSummary(error),
           );
         }
-
         const patchTextFallback =
           toolCall.name === "patch.apply" && typeof args.patch === "string"
             ? args.patch
             : undefined;
+        return { toolCall, args, patchTextFallback };
+      });
 
-        const runResult = await runAgentLoopToolCall({
-          toolName: toolCall.name,
-          args,
-          patchTextFallback,
-          toolCallId: toolCall.id,
+      const runPrepared = async (item: (typeof preparedCalls)[number]) =>
+        runAgentLoopToolCall({
+          toolName: item.toolCall.name,
+          args: item.args,
+          patchTextFallback: item.patchTextFallback,
+          toolCallId: item.toolCall.id,
           deps: toolRunnerDeps,
         });
-        toolContext = runResult.toolContext;
 
-        messages.push({
-          role: "tool",
-          tool_call_id: toolCall.id,
-          content: runResult.observationText,
-        });
+      const useParallel = canParallelizeGatherBatch(
+        preparedCalls.map((item) => ({
+          name: item.toolCall.name,
+          args: item.args,
+        })),
+      );
+
+      if (useParallel) {
+        const results = await Promise.all(preparedCalls.map(runPrepared));
+        let pendingShell: PendingShellApproval | null = null;
+        for (let index = 0; index < results.length; index += 1) {
+          const item = preparedCalls[index]!;
+          const runResult = results[index]!;
+          toolContext = runResult.toolContext;
+          messages.push({
+            role: "tool",
+            tool_call_id: item.toolCall.id,
+            content: runResult.observationText,
+          });
+          const maybePending = pendingShellFromToolRun(
+            item.toolCall.name,
+            item.toolCall.id,
+            runResult,
+          );
+          if (maybePending) pendingShell = maybePending;
+        }
+        if (pendingShell && isShellLoopResumeEnabled()) {
+          saveLoopShellCheckpoint({
+            threadId: thread.id,
+            taskId: task.id,
+            savedAt: nowIso(),
+            iteration,
+            maxIterations,
+            effectiveUserRequest,
+            messages: [...messages],
+            runState: { ...runState },
+            pendingShell,
+            uiContext: input.uiContext,
+          });
+          pausedForShellApproval = true;
+          pausedShellApprovalId = pendingShell.approvalId;
+          break;
+        }
+      } else {
+        let pendingShell: PendingShellApproval | null = null;
+        for (const item of preparedCalls) {
+          const runResult = await runPrepared(item);
+          toolContext = runResult.toolContext;
+          messages.push({
+            role: "tool",
+            tool_call_id: item.toolCall.id,
+            content: runResult.observationText,
+          });
+          const maybePending = pendingShellFromToolRun(
+            item.toolCall.name,
+            item.toolCall.id,
+            runResult,
+          );
+          if (maybePending) pendingShell = maybePending;
+        }
+        if (pendingShell && isShellLoopResumeEnabled()) {
+          saveLoopShellCheckpoint({
+            threadId: thread.id,
+            taskId: task.id,
+            savedAt: nowIso(),
+            iteration,
+            maxIterations,
+            effectiveUserRequest,
+            messages: [...messages],
+            runState: { ...runState },
+            pendingShell,
+            uiContext: input.uiContext,
+          });
+          pausedForShellApproval = true;
+          pausedShellApprovalId = pendingShell.approvalId;
+          break;
+        }
       }
       continue;
     }
@@ -981,6 +1324,22 @@ export async function runAgentLoop(
         };
         emitReflection(emit, task.id, reflection);
         pushReflectionToMessages(messages, reflection, buildRuntimeCheckpoint(runState));
+        emitPlan({ lastAction: "reflect" });
+        continue;
+      }
+
+      const finalGate = evaluateFinalEvidenceGate(runState);
+      if (!finalGate.allowed) {
+        runState.reflectionRounds += 1;
+        const reflection: AgentReflection = {
+          understanding: finalGate.understanding,
+          blockers: [finalGate.message],
+          plannedNext: finalGate.plannedNext,
+          source: "runtime",
+        };
+        emitReflection(emit, task.id, reflection);
+        pushReflectionToMessages(messages, reflection, buildRuntimeCheckpoint(runState));
+        messages.push({ role: "user", content: finalGate.message });
         emitPlan({ lastAction: "reflect" });
         continue;
       }
@@ -1059,7 +1418,52 @@ export async function runAgentLoop(
     });
     toolContext = runResult.toolContext;
     messages.push(runResult.observationMessage);
+    const jsonPendingShell = pendingShellFromToolRun(
+      decision.tool,
+      `json_${decision.tool}_${iteration}`,
+      runResult,
+    );
+    if (jsonPendingShell && isShellLoopResumeEnabled()) {
+      saveLoopShellCheckpoint({
+        threadId: thread.id,
+        taskId: task.id,
+        savedAt: nowIso(),
+        iteration,
+        maxIterations,
+        effectiveUserRequest,
+        messages: [...messages],
+        runState: { ...runState },
+        pendingShell: jsonPendingShell,
+        uiContext: input.uiContext,
+      });
+      pausedForShellApproval = true;
+      pausedShellApprovalId = jsonPendingShell.approvalId;
+      break;
+    }
     continue;
+  }
+
+  if (pausedForShellApproval && pausedShellApprovalId) {
+    const waitingTask: Task = {
+      ...task,
+      status: "waiting_for_approval",
+      updatedAt: nowIso(),
+    };
+    emit({
+      type: "task.awaiting_approval",
+      taskId: task.id,
+      threadId: thread.id,
+      approvalId: pausedShellApprovalId,
+      task: waitingTask,
+    });
+    return {
+      traceId: trace.id,
+      thread: { ...thread, status: "running", updatedAt: nowIso() },
+      task: waitingTask,
+      turn: { ...turn, status: "running", updatedAt: nowIso() },
+      events,
+      summary: "等待用户批准 shell 命令…",
+    };
   }
 
   if (summary === GRACEFUL_FINAL_DEFAULT_SUMMARY) {
@@ -1190,6 +1594,7 @@ export async function runAgentLoop(
         ? runState.prepareHint
         : undefined,
     compactRound: contextCompactRound,
+    taskReasoning: taskReasoningPinFromRunState(runState.taskReasoning),
   });
   saveThreadMemory({
     threadId: thread.id,

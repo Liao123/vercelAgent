@@ -1,7 +1,7 @@
 /**
  * 用户批准并执行命令/操作后，构造 Loop 续跑请求（对齐 Cursor 授权后继续）。
  */
-import { suggestAlternateDevPort } from "@/agent/tools/shell-output";
+import { classifyShellRecoveryPlan } from "@/agent/core/shell-strategy";
 
 type ApprovalLike = {
   id: string;
@@ -56,7 +56,7 @@ function formatShellOutput(result: unknown): string | null {
   return null;
 }
 
-function buildShellFailureRecoveryHint(
+export function buildShellFailureRecoveryHint(
   approval: ApprovalLike,
   executedApproval: ApprovalLike,
   shellText: string | null,
@@ -70,38 +70,29 @@ function buildShellFailureRecoveryHint(
     shellText?.includes("成功：否") === true;
   if (!failed) return null;
 
-  const blob = `${shellText ?? ""}\n${executed?.error ?? ""}`.toLowerCase();
   const hints: string[] = [
     "命令失败时不得直接 final 结束；必须诊断并给出下一步（可再次 shell.run.prepare，需用户批准）。",
   ];
-
-  if (/port \d+ is in use|eaddrinuse|address already in use|端口.*占用/.test(blob)) {
-    const cmd =
-      typeof resultRow === "object" &&
-      resultRow &&
-      "command" in resultRow &&
-      typeof (resultRow as { command?: string }).command === "string"
-        ? (resultRow as { command: string }).command
-        : approval.title;
-    const alt = suggestAlternateDevPort(cmd);
+  const cmd =
+    typeof resultRow === "object" &&
+    resultRow &&
+    "command" in resultRow &&
+    typeof (resultRow as { command?: string }).command === "string"
+      ? (resultRow as { command: string }).command
+      : approval.title;
+  const recovery = classifyShellRecoveryPlan({
+    command: cmd,
+    output: shellText,
+    error: executed?.error,
+  });
+  hints.push(`${recovery.headline}：${recovery.detail}`);
+  if (recovery.suggestedCommand) {
     hints.push(
-      "端口占用：先判断 dev 是否已在运行（让用户访问 http://localhost:3000）；若需重启，先结束 node 进程，再 prepare 带 `--port` 的命令。",
-      alt
-        ? `下一步建议命令（须 shell.run.prepare + 用户批准）：\`${alt}\``
-        : "也可 prepare 查占用：Windows `netstat -ano | findstr :3000`。",
+      `下一步建议命令（须 shell.run.prepare + 用户批准）：\`${recovery.suggestedCommand}\``,
     );
-  } else if (/another next dev server is already running|已有.*dev.*运行/.test(blob)) {
-    hints.push(
-      "本仓库 Next.js dev 已在运行，任务目标已达成：直接告诉用户访问 http://localhost:3000（或输出里的 Local URL），不要再次 prepare dev 除非用户明确要求重启。",
-    );
-  } else if (/timed out|timeout|未在.*内就绪|无控制台输出/.test(blob)) {
-    hints.push(
-      "命令超时：dev 类服务可能仍在启动；可延长等待、检查输出是否已有 Local:/ready，或指定 --port 后重试。",
-    );
-  } else {
-    hints.push(
-      "读 package.json scripts 与相关配置，修正命令后再次 shell.run.prepare；每次新命令都需用户批准。",
-    );
+  }
+  if (recovery.tier === "port_conflict" && !recovery.suggestedCommand) {
+    hints.push("也可 prepare 查占用：Windows `netstat -ano | findstr :3000`。");
   }
 
   return hints.join("\n");

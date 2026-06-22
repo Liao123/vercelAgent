@@ -3,6 +3,7 @@
  */
 import type { AgentEvent } from "@/agent/types";
 import type { ModelInput, ModelOutput, ModelProvider } from "@/agent/model/types";
+import { withModelCallRetry } from "@/lib/model-call-resilience";
 
 export async function generateLoopModelWithProgress(
   provider: ModelProvider,
@@ -14,27 +15,29 @@ export async function generateLoopModelWithProgress(
 
   if (canStream) {
     try {
-      let content = "";
-      for await (const event of provider.stream(input)) {
-        if (event.type === "delta" && event.text) {
-          content += event.text;
-          emit({ type: "model.delta", taskId, text: content });
+      return await withModelCallRetry(async () => {
+        let content = "";
+        for await (const event of provider.stream(input)) {
+          if (event.type === "delta" && event.text) {
+            content += event.text;
+            emit({ type: "model.delta", taskId, text: content });
+          }
+          if (event.type === "error") {
+            throw new Error(event.error);
+          }
         }
-        if (event.type === "error") {
-          throw new Error(event.error);
-        }
-      }
-      return {
-        content,
-        images: [],
-        model: input.model ?? "stream",
-      };
+        return {
+          content,
+          images: [],
+          model: input.model ?? "stream",
+        };
+      });
     } catch {
       /* 回退非流式 */
     }
   }
 
-  const output = await provider.generate(input);
+  const output = await withModelCallRetry(() => provider.generate(input));
   const text =
     output.content ||
     (output.toolCalls?.length

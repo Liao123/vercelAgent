@@ -51,8 +51,9 @@ import {
 import { readBrowserNetworkForAgent } from "@/agent/devtools/network-read";
 import { isCdpGuestReady } from "@/agent/devtools/cdp-guest-wait";
 import {
-  buildProjectIndex,
+  getOrBuildProjectIndex,
   locateFilesForRequest,
+  searchProjectIndex,
   traceUiEntryForQuery,
   traceUiEntryFromPage,
   layoutCandidateBoost,
@@ -449,10 +450,25 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
   },
   {
     name: "project.index",
-    description: "Build a lightweight project index with pages, API routes, components, and summaries.",
-    args: {},
-    async execute(_args, context) {
-      const projectIndex = await buildProjectIndex(context.workspace.rootPath);
+    description:
+      "Lightweight project index: pages, API routes, components, summaries. Omit query for compact overview; pass query to scope file/route hits.",
+    args: {
+      query:
+        "Optional — scope to files and routes matching this text. Omit for route/API overview only.",
+      limit: "Optional max file candidates when query is set, 1-20.",
+    },
+    async execute(args, context) {
+      const projectIndex =
+        context.projectIndex ??
+        (await getOrBuildProjectIndex(context.workspace.rootPath));
+      const query = stringArg(args, "query", "").trim();
+      if (query) {
+        const limit = numberArg(args, "limit", 12, 1, 20);
+        return {
+          context: { ...context, projectIndex },
+          result: searchProjectIndex(projectIndex, query, limit),
+        };
+      }
       return {
         context: { ...context, projectIndex },
         result: compactIndex(projectIndex),
@@ -468,7 +484,8 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
     },
     async execute(args, context) {
       const projectIndex =
-        context.projectIndex ?? (await buildProjectIndex(context.workspace.rootPath));
+        context.projectIndex ??
+        (await getOrBuildProjectIndex(context.workspace.rootPath));
       const query = stringArg(args, "query");
       const limit = numberArg(args, "limit", 8, 1, 20);
       const located = locateFilesForRequest(
@@ -736,7 +753,8 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
         throw new Error("Provide at least one of path or name.");
       }
       const projectIndex =
-        context.projectIndex ?? (await buildProjectIndex(context.workspace.rootPath));
+        context.projectIndex ??
+        (await getOrBuildProjectIndex(context.workspace.rootPath));
       return {
         context: { ...context, projectIndex },
         result: await findSymbolReferences({

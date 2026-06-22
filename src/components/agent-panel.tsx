@@ -86,7 +86,10 @@ import {
   writeTripleLayoutPrefs,
 } from "@/lib/triple-layout-prefs";
 import { TripleLayoutResizeHandle } from "@/components/triple-layout-resize-handle";
-import { buildOpenEditorUiContext } from "@/agent/indexer/ui-layout-boost";
+import {
+  buildOpenEditorUiContext,
+  mergeBrowserTabIntoUiContext,
+} from "@/agent/indexer/ui-layout-boost";
 import {
   canAutoApplyFileApproval,
   readAutoApplyFileChanges,
@@ -717,7 +720,10 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
   /** 与 running 同步，避免 approve 回调闭包读到 stale running */
   const runningRef = useRef(false);
   /** Loop 仍在跑时用户已批准命令，待本轮结束后自动续跑 */
-  const pendingApprovalContinuationRef = useRef<string | null>(null);
+  const pendingApprovalContinuationRef = useRef<{
+    request: string;
+    shellResume?: { approvalId: string; result: VerificationResult };
+  } | null>(null);
   const [currentThreadId, setCurrentThreadId] = useState<string | null>(null);
   const [continueThreadMemory, setContinueThreadMemory] = useState(true);
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0);
@@ -1263,10 +1269,12 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
       attachedPaths?: string[];
       /** 在同一会话 Thread 内续跑时保留历史事件 */
       appendSession?: boolean;
+      /** A151：shell 批准后同 Loop 上下文续跑 */
+      shellResume?: { approvalId: string; result: VerificationResult };
     },
   ) {
     const trimmed = loopUserRequest.trim();
-    if (!trimmed || running) return;
+    if ((!trimmed && !options?.shellResume) || running) return;
 
     const imagesForLoop = options?.referenceImages;
     const fromRequest = extractAtMentionPaths(trimmed);
@@ -1301,25 +1309,48 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     runningRef.current = true;
     setRunning(true);
 
+    let uiContext = buildOpenEditorUiContext({
+      layout,
+      attachedPaths: pathsForLoop,
+      activeEditorPath: reviewEditorSelection?.path ?? null,
+    });
+    try {
+      const tabRes = await fetch("/api/agent/browser/tabs");
+      if (tabRes.ok) {
+        const tabData = (await tabRes.json()) as {
+          tabs?: Array<{ id: string; url: string | null; title: string | null }>;
+          activeTabId?: string | null;
+        };
+        const activeTab =
+          tabData.tabs?.find((tab) => tab.id === tabData.activeTabId) ??
+          tabData.tabs?.find((tab) => tab.url);
+        if (activeTab?.url) {
+          uiContext = mergeBrowserTabIntoUiContext(uiContext, {
+            url: activeTab.url,
+            title: activeTab.title,
+          });
+        }
+      }
+    } catch {
+      // 无浏览器面板时跳过
+    }
+
     try {
       const res = await fetch("/api/agent/loop", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userRequest: trimmed,
+          userRequest: trimmed || "【shell 执行续跑】",
           referenceImages: imagesForLoop,
           maxIterations: 12,
           threadId:
             (continuingSession || continueThreadMemory) && currentThreadId
               ? currentThreadId
               : undefined,
-          uiContext: buildOpenEditorUiContext({
-            layout,
-            attachedPaths: pathsForLoop,
-            activeEditorPath: reviewEditorSelection?.path ?? null,
-          }),
+          uiContext,
           attachedPaths: pathsForLoop,
           attachedSelections,
+          shellResume: options?.shellResume,
         }),
       });
 
@@ -1416,6 +1447,10 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
             setError(parsed.error);
             setTaskSummary(null);
           }
+          if (parsed.type === "task.awaiting_approval") {
+            sawApprovalThisRun = true;
+            setApprovalStatus("等待批准 shell 命令…");
+          }
           if (parsed.type === "task.completed") {
             setTaskSummary(parsed.summary);
             if (!sawApprovalThisRun) {
@@ -1445,7 +1480,10 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     if (!pending || runningRef.current) return;
     pendingApprovalContinuationRef.current = null;
     setApprovalStatus("命令已执行，Agent 继续完成原定任务…");
-    void runLoopWithRequest(pending, { appendSession: true });
+    void runLoopWithRequest(pending.request, {
+      appendSession: true,
+      shellResume: pending.shellResume,
+    });
   }
 
   function maybeResumeLoopAfterApproval(
@@ -1456,20 +1494,33 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     const prior = approval.taskId
       ? findUserRequestForTask(approval.taskId, events)
       : null;
-    const continuation = buildApprovalLoopContinuationRequest(
-      approval,
-      execPayload as { result?: unknown; approval?: ApprovalRecordView },
-      prior,
-    );
+    const shellResult = extractShellVerificationResult(execPayload, approval);
+    const useShellResume = Boolean(shellResult && currentThreadId);
+    const continuation = useShellResume
+      ? "【shell 执行续跑】"
+      : buildApprovalLoopContinuationRequest(
+          approval,
+          execPayload as { result?: unknown; approval?: ApprovalRecordView },
+          prior,
+        );
+    const pendingPayload = {
+      request: continuation,
+      shellResume: useShellResume
+        ? { approvalId: approval.id, result: shellResult! }
+        : undefined,
+    };
     if (runningRef.current) {
-      pendingApprovalContinuationRef.current = continuation;
+      pendingApprovalContinuationRef.current = pendingPayload;
       setApprovalStatus(
         "命令已执行，当前任务结束后 Agent 将自动继续…",
       );
       return;
     }
     setApprovalStatus("命令已执行，Agent 继续完成原定任务…");
-    void runLoopWithRequest(continuation, { appendSession: true });
+    void runLoopWithRequest(pendingPayload.request, {
+      appendSession: true,
+      shellResume: pendingPayload.shellResume,
+    });
   }
 
   function pushShellExecutionToChat(

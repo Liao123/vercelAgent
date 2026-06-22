@@ -70,6 +70,20 @@ export function buildOpenEditorUiContext(input: {
   return ctx;
 }
 
+export function mergeBrowserTabIntoUiContext(
+  ctx: AgentUiContext,
+  tab: { url: string; title?: string | null } | null | undefined,
+): AgentUiContext {
+  if (!tab?.url?.trim()) return ctx;
+  return {
+    ...ctx,
+    browserActiveTab: {
+      url: tab.url.trim(),
+      title: tab.title ?? null,
+    },
+  };
+}
+
 export function describeUiContextForPrompt(uiContext?: AgentUiContext): string {
   if (!uiContext?.layout) return "";
 
@@ -86,6 +100,17 @@ export function describeUiContextForPrompt(uiContext?: AgentUiContext): string {
           .filter(Boolean)
           .join("\n")
       : "";
+  const browserTab = uiContext.browserActiveTab?.url
+    ? [
+        `Embedded browser tab (optional): ${uiContext.browserActiveTab.url}`,
+        uiContext.browserActiveTab.title
+          ? `Tab title hint (may be stale): ${uiContext.browserActiveTab.title}`
+          : "",
+        "This is NOT the workspace repo — disambiguate if user says 网站/页面.",
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : "";
 
   if (uiContext.layout === "triple") {
     return [
@@ -93,6 +118,7 @@ export function describeUiContextForPrompt(uiContext?: AgentUiContext): string {
       `Visible RunMode (Loop/闭环) selector lives in ${COMPOSER_PATH} (center column composer), NOT ${PANEL_PATH}.`,
       primary ? `For RunMode / 闭环 / Loop UI edits, prefer file.read ${primary} first.` : "",
       openTabs,
+      browserTab,
     ]
       .filter(Boolean)
       .join("\n");
@@ -103,6 +129,7 @@ export function describeUiContextForPrompt(uiContext?: AgentUiContext): string {
     `RunMode (Loop/闭环) selector lives in ${PANEL_PATH}.`,
     primary ? `For RunMode UI edits, prefer file.read ${primary} first.` : "",
     openTabs,
+    browserTab,
   ]
     .filter(Boolean)
     .join("\n");

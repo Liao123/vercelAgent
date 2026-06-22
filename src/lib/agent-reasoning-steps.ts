@@ -22,6 +22,20 @@ function eventTimestamp(event: AgentEvent): string | null {
   return null;
 }
 
+/** A155：进度类 runtime 反思不单独占一步，避免时间线刷屏。 */
+export function isNoisyRuntimeReflection(reflection: AgentReflection): boolean {
+  if (reflection.source !== "runtime") return false;
+  const understanding = reflection.understanding.trim();
+  if (/^继续执行（第 \d+\/\d+ 轮）/.test(understanding)) return true;
+  if (
+    reflection.blockers.length === 0 &&
+    /^(工具已运行|文件变更已应用|改代码任务)/.test(understanding)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function formatStepDurationMs(startAt: string, endAt: string): number | null {
   const ms = new Date(endAt).getTime() - new Date(startAt).getTime();
   if (!Number.isFinite(ms) || ms < 0) return null;
@@ -54,6 +68,15 @@ export function groupNarrativeIntoSteps(
 
   for (const event of events) {
     if (event.type === "reflection.updated") {
+      if (isNoisyRuntimeReflection(event.reflection)) {
+        if (current) {
+          if (event.reflection.plannedNext.trim()) {
+            current.reflection.plannedNext = event.reflection.plannedNext;
+          }
+          continue;
+        }
+        continue;
+      }
       const at: string =
         event.at ??
         (current?.actions.length

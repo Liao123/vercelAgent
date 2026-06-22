@@ -146,7 +146,7 @@ async function main(): Promise<void> {
     "跑 dev",
   );
   assert.ok(nested.includes("Port 5173 is in use"));
-  assert.ok(nested.includes("--port 5175"));
+  assert.ok(nested.includes("--port 3001"));
 
   console.log("validate-approval-continuation: passed");
 }

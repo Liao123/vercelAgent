@@ -65,6 +65,34 @@ import {
   getCompactSystemPrompt,
 } from "@/agent/prompts/compact-prompt";
 import type { ModelProvider } from "@/agent/model/types";
+
+function mergeTaskReasoningPin(
+  pinnedFacts: LoopPinnedFacts,
+  taskReasoning?: {
+    intent: string;
+    risk: string;
+    evidenceNeeded: string[];
+    ambiguity: string | null;
+  } | null,
+): LoopPinnedFacts {
+  if (!taskReasoning) return pinnedFacts;
+  const pin = [
+    `intent=${taskReasoning.intent}`,
+    `risk=${taskReasoning.risk}`,
+    taskReasoning.ambiguity ? `ambiguity=${taskReasoning.ambiguity}` : null,
+    taskReasoning.evidenceNeeded.length > 0
+      ? `evidence=${taskReasoning.evidenceNeeded.slice(0, 4).join("; ")}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return {
+    ...pinnedFacts,
+    toolHighlights: [
+      ...new Set([`[TASK_REASONING_PIN] ${pin}`, ...pinnedFacts.toolHighlights]),
+    ].slice(0, 16),
+  };
+}
 import type { AgentMessage } from "@/agent/types";
 import { newId, nowIso } from "@/agent/types";
 import {
@@ -623,6 +651,12 @@ export function buildThreadMemoryAfterTask(input: {
   filesReadPaths?: string[];
   prepareHint?: UiPrepareHint | null;
   compactRound: number;
+  taskReasoning?: {
+    intent: string;
+    risk: string;
+    evidenceNeeded: string[];
+    ambiguity: string | null;
+  } | null;
 }): {
   memoryContent: string;
   summaryId: string;
@@ -637,9 +671,12 @@ export function buildThreadMemoryAfterTask(input: {
   const round =
     input.compactRound > priorRound ? input.compactRound : priorRound + 1;
 
-  const pinnedFacts = mergePinnedFacts(
-    priorMemory?.pinnedFacts ?? emptyPinnedFacts(),
-    extractPinnedFactsFromMessages(input.messages),
+  const pinnedFacts = mergeTaskReasoningPin(
+    mergePinnedFacts(
+      priorMemory?.pinnedFacts ?? emptyPinnedFacts(),
+      extractPinnedFactsFromMessages(input.messages),
+    ),
+    input.taskReasoning,
   );
   const pinnedFileSnippets = mergePinnedFileSnippets(
     priorMemory?.pinnedFileSnippets ?? [],
@@ -871,6 +908,13 @@ export async function compactAgentLoopMessages(input: {
   filesReadPaths?: string[];
   /** 运行态 prepareHint（A084），压缩后仍写入滚动记忆 */
   prepareHint?: UiPrepareHint | null;
+  /** A157：压缩时钉住任务推理摘要 */
+  taskReasoning?: {
+    intent: string;
+    risk: string;
+    evidenceNeeded: string[];
+    ambiguity: string | null;
+  } | null;
   /** API 超长等紧急场景：跳过阈值直接压缩（Reactive） */
   forceCompact?: boolean;
 }): Promise<LoopContextCompactResult> {
@@ -988,12 +1032,15 @@ export async function compactAgentLoopMessages(input: {
   );
   const evictedPinned = extractPinnedFactsFromMessages(middle);
   const tailPinned = extractPinnedFactsFromMessages(tail);
-  const pinnedFacts = mergePinnedFacts(
-    priorMemory?.pinnedFacts ?? emptyPinnedFacts(),
+  const pinnedFacts = mergeTaskReasoningPin(
     mergePinnedFacts(
-      mergePinnedFacts(headPinned, evictedPinned),
-      tailPinned,
+      priorMemory?.pinnedFacts ?? emptyPinnedFacts(),
+      mergePinnedFacts(
+        mergePinnedFacts(headPinned, evictedPinned),
+        tailPinned,
+      ),
     ),
+    input.taskReasoning,
   );
 
   const evictedSnippets = extractFileReadSnippetsFromMessages(

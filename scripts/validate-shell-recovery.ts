@@ -12,6 +12,9 @@ import {
   shouldResumeLoopAfterApprovalExecute,
 } from "../src/lib/approval-loop-continuation";
 import {
+  classifyShellRecoveryPlan,
+} from "../src/agent/core/shell-strategy";
+import {
   looksLikeDevAlreadyRunning,
   looksLikeDevServerReady,
   looksLikeDevServerTerminalFailure,
@@ -31,9 +34,12 @@ async function main(): Promise<void> {
 
   assert.ok(playbooks.includes('"dev-run"'), "dev-run playbook id");
   assert.ok(playbooks.includes("isDevRunRequest"), "isDevRunRequest export");
-  assert.ok(playbooks.includes("localhost:3000"), "dev-run uses Next.js port");
+  assert.ok(
+    playbooks.includes("按输出分层处理"),
+    "dev-run uses layered strategy hint",
+  );
   assert.ok(prompt.includes("dev-run"), "native prompt mentions dev-run playbook");
-  assert.ok(prompt.includes("3000"), "native prompt mentions port 3000");
+  assert.ok(prompt.includes("already running"), "prompt contains layered shell strategy");
   assert.ok(panel.includes("maybeResumeLoopAfterApproval"), "panel resumes after shell");
 
   assert.ok(isDevRunRequest("跑一下 dev 能跑吗"), "dev run detect 1");
@@ -143,6 +149,25 @@ async function main(): Promise<void> {
     stripAnsiSequences("\u001b[31mPort 3000\u001b[0m in use"),
     "Port 3000 in use",
   );
+
+  const tierAlready = classifyShellRecoveryPlan({
+    command: "npm run dev -- --port 3001",
+    output: duplicate,
+  });
+  assert.equal(tierAlready.tier, "already_satisfied");
+
+  const tierPort = classifyShellRecoveryPlan({
+    command: "npm run dev",
+    output: "Port 3000 is in use",
+  });
+  assert.equal(tierPort.tier, "port_conflict");
+  assert.equal(tierPort.suggestedCommand, "npm run dev -- --port 3001");
+
+  const tierTimeout = classifyShellRecoveryPlan({
+    command: "npm run dev",
+    output: "timed out waiting for ready",
+  });
+  assert.equal(tierTimeout.tier, "timeout_or_no_output");
 
   console.log("validate-shell-recovery: passed");
 }

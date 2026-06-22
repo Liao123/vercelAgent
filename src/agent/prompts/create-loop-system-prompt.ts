@@ -5,6 +5,8 @@ import {
   loadWorkspaceMemory,
 } from "@/agent/memory/workspace-memory";
 import type { AgentUiContext } from "@/agent/types";
+import type { WorkspaceSnapshotInput } from "@/agent/workspace/workspace-snapshot-prompt";
+import { formatWorkspaceSnapshotForPrompt } from "@/agent/workspace/workspace-snapshot-prompt";
 import {
   loadPromptFile,
   normalizePromptWhitespace,
@@ -31,6 +33,7 @@ function getLoopSystemTemplate(): string {
 export function createLoopSystemPrompt(
   workspaceRoot: string,
   uiContext?: AgentUiContext,
+  workspaceSnapshot?: WorkspaceSnapshotInput,
 ): string {
   const toolList = AGENT_LOOP_TOOLS.map((tool) => ({
     name: tool.name,
@@ -40,10 +43,14 @@ export function createLoopSystemPrompt(
 
   const memory = loadWorkspaceMemory(workspaceRoot);
   const memoryBlock = memory ? formatWorkspaceMemoryBlock(memory) : "";
+  const snapshotBlock = workspaceSnapshot
+    ? formatWorkspaceSnapshotForPrompt(workspaceSnapshot)
+    : "";
 
   return normalizePromptWhitespace(
     renderPrompt(getLoopSystemTemplate(), {
       WORKSPACE_ROOT: workspaceRoot,
+      WORKSPACE_SNAPSHOT: snapshotBlock,
       UI_CONTEXT: describeUiContextForPrompt(uiContext) ?? "",
       TOOLS_JSON: isNativeToolLoopEnabled()
         ? ""

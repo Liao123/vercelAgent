@@ -1,5 +1,5 @@
 /**
- * 任务剧本：单 Agent Loop 内的「黄金路径 + 熔断 + 轮次预算」（对齐 browser-doc 提速模式）。
+ * 任务剧本：软加速器（hint + 熔断 + 轮次预算），不替模型定路由。
  */
 import type { AgentLoopRunState } from "@/agent/core/agent-loop-state";
 import {
@@ -226,7 +226,7 @@ const DEV_RUN: TaskPlaybook = {
   openingPlannedNext:
     "file.read package.json scripts（可选）→ shell.run.prepare `npm run dev` → 根据输出判断成功/失败；失败时换端口或确认已在运行。",
   loopHint:
-    "【任务提示】启动 dev（本项目为 Next.js，默认 3000）：优先 shell.run.prepare `npm run dev`。若输出 Port 3000 is in use：先让用户试 http://localhost:3000；若提示 Another next dev server is already running，说明 dev 已在跑，直接汇报 URL 勿再 prepare。仍失败则 shell.run.prepare `npm run dev -- --port 3001`。命令失败禁止只 final，须 prepare 下一条命令（需用户批准）。",
+    "【任务提示】启动 dev：优先 shell.run.prepare `npm run dev`。失败后按输出分层处理：已在运行→直接汇报 URL；端口冲突→换端口重试；超时/无输出→检查日志后重试。命令失败禁止只 final，必须给出下一条可执行命令（需用户批准）。",
   softMaxToolRounds: 8,
   goldenSteps: [
     {
@@ -255,7 +255,7 @@ const DEV_RUN: TaskPlaybook = {
         "dev 命令连续 prepare 仍未成功。请先 file.read package.json 确认 dev 脚本，再 prepare 带 --port 的命令。",
       understanding: "可能脚本名或端口策略不对。",
       plannedNext:
-        "file.read package.json → shell.run.prepare `npm run dev -- --port 3001`。",
+        "file.read package.json → shell.run.prepare 带 `--port` 的 dev 命令。",
     },
   ],
 };
@@ -398,7 +398,7 @@ const CODE_EDIT_GENERAL: TaskPlaybook = {
 const DEFAULT_PLAYBOOK: TaskPlaybook = {
   id: "default",
   title: "通用任务",
-  openingPlannedNext: "先用工具在磁盘上核实假设，再决定是否准备代码变更审批。",
+  openingPlannedNext: "先理解用户意图，再按需取证；避免无关工具。",
   softMaxToolRounds: 10,
   goldenSteps: [],
   circuitBreakers: [],
@@ -464,6 +464,22 @@ export function resolveTaskPlaybook(
   return { ...DEFAULT_PLAYBOOK, matchReason: "默认" };
 }
 
+/** 软加速器 hint（可多条），不替模型定路由。 */
+export function collectPlaybookAcceleratorHints(
+  userRequest: string,
+  state?: AgentLoopRunState,
+): string[] {
+  const input = state?.userRequest ?? userRequest;
+  const minimal = state ?? createMinimalState(input);
+  const hints: string[] = [];
+  for (const entry of ORDERED_PLAYBOOKS) {
+    if (entry.match(input, minimal) && entry.playbook.loopHint) {
+      hints.push(entry.playbook.loopHint);
+    }
+  }
+  return hints;
+}
+
 function createMinimalState(userRequest: string): AgentLoopRunState {
   return {
     userRequest,
@@ -486,6 +502,50 @@ export function findCircuitBreaker(
       (rule) => rule.tool === toolName && streak.count >= rule.threshold,
     ) ?? null
   );
+}
+
+const DESIGN_SPEC_TOOLS = new Set([
+  "devtools.extract_design_spec",
+  "devtools.get_persisted_design_spec",
+]);
+
+const DESIGN_REPLICATE_DISCOURAGED_BEFORE_SPEC = new Set([
+  "devtools.get_accessibility_tree",
+  "devtools.new_page",
+  "file.replace",
+  "file.replace.prepare",
+  "file.mutation",
+  "file.mutation.prepare",
+  "patch.apply",
+  "patch.prepare",
+]);
+
+export type PlaybookToolRedirect = {
+  redirectTool: string;
+  message: string;
+  understanding: string;
+  plannedNext: string;
+};
+
+/** Playbook 级工具边界：复刻任务须先 extract design spec，再改代码。 */
+export function findPlaybookToolRedirect(
+  playbook: TaskPlaybook,
+  toolName: string,
+  toolsCalled: string[],
+): PlaybookToolRedirect | null {
+  if (playbook.id !== "design-replicate") return null;
+  if (DESIGN_SPEC_TOOLS.has(toolName)) return null;
+  if (!DESIGN_REPLICATE_DISCOURAGED_BEFORE_SPEC.has(toolName)) return null;
+  if (toolsCalled.some((tool) => DESIGN_SPEC_TOOLS.has(tool))) return null;
+
+  return {
+    redirectTool: "devtools.extract_design_spec",
+    message:
+      "design-replicate 任务应先 devtools.extract_design_spec，再改代码；不要跳过 design spec 直接写盘或用 a11y tree。",
+    understanding: "缺少 design spec，无法稳定复刻布局与样式。",
+    plannedNext:
+      "browser.open demo URL（若尚未打开）→ devtools.extract_design_spec → file.read 目标页面文件。",
+  };
 }
 
 export function countToolRounds(toolsCalled: string[]): number {

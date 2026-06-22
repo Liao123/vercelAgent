@@ -3,3 +3,4 @@
  */
 export * from "@/agent/workspace/workspace-manager";
 export * from "@/agent/workspace/workspace-config";
+export * from "@/agent/workspace/workspace-snapshot-prompt";
