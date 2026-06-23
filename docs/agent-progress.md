@@ -58,7 +58,12 @@
 | A161 | done | 低风控 shell 自动批准（Composer ⚙ 默认关；validate/lint/git status） |
 | A162 | done | 失效 workspace 路径回退 + `staleConfiguredPath` 提示（修 workspace 500） |
 | A163 | done | 咨询/规划类任务豁免 workspace 证据 gate；dev-run 不绑非代码问句 |
-| A164 | todo | Workspace grounding 去词表化：`advisory` intent / 推理字段主判 + 词表兜底删除 |
+| A164 | done | Grounding 去词表：`grounding` 字段 + `requiresFactualWorkspaceGather` 主判 |
+| A165 | done | 任务取消：AbortSignal + Composer 停止钮 + `task.cancelled` |
+| A166 | done | Bash tool_result 真闭环：`applyShellExecutionToMessages` |
+| A167 | done | xterm 终端 Tab + shell 输出；`trial:shell-recovery` shellResume |
+| A168 | done | 交互式 PTY：`node-pty` + SSE + xterm 输入 |
+| A169 | done | 阶段 D Harness：协议 v1.0、trace.checkpoint、trace 代理、`trial:harness-acceptance` |
 | A024 | done | `trial:design-replicate` 实机通过；playbook 写盘前强制 extract spec |
 | A025 | done | Electron 壳 + CDP 浏览器 + 打包链路；`validate:desktop-smoke` |
 

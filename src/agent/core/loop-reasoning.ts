@@ -6,10 +6,11 @@ import type { AgentLoopRunState } from "@/agent/core/agent-loop-state";
 import type { AgentUiContext } from "@/agent/types";
 import type { WorkspaceSnapshotInput } from "@/agent/workspace/workspace-snapshot-prompt";
 import { formatWorkspaceSnapshotForPrompt } from "@/agent/workspace/workspace-snapshot-prompt";
-import { isNarrowWorkspaceMetadataFromSignals } from "@/agent/core/evidence-gate";
-import { isWorkspaceGroundedUserRequest } from "@/agent/core/workspace-grounding";
+import {
+  hasHardWorkspaceSignalsInRequest,
+  parseTaskGrounding,
+} from "@/agent/core/workspace-grounding";
 import { isExplicitReadOnlyRequest, isLikelyCodeEditRequest } from "@/agent/core/agent-loop-state";
-import { narrowMetadataPlanSteps } from "@/agent/workspace/framework-metadata-catalog";
 
 export type TaskIntent =
   | "qa"
@@ -27,10 +28,14 @@ export type TaskRisk =
   | "approval_required"
   | "unknown";
 
+export type TaskGrounding = "workspace" | "none" | "unknown";
+
 export type TaskReasoning = {
   understanding: string;
   intent: TaskIntent;
   risk: TaskRisk;
+  /** A164：是否依赖当前 workspace 磁盘/浏览器事实；none = 生成/咨询类 */
+  grounding?: TaskGrounding;
   evidenceNeeded: string[];
   planSteps: string[];
   ambiguity: string | null;
@@ -150,6 +155,7 @@ export function buildAdaptiveReasoningSkipHint(input: {
   uiContext?: AgentUiContext;
   hasThreadMemory: boolean;
   workspaceSnapshot?: WorkspaceSnapshotInput;
+  workspaceStructureBlock?: string;
 }): string {
   const hints =
     input.playbookHints.length > 0
@@ -159,6 +165,9 @@ export function buildAdaptiveReasoningSkipHint(input: {
   const contextLines: string[] = [];
   if (input.workspaceSnapshot) {
     contextLines.push(formatWorkspaceSnapshotForPrompt(input.workspaceSnapshot));
+  }
+  if (input.workspaceStructureBlock) {
+    contextLines.push(input.workspaceStructureBlock);
   }
   if (input.uiContext?.activeRoute) {
     contextLines.push(`Workspace app route: ${input.uiContext.activeRoute}`);
@@ -280,6 +289,7 @@ export function parseTaskReasoning(content: string): TaskReasoning | null {
         evidenceNeeded: asStringArray(parsed.evidenceNeeded),
         planSteps: asStringArray(parsed.planSteps),
         ambiguity: asString(parsed.ambiguity) ?? null,
+        grounding: parseTaskGrounding(parsed.grounding),
         canAnswerNow: parsed.canAnswerNow === true,
         plannedNext,
         source: "model",
@@ -335,7 +345,7 @@ export function normalizeTaskReasoning(
     input.hasThreadMemory &&
     input.filesReadCount === 0 &&
     input.toolsCalledCount === 0 &&
-    isWorkspaceGroundedUserRequest(input.userRequest)
+    hasHardWorkspaceSignalsInRequest(input.userRequest)
   ) {
     next.canAnswerNow = false;
     if (!next.evidenceNeeded.some((item) => item.includes("disk") || item.includes("磁盘"))) {
@@ -361,19 +371,6 @@ export function normalizeTaskReasoning(
     ];
   }
 
-  if (
-    factualReadOnly &&
-    isNarrowWorkspaceMetadataFromSignals(next, input.userRequest)
-  ) {
-    next.planSteps = narrowMetadataPlanSteps(input.workspaceFramework);
-    next.plannedNext =
-      "file.locate → file.read 框架常见元数据文件（可选 package.json），然后 final。";
-    if (!next.ambiguity) {
-      next.ambiguity =
-        "可能指：① 页面 metadata 标题 ② package.json 项目名 ③ 嵌入浏览器标签标题";
-    }
-  }
-
   return next;
 }
 
@@ -384,6 +381,7 @@ export function buildReasoningTurnUserMessage(input: {
   hasThreadMemory: boolean;
   metaExplain: boolean;
   workspaceSnapshot?: WorkspaceSnapshotInput;
+  workspaceStructureBlock?: string;
 }): string {
   const hints =
     input.playbookHints.length > 0
@@ -393,6 +391,9 @@ export function buildReasoningTurnUserMessage(input: {
   const contextLines: string[] = [];
   if (input.workspaceSnapshot) {
     contextLines.push(formatWorkspaceSnapshotForPrompt(input.workspaceSnapshot));
+  }
+  if (input.workspaceStructureBlock) {
+    contextLines.push(input.workspaceStructureBlock);
   }
   if (input.uiContext?.activeRoute) {
     contextLines.push(`Workspace app route: ${input.uiContext.activeRoute}`);
@@ -435,6 +436,7 @@ export function buildReasoningTurnUserMessage(input: {
     `  "understanding": "1-2 sentences in Simplified Chinese",`,
     `  "intent": "qa|analysis|code_edit|shell|browser|meta|mixed",`,
     `  "risk": "read_only|write|approval_required",`,
+    `  "grounding": "workspace|none (none = advisory/generative, no disk proof needed)",`,
     `  "evidenceNeeded": ["facts still needed — empty only if truly verified"],`,
     `  "planSteps": ["ordered steps — include disambiguation when terms are ambiguous"],`,
     `  "ambiguity": "list interpretations (e.g. page title vs package.json name) or null",`,
@@ -444,7 +446,9 @@ export function buildReasoningTurnUserMessage(input: {
     "",
     "Rules:",
     "- THREAD_MEMORY alone does NOT justify canAnswerNow:true for factual qa/analysis — plan file.read or browser.inspect.",
+    "- For advisory / business / creative tasks with no repo facts: grounding=none, evidenceNeeded=[], plan without file.* tools.",
     "- For ambiguous terms (标题/网站/当前), ambiguity MUST list 2+ interpretations or planSteps must show how you disambiguate.",
+    "- When WORKSPACE_STRUCTURE shows missing package.json or app dirs and user wants to write into this workspace, plan prerequisite steps (scaffold/shell.init/create files) before assuming fixed paths — derive stack from context.",
     "- Narrow read-only QA: prefer file.locate + file.read over project.index.",
     "- Independent gather (e.g. multiple file.read on different paths) may use multiple tool_calls in one turn.",
     "- Workspace app title/name QA: file.locate → file.read metadata appropriate to WORKSPACE_SNAPSHOT framework; skip browser.* and file.list unless user clearly means embedded browser tab.",

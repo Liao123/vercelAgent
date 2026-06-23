@@ -65,8 +65,21 @@ export function formatModelErrorMessage(
   if (/invalid json|returned invalid json/i.test(message)) {
     return "模型 API 返回了无效 JSON。请检查中转服务是否正常。";
   }
+  if (
+    /rate_limit_error|concurrency limit exceeded|too many requests/i.test(
+      message,
+    )
+  ) {
+    return "API 并发/频率超限（rate_limit）。请等待 1–2 分钟后重试，或减少同时运行的 Agent 任务。";
+  }
   if (/empty content|finish_reason/i.test(message)) {
     return "模型返回空内容。请重试或更换模型。";
+  }
+  if (
+    /no tool call found for function call output/i.test(message) ||
+    /invalid_request_error.*tool_call/i.test(message)
+  ) {
+    return "对话历史里 tool 消息顺序异常（非 API 密钥问题）。请新开任务重试；若仍出现请反馈给开发。";
   }
 
   if (message.length > maxLen) {

@@ -13,6 +13,7 @@ import {
   parseToolCallArguments,
   serializeAgentMessagesForOpenAiApi,
 } from "../src/agent/model/loop-tool-schemas";
+import { repairOpenAiAssistantToolPairs } from "../src/agent/model/repair-openai-tool-messages";
 import { createLoopSystemPrompt } from "../src/agent/prompts/create-loop-system-prompt";
 
 assert.equal(isNativeToolLoopEnabled(), true, "native tool loop should be default");
@@ -58,6 +59,34 @@ const serialized = serializeAgentMessagesForOpenAiApi([
   },
 ]);
 assert.equal(serialized[0]?.tool_calls?.[0]?.function.name, "file_read");
+
+const brokenOrder = [
+  {
+    role: "assistant" as const,
+    content: null,
+    tool_calls: [
+      {
+        id: "fc_test",
+        type: "function" as const,
+        function: { name: "file.read", arguments: "{}" },
+      },
+    ],
+  },
+  {
+    role: "user" as const,
+    content: "Reflection (runtime): 工具失败",
+  },
+  {
+    role: "tool" as const,
+    tool_call_id: "fc_test",
+    content: '{"error":"ENOENT"}',
+  },
+];
+const repaired = repairOpenAiAssistantToolPairs(brokenOrder);
+assert.equal(repaired.length, 3);
+assert.equal(repaired[1]?.role, "tool");
+assert.equal(repaired[1]?.tool_call_id, "fc_test");
+assert.equal(repaired[2]?.role, "user");
 
 const nativePrompt = createLoopSystemPrompt(process.cwd());
 assert.ok(!nativePrompt.includes("action=tool_call"), "native prompt should not require JSON");

@@ -2,7 +2,10 @@
  * Agent Loop 工具 → OpenAI Chat Completions `tools` schema（A114）。
  */
 import { AGENT_LOOP_TOOLS } from "@/agent/core/agent-loop-tools";
+import { getMcpToolDefinitions } from "@/agent/mcp/registry";
+import { decodeMcpApiToolName } from "@/agent/mcp/registry";
 import type { ModelToolDefinition, ModelToolCall } from "@/agent/model/types";
+import { repairOpenAiAssistantToolPairs } from "@/agent/model/repair-openai-tool-messages";
 import type { AgentMessage } from "@/agent/types";
 
 let cachedDefinitions: ModelToolDefinition[] | null = null;
@@ -23,14 +26,22 @@ function getApiToInternalMap(): Map<string, string> {
 }
 
 export function decodeOpenAiToolName(apiName: string): string {
-  return getApiToInternalMap().get(apiName) ?? apiName;
+  const fromBuiltin = getApiToInternalMap().get(apiName);
+  if (fromBuiltin) return fromBuiltin;
+  const fromMcp = decodeMcpApiToolName(apiName);
+  if (fromMcp) return fromMcp;
+  return apiName;
 }
 
-/** 发往 OpenAI 兼容 API 前：历史 assistant.tool_calls 的 name 须为 API 合法格式。 */
+/** MCP 工具加载后需调用以刷新合并 schema */
+export function invalidateLoopToolDefinitionCache(): void {
+  cachedDefinitions = null;
+}
+
 export function serializeAgentMessagesForOpenAiApi(
   messages: AgentMessage[],
 ): AgentMessage[] {
-  return messages.map((message) => {
+  return repairOpenAiAssistantToolPairs(messages).map((message) => {
     if (!message.tool_calls?.length) return message;
     return {
       ...message,
@@ -66,7 +77,7 @@ function argPropertySchema(description: string): Record<string, unknown> {
 export function buildLoopToolDefinitions(): ModelToolDefinition[] {
   if (cachedDefinitions) return cachedDefinitions;
 
-  cachedDefinitions = AGENT_LOOP_TOOLS.map((tool) => {
+  const builtin = AGENT_LOOP_TOOLS.map((tool) => {
     const properties = Object.fromEntries(
       Object.entries(tool.args).map(([key, description]) => [
         key,
@@ -79,7 +90,7 @@ export function buildLoopToolDefinitions(): ModelToolDefinition[] {
     });
 
     return {
-      type: "function",
+      type: "function" as const,
       function: {
         name: encodeOpenAiToolName(tool.name),
         description: tool.description,
@@ -93,6 +104,7 @@ export function buildLoopToolDefinitions(): ModelToolDefinition[] {
     };
   });
 
+  cachedDefinitions = [...builtin, ...getMcpToolDefinitions()];
   return cachedDefinitions;
 }
 

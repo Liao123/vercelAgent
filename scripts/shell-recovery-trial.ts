@@ -1,5 +1,5 @@
 /**
- * A141-follow 在线试用：dev 命令失败后续跑是否 prepare recovery 命令。
+ * A141-follow / A166 在线试用：dev 命令失败后续跑 + shellResume 同 Loop 续跑。
  *
  * 用法：
  *   1) npm run dev
@@ -8,6 +8,7 @@
  */
 import fs from "node:fs";
 import { buildApprovalLoopContinuationRequest } from "../src/lib/approval-loop-continuation.ts";
+import { extractShellVerificationResult } from "../src/lib/command-approval-state.ts";
 
 const BASE = process.env.AGENT_BASE_URL ?? "http://localhost:3000";
 
@@ -30,6 +31,8 @@ const USER_REQUEST = "跑一下 dev 看看项目能不能启动，不能的话�
 
 type AgentEvent = {
   type: string;
+  threadId?: string;
+  approvalId?: string;
   toolCall?: { toolName?: string };
   result?: Record<string, unknown>;
   approval?: { title?: string; id?: string; details?: { preview?: { command?: string } } };
@@ -39,6 +42,7 @@ type ApprovalRow = {
   id: string;
   status: string;
   title: string;
+  taskId?: string | null;
   details?: { kind?: string; preview?: { command?: string } };
   execution?: { status?: string; result?: unknown };
 };
@@ -82,6 +86,27 @@ function collectShellPrepares(events: AgentEvent[]) {
   return rows;
 }
 
+function extractThreadId(events: AgentEvent[]): string | undefined {
+  for (const event of events) {
+    if (event.type === "thread.created" && event.threadId) {
+      return event.threadId;
+    }
+  }
+  for (const event of events) {
+    if (event.type === "task.awaiting_approval" && event.threadId) {
+      return event.threadId;
+    }
+  }
+  return undefined;
+}
+
+function hadAwaitingApproval(events: AgentEvent[], approvalId: string): boolean {
+  return events.some(
+    (event) =>
+      event.type === "task.awaiting_approval" && event.approvalId === approvalId,
+  );
+}
+
 async function setWorkspace(rootPath: string) {
   const res = await fetch(`${BASE}/api/agent/workspace`, {
     method: "POST",
@@ -91,11 +116,11 @@ async function setWorkspace(rootPath: string) {
   if (!res.ok) throw new Error(`workspace: ${await res.text()}`);
 }
 
-async function runLoop(userRequest: string) {
+async function runLoop(body: Record<string, unknown>) {
   const res = await fetch(`${BASE}/api/agent/loop`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ userRequest }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`loop: ${await res.text()}`);
   return parseSseStream(res);
@@ -125,21 +150,29 @@ async function approveAndExecute(approvalId: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ approvalId }),
   });
-  const payload = (await exec.json()) as { approval?: ApprovalRow; error?: string; result?: unknown };
+  const payload = (await exec.json()) as {
+    approval?: ApprovalRow;
+    error?: string;
+    result?: unknown;
+  };
   return { ok: exec.ok, payload };
 }
 
 async function main() {
-  console.log("shell-recovery-trial (A141-follow)");
+  console.log("shell-recovery-trial (A141-follow + A166 shellResume)");
   console.log("workspace:", workspacePath);
   console.log("base:", BASE);
 
   await setWorkspace(workspacePath);
 
   console.log("\n[1/3] 首轮 Loop");
-  const phase1 = await runLoop(USER_REQUEST);
+  const phase1 = await runLoop({ userRequest: USER_REQUEST });
   const prepares1 = collectShellPrepares(phase1);
+  const threadId = extractThreadId(phase1);
+  const awaiting = phase1.some((e) => e.type === "task.awaiting_approval");
   console.log("  shell prepares:", prepares1.length);
+  console.log("  threadId:", threadId ?? "(none)");
+  console.log("  task.awaiting_approval:", awaiting);
   if (prepares1.length === 0 && !phase1.some((e) => e.type === "approval.required")) {
     throw new Error("首轮未产生 shell prepare 或 approval.required");
   }
@@ -152,14 +185,35 @@ async function main() {
   console.log("  execute ok:", ok, payload.approval?.execution?.status ?? payload.error);
 
   const executed = payload.approval ?? approval;
-  const continuation = buildApprovalLoopContinuationRequest(
-    executed,
-    payload,
-    USER_REQUEST,
+  const shellResult = extractShellVerificationResult(payload, executed);
+  if (!shellResult) {
+    throw new Error("execute 响应缺少 shell VerificationResult");
+  }
+
+  const useShellResume = Boolean(
+    threadId &&
+      hadAwaitingApproval(phase1, approval.id) &&
+      shellResult,
   );
 
-  console.log("\n[3/3] 续跑 Loop");
-  const phase2 = await runLoop(continuation);
+  console.log("\n[3/3] 续跑 Loop", useShellResume ? "(shellResume)" : "(Phase A fallback)");
+  const phase2 = useShellResume
+    ? await runLoop({
+        userRequest: "【shell 执行续跑】",
+        threadId,
+        shellResume: {
+          approvalId: approval.id,
+          result: shellResult,
+        },
+      })
+    : await runLoop({
+        userRequest: buildApprovalLoopContinuationRequest(
+          executed,
+          payload,
+          USER_REQUEST,
+        ),
+      });
+
   const prepares2 = collectShellPrepares(phase2);
   const blob = JSON.stringify(phase2);
   const hasRecovery =
@@ -167,6 +221,9 @@ async function main() {
     /--port\s*\d+|5175|netstat|findstr/i.test(blob);
 
   console.log("  phase2 prepares:", prepares2);
+  if (useShellResume && !phase2.some((e) => e.type === "task.completed" || e.type === "task.awaiting_approval" || e.type === "tool.completed")) {
+    console.warn("  warn: shellResume 续跑事件较少，请人工查看 trace");
+  }
   if (!hasRecovery) {
     throw new Error("续跑未 prepare 换端口/诊断命令");
   }

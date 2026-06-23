@@ -16,6 +16,17 @@ import {
   attemptGracefulLoopFinal,
   GRACEFUL_FINAL_DEFAULT_SUMMARY,
 } from "@/agent/core/loop-graceful-final";
+import {
+  buildEditIncompleteGracefulHint,
+  buildEditWritePressureNudge,
+  buildEditWriteTailNudge,
+  buildWorkspaceScaffoldNudge,
+  computeLoopIterationCap,
+  isEditWriteTaskPending,
+  shouldForceFinalIteration,
+  shouldRejectTextOnlyFinal,
+  shouldSkipTextOnlyGracefulFinal,
+} from "@/agent/core/loop-edit-write-tail";
 import { isUiLocationQuery } from "@/agent/core/prepare-gate";
 import { shouldSkipEditRecoveryForUiPrepare } from "@/agent/core/ui-prepare-nudge";
 import { parseCompactedMemory } from "@/agent/memory/loop-context-compactor";
@@ -53,6 +64,8 @@ import {
   createTrace,
   updateTraceThread,
 } from "@/agent/trace/trace-store";
+import { buildTraceCheckpointEvent } from "@/agent/trace/trace-checkpoint";
+import type { LoopShellCheckpoint } from "@/agent/core/loop-shell-checkpoint";
 import {
   newId,
   nowIso,
@@ -81,6 +94,10 @@ import {
 import { getCurrentWorkspace } from "@/agent/workspace";
 import { workspaceToSnapshotInput } from "@/agent/workspace/workspace-snapshot-prompt";
 import {
+  collectWorkspaceStructureFacts,
+  formatWorkspaceStructureFactsForPrompt,
+} from "@/agent/workspace/workspace-structure-facts";
+import {
   isEditRecoveryEnabled,
   isEditTaskSatisfied,
   isFinalPrepareNudgeEnabled,
@@ -98,11 +115,12 @@ import { isNativeToolLoopEnabled } from "@/agent/core/loop-protocol";
 import { generateLoopModelWithProgress } from "@/agent/core/loop-model-generate";
 import {
   buildLoopToolDefinitions,
+  invalidateLoopToolDefinitionCache,
   parseToolCallArguments,
 } from "@/agent/model/loop-tool-schemas";
+import { ensureMcpRegistryReady, getMcpRegistrySnapshot } from "@/agent/mcp";
 import {
   runAgentLoopToolCall,
-  shouldInterceptNativeFinal,
   type AgentLoopToolRunnerDeps,
 } from "@/agent/core/agent-loop-tool-runner";
 import type { AgentUiContext } from "@/agent/types";
@@ -129,7 +147,8 @@ import {
   formatModelErrorMessage,
   formatModelFailureSummary,
 } from "@/lib/model-error-message";
-import { evaluateFinalEvidenceGate } from "@/agent/core/evidence-gate";
+import { attemptDeterministicModelFailureRecovery } from "@/agent/core/loop-deterministic-recovery";
+import { isDeterministicRecoveryEnabled } from "@/agent/core/loop-graceful-recovery-config";
 import { canParallelizeGatherBatch } from "@/agent/core/parallel-gather";
 import {
   isShellLoopResumeEnabled,
@@ -138,11 +157,15 @@ import {
   type PendingShellApproval,
 } from "@/agent/core/loop-shell-checkpoint";
 import {
+  applyShellExecutionToMessages,
   buildShellExecutionResumeMessage,
   pendingShellFromToolRun,
   type ShellLoopResumeInput,
 } from "@/agent/core/shell-loop-resume";
 import { buildApprovalLoopContinuationRequest } from "@/lib/approval-loop-continuation";
+import {
+  LOOP_USER_CANCEL_MESSAGE,
+} from "@/agent/core/loop-cancel";
 
 export type AgentLoopInput = {
   userRequest: string;
@@ -162,6 +185,8 @@ export type AgentLoopInput = {
   strictPrepare?: boolean;
   /** A151：shell 批准后同 Loop 上下文续跑（需有效 checkpoint） */
   shellResume?: ShellLoopResumeInput;
+  /** A165：客户端断开或用户停止时 abort */
+  signal?: AbortSignal;
   onEvent?: (event: AgentEvent) => void;
 };
 
@@ -195,7 +220,7 @@ type AgentLoopDecision =
     };
 
 const DEFAULT_MAX_ITERATIONS = 14;
-const MAX_LOOP_ITERATION_CAP = 18;
+const MAX_LOOP_ITERATION_CAP = 20;
 const MAX_REFLECTION_ROUNDS = 4;
 
 function extractJsonObjectCandidates(text: string): string[] {
@@ -399,11 +424,10 @@ function emitReflection(
   emit({ type: "reflection.updated", taskId, reflection, at: nowIso() });
 }
 
-function pushReflectionToMessages(
-  messages: AgentMessage[],
+function buildReflectionUserMessage(
   reflection: AgentReflection,
   checkpoint?: string,
-): void {
+): AgentMessage {
   const parts = [
     checkpoint,
     `Reflection (${reflection.source}):`,
@@ -415,10 +439,27 @@ function pushReflectionToMessages(
     "Continue with tool_call or reflect—do not finalize edit tasks without approval unless impossible.",
   ].filter(Boolean);
 
-  messages.push({
+  return {
     role: "user",
     content: parts.join("\n"),
-  });
+  };
+}
+
+function pushReflectionToMessages(
+  messages: AgentMessage[],
+  reflection: AgentReflection,
+  checkpoint?: string,
+): void {
+  messages.push(buildReflectionUserMessage(reflection, checkpoint));
+}
+
+function flushDeferredPostToolTurnMessages(
+  messages: AgentMessage[],
+  deferred: AgentMessage[],
+): void {
+  if (deferred.length === 0) return;
+  messages.push(...deferred);
+  deferred.length = 0;
 }
 
 function emitRecoveryApprovalEvents(
@@ -496,6 +537,81 @@ function shouldInjectRuntimeReflection(state: AgentLoopRunState): boolean {
   return false;
 }
 
+function saveShellPauseAndCheckpoint(
+  emit: (event: AgentEvent) => void,
+  checkpoint: LoopShellCheckpoint,
+  traceId: string,
+): void {
+  saveLoopShellCheckpoint(checkpoint);
+  emit(
+    buildTraceCheckpointEvent({
+      taskId: checkpoint.taskId,
+      traceId,
+      checkpoint: {
+        kind: "shell_paused",
+        label: "",
+        resumable: true,
+        threadId: checkpoint.threadId,
+        approvalId: checkpoint.pendingShell.approvalId,
+        iteration: checkpoint.iteration,
+        command: checkpoint.pendingShell.command,
+      },
+    }),
+  );
+}
+
+function finishLoopCancelled(input: {
+  trace: { id: string };
+  thread: Thread;
+  task: Task;
+  turn: Turn;
+  events: AgentEvent[];
+  emit: (event: AgentEvent) => void;
+}): AgentLoopResult {
+  const cancelledAt = nowIso();
+  const cancelledTask: Task = {
+    ...input.task,
+    status: "cancelled",
+    updatedAt: cancelledAt,
+    completedAt: cancelledAt,
+    error: LOOP_USER_CANCEL_MESSAGE,
+  };
+  const cancelledTurn: Turn = {
+    ...input.turn,
+    status: "cancelled",
+    updatedAt: cancelledAt,
+    summary: LOOP_USER_CANCEL_MESSAGE,
+  };
+  input.emit(
+    buildTraceCheckpointEvent({
+      taskId: input.task.id,
+      traceId: input.trace.id,
+      checkpoint: {
+        kind: "task_cancelled",
+        label: "",
+        reason: "user_abort",
+      },
+    }),
+  );
+  input.emit({
+    taskId: input.task.id,
+    task: cancelledTask,
+    reason: "user_abort",
+  });
+  return {
+    traceId: input.trace.id,
+    thread: {
+      ...input.thread,
+      status: "cancelled",
+      updatedAt: cancelledAt,
+    },
+    task: cancelledTask,
+    turn: cancelledTurn,
+    events: input.events,
+    summary: LOOP_USER_CANCEL_MESSAGE,
+  };
+}
+
 export async function runAgentLoop(
   input: AgentLoopInput,
   provider: ModelProvider | null = createConfiguredModelProvider(),
@@ -506,7 +622,13 @@ export async function runAgentLoop(
 
   const now = nowIso();
   const workspace = await getCurrentWorkspace();
+  await ensureMcpRegistryReady();
+  invalidateLoopToolDefinitionCache();
+  const mcpSnapshot = getMcpRegistrySnapshot();
   const workspaceSnapshot = workspaceToSnapshotInput(workspace);
+  const workspaceStructureFacts = await collectWorkspaceStructureFacts(workspace);
+  const workspaceStructureBlock =
+    formatWorkspaceStructureFactsForPrompt(workspaceStructureFacts);
   const { cleanRequest, attachedPaths: parsedAttachedPaths, attachedSelections: parsedSelections } =
     parseAtPathsFromRequest(input.userRequest);
   let effectiveUserRequest = cleanRequest || input.userRequest;
@@ -642,6 +764,13 @@ export async function runAgentLoop(
   }
   emit({ type: "task.created", taskId: task.id, task });
   emit({ type: "trace.linked", taskId: task.id, traceId: trace.id });
+  emit(
+    buildTraceCheckpointEvent({
+      taskId: task.id,
+      traceId: trace.id,
+      checkpoint: { kind: "task_started", label: "" },
+    }),
+  );
   emit({ type: "turn.created", turnId: turn.id, turn });
   emitPlan();
 
@@ -656,6 +785,7 @@ export async function runAgentLoop(
     softMaxToolRounds: taskPlaybook.softMaxToolRounds,
     at: nowIso(),
   });
+
   const emitPlaybookProgress = () => {
     const progress = computePlaybookProgress(taskPlaybook, runState.toolsCalled);
     emit({
@@ -689,14 +819,21 @@ export async function runAgentLoop(
       shellCheckpoint.pendingShell.toolName,
       input.shellResume.result,
     );
-    messages.push({
-      role: "user",
-      content: buildShellExecutionResumeMessage({
-        pendingShell: shellCheckpoint.pendingShell,
-        result: input.shellResume.result,
-        priorUserRequest: shellCheckpoint.effectiveUserRequest,
-      }),
+    const appliedToolResult = applyShellExecutionToMessages(messages, {
+      pendingShell: shellCheckpoint.pendingShell,
+      result: input.shellResume.result,
+      priorUserRequest: shellCheckpoint.effectiveUserRequest,
     });
+    if (!appliedToolResult) {
+      messages.push({
+        role: "user",
+        content: buildShellExecutionResumeMessage({
+          pendingShell: shellCheckpoint.pendingShell,
+          result: input.shellResume.result,
+          priorUserRequest: shellCheckpoint.effectiveUserRequest,
+        }),
+      });
+    }
     emitReflection(emit, task.id, {
       understanding: `Shell 命令已执行（${input.shellResume.result.success ? "成功" : "失败"}），同 Loop 上下文续跑。`,
       blockers: input.shellResume.result.success
@@ -725,6 +862,8 @@ export async function runAgentLoop(
         workspace.rootPath,
         input.uiContext,
         workspaceSnapshot,
+        mcpSnapshot,
+        workspaceStructureBlock,
       ),
     },
   ];
@@ -757,6 +896,69 @@ export async function runAgentLoop(
       referenceImages.length > 0 ? referenceImages : undefined,
     ),
   });
+  if (!shellCheckpoint) {
+    const inspectResult = {
+      rootPath: workspace.rootPath,
+      gitRootPath: workspace.gitRootPath,
+      packageManager: workspace.packageManager,
+      framework: workspace.framework,
+      packageName: workspace.packageName,
+      structure: workspaceStructureFacts,
+    };
+    const inspectToolCall = createToolCall(
+      task.id,
+      "workspace.inspect",
+      {},
+      "启动时预载工作区结构事实。",
+    );
+    emit({ type: "tool.started", taskId: task.id, toolCall: inspectToolCall });
+    emit({
+      type: "tool.completed",
+      taskId: task.id,
+      toolCall: completeToolCall(inspectToolCall),
+      result: inspectResult,
+    });
+    recordToolCall(runState, "workspace.inspect", inspectResult);
+    if (isNativeToolLoopEnabled()) {
+      messages.push({
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: inspectToolCall.id,
+            type: "function",
+            function: {
+              name: "workspace.inspect",
+              arguments: "{}",
+            },
+          },
+        ],
+      });
+      messages.push({
+        role: "tool",
+        tool_call_id: inspectToolCall.id,
+        content: JSON.stringify(inspectResult),
+      });
+    } else {
+      messages.push({
+        role: "assistant",
+        content: JSON.stringify({
+          action: "tool_call",
+          tool: "workspace.inspect",
+          args: {},
+          thought: "启动时预载工作区结构事实。",
+        }),
+      });
+      messages.push(
+        observationMessage(
+          "workspace.inspect",
+          inspectResult,
+          workspace.rootPath,
+          inspectToolCall.id,
+        ),
+      );
+    }
+  }
   if (attachedPaths.length > 0) {
     const preloaded = await preloadAttachedFiles({
       rootPath: workspace.rootPath,
@@ -810,6 +1012,7 @@ export async function runAgentLoop(
         hasThreadMemory: Boolean(priorThreadMemory?.memoryContent),
         metaExplain: runState.metaExplainMode === true,
         workspaceSnapshot,
+        workspaceStructureBlock,
       }),
     });
     try {
@@ -892,6 +1095,7 @@ export async function runAgentLoop(
         uiContext: input.uiContext,
         hasThreadMemory: Boolean(priorThreadMemory?.memoryContent),
         workspaceSnapshot,
+        workspaceStructureBlock,
       }),
     });
     const skipReflection: AgentReflection = {
@@ -936,6 +1140,8 @@ export async function runAgentLoop(
     runState,
   };
 
+  const deferredPostToolTurnMessages: AgentMessage[] = [];
+
   const toolRunnerDeps: AgentLoopToolRunnerDeps = {
     taskId: task.id,
     rootPath: workspace.rootPath,
@@ -946,20 +1152,24 @@ export async function runAgentLoop(
       toolContext = ctx;
     },
     emitReflection: (reflection) => emitReflection(emit, task.id, reflection),
-    pushReflectionToMessages: (reflection, checkpoint) =>
-      pushReflectionToMessages(messages, reflection, checkpoint),
+    pushReflectionToMessages: (reflection, checkpoint) => {
+      deferredPostToolTurnMessages.push(
+        buildReflectionUserMessage(reflection, checkpoint),
+      );
+    },
     shouldInjectRuntimeReflection,
     emitPlan,
     emitPlaybookProgress,
     playbook: taskPlaybook,
     fallbackSummary,
     pushUserNudge: (content) => {
-      messages.push({ role: "user", content });
+      deferredPostToolTurnMessages.push({ role: "user", content });
     },
   };
 
   let summary = GRACEFUL_FINAL_DEFAULT_SUMMARY;
   let softBudgetHintInjected = false;
+  let workspaceScaffoldNudgeInjected = false;
   const maxIterations = Math.min(
     Math.max(
       shellCheckpoint?.maxIterations ?? input.maxIterations ?? DEFAULT_MAX_ITERATIONS,
@@ -975,7 +1185,47 @@ export async function runAgentLoop(
   let contextCompactRound = 0;
   let reactiveCompactUsed = false;
 
-  for (let iteration = resumedIteration + 1; iteration <= maxIterations; iteration += 1) {
+  const loopIterationCap = Math.min(
+    computeLoopIterationCap(maxIterations, runState),
+    MAX_LOOP_ITERATION_CAP,
+  );
+
+  for (let iteration = resumedIteration + 1; iteration <= loopIterationCap; iteration += 1) {
+    if (input.signal?.aborted) {
+      return finishLoopCancelled({ trace, thread, task, turn, events, emit });
+    }
+
+    if (iteration > maxIterations && !isEditWriteTaskPending(runState)) {
+      break;
+    }
+
+    if (
+      !workspaceScaffoldNudgeInjected &&
+      isEditWriteTaskPending(runState)
+    ) {
+      const scaffoldNudge = buildWorkspaceScaffoldNudge(workspaceStructureFacts);
+      if (scaffoldNudge) {
+        messages.push({ role: "user", content: scaffoldNudge });
+        workspaceScaffoldNudgeInjected = true;
+      }
+    }
+
+    if (iteration > maxIterations) {
+      messages.push({
+        role: "user",
+        content: buildEditWriteTailNudge(iteration, maxIterations),
+      });
+    } else {
+      const writePressure = buildEditWritePressureNudge(
+        runState,
+        iteration,
+        maxIterations,
+      );
+      if (writePressure) {
+        messages.push({ role: "user", content: writePressure });
+      }
+    }
+
     const shouldEmitProgressReflection =
       iteration > 1 &&
       (runState.lastToolError != null ||
@@ -1063,6 +1313,10 @@ export async function runAgentLoop(
       }
     }
 
+    if (input.signal?.aborted) {
+      return finishLoopCancelled({ trace, thread, task, turn, events, emit });
+    }
+
     let output: ModelOutput | undefined;
     let modelRetryAfterCompact = false;
     do {
@@ -1074,7 +1328,11 @@ export async function runAgentLoop(
             ? getApiConfig()?.visionModel
             : undefined);
 
-        const forceFinalIteration = iteration >= maxIterations;
+        const forceFinalIteration = shouldForceFinalIteration(
+          iteration,
+          maxIterations,
+          runState,
+        );
         const nativeTools = isNativeToolLoopEnabled() && !forceFinalIteration;
 
         output = await generateLoopModelWithProgress(
@@ -1166,14 +1424,40 @@ export async function runAgentLoop(
       }
     } while (modelRetryAfterCompact);
 
-    if (modelUnavailable) break;
+    if (input.signal?.aborted) {
+      return finishLoopCancelled({ trace, thread, task, turn, events, emit });
+    }
+
+    if (modelUnavailable) {
+      if (isDeterministicRecoveryEnabled()) {
+        const deterministic = await attemptDeterministicModelFailureRecovery({
+          workspace,
+          userRequest: effectiveUserRequest,
+          runState,
+        });
+        if (deterministic) {
+          summary = deterministic.summary;
+          emitReflection(emit, task.id, {
+            understanding: deterministic.recovered
+              ? "模型不可用，已用确定性路径完成部分目标。"
+              : "模型不可用，已输出环境诊断与建议。",
+            blockers: deterministic.recovered ? [] : ["模型 API 暂不可用"],
+            plannedNext: deterministic.recovered
+              ? "可在 API 恢复后继续对话，或直接使用已保存的截图/诊断结果。"
+              : "请检查 API 配置或配额后重试。",
+            source: "runtime",
+          });
+        }
+      }
+      break;
+    }
     if (!output) {
       summary = "Model call returned no output.";
       break;
     }
 
     if (isNativeToolLoopEnabled() && output.toolCalls && output.toolCalls.length > 0) {
-      if (iteration >= maxIterations) {
+      if (shouldForceFinalIteration(iteration, maxIterations, runState)) {
         const forcedText = output.content?.trim();
         if (forcedText) {
           summary = forcedText;
@@ -1252,22 +1536,27 @@ export async function runAgentLoop(
           if (maybePending) pendingShell = maybePending;
         }
         if (pendingShell && isShellLoopResumeEnabled()) {
-          saveLoopShellCheckpoint({
-            threadId: thread.id,
-            taskId: task.id,
-            savedAt: nowIso(),
-            iteration,
-            maxIterations,
-            effectiveUserRequest,
-            messages: [...messages],
-            runState: { ...runState },
-            pendingShell,
-            uiContext: input.uiContext,
-          });
+          saveShellPauseAndCheckpoint(
+            emit,
+            {
+              threadId: thread.id,
+              taskId: task.id,
+              savedAt: nowIso(),
+              iteration,
+              maxIterations,
+              effectiveUserRequest,
+              messages: [...messages],
+              runState: { ...runState },
+              pendingShell,
+              uiContext: input.uiContext,
+            },
+            trace.id,
+          );
           pausedForShellApproval = true;
           pausedShellApprovalId = pendingShell.approvalId;
           break;
         }
+        flushDeferredPostToolTurnMessages(messages, deferredPostToolTurnMessages);
       } else {
         let pendingShell: PendingShellApproval | null = null;
         for (const item of preparedCalls) {
@@ -1286,22 +1575,27 @@ export async function runAgentLoop(
           if (maybePending) pendingShell = maybePending;
         }
         if (pendingShell && isShellLoopResumeEnabled()) {
-          saveLoopShellCheckpoint({
-            threadId: thread.id,
-            taskId: task.id,
-            savedAt: nowIso(),
-            iteration,
-            maxIterations,
-            effectiveUserRequest,
-            messages: [...messages],
-            runState: { ...runState },
-            pendingShell,
-            uiContext: input.uiContext,
-          });
+          saveShellPauseAndCheckpoint(
+            emit,
+            {
+              threadId: thread.id,
+              taskId: task.id,
+              savedAt: nowIso(),
+              iteration,
+              maxIterations,
+              effectiveUserRequest,
+              messages: [...messages],
+              runState: { ...runState },
+              pendingShell,
+              uiContext: input.uiContext,
+            },
+            trace.id,
+          );
           pausedForShellApproval = true;
           pausedShellApprovalId = pendingShell.approvalId;
           break;
         }
+        flushDeferredPostToolTurnMessages(messages, deferredPostToolTurnMessages);
       }
       continue;
     }
@@ -1313,33 +1607,22 @@ export async function runAgentLoop(
         break;
       }
 
-      if (shouldInterceptNativeFinal(runState, iteration, maxIterations)) {
+      if (shouldRejectTextOnlyFinal(runState, iteration, maxIterations)) {
         runState.reflectionRounds += 1;
         const reflection: AgentReflection = {
           understanding: finalText,
-          blockers: ["改代码任务尚未写盘。"],
+          blockers: ["改码任务尚未落盘，不能以纯文字结束。"],
           plannedNext:
-            "继续调用 file.read 取证，再用 file.replace / patch.apply 写盘。",
+            "请调用 file.mutation / file.replace / patch.apply 或 shell.run.prepare 完成写盘后再总结。",
           source: "runtime",
         };
         emitReflection(emit, task.id, reflection);
         pushReflectionToMessages(messages, reflection, buildRuntimeCheckpoint(runState));
-        emitPlan({ lastAction: "reflect" });
-        continue;
-      }
-
-      const finalGate = evaluateFinalEvidenceGate(runState);
-      if (!finalGate.allowed) {
-        runState.reflectionRounds += 1;
-        const reflection: AgentReflection = {
-          understanding: finalGate.understanding,
-          blockers: [finalGate.message],
-          plannedNext: finalGate.plannedNext,
-          source: "runtime",
-        };
-        emitReflection(emit, task.id, reflection);
-        pushReflectionToMessages(messages, reflection, buildRuntimeCheckpoint(runState));
-        messages.push({ role: "user", content: finalGate.message });
+        const pressure =
+          buildEditWritePressureNudge(runState, iteration, maxIterations) ??
+          buildEditWriteTailNudge(iteration, maxIterations);
+        messages.push({ role: "assistant", content: finalText });
+        messages.push({ role: "user", content: pressure });
         emitPlan({ lastAction: "reflect" });
         continue;
       }
@@ -1380,29 +1663,25 @@ export async function runAgentLoop(
       continue;
     }
 
-    if (
-      decision.action === "final" &&
-      runState.likelyEditRequest &&
-      !isExplicitReadOnlyRequest(runState.userRequest) &&
-      !isEditTaskSatisfied(runState) &&
-      runState.reflectionRounds < MAX_REFLECTION_ROUNDS &&
-      iteration < maxIterations
-    ) {
-      runState.reflectionRounds += 1;
-      const reflection: AgentReflection = {
-        understanding: decision.summary,
-        blockers: ["改代码任务尚未写盘。"],
-        plannedNext:
-          "依次调用 file.locate / file.read，再用 file.replace 写盘。",
-        source: "runtime",
-      };
-      emitReflection(emit, task.id, reflection);
-      pushReflectionToMessages(messages, reflection, buildRuntimeCheckpoint(runState));
-      emitPlan({ lastAction: "reflect" });
-      continue;
-    }
-
     if (decision.action === "final") {
+      if (shouldRejectTextOnlyFinal(runState, iteration, maxIterations)) {
+        runState.reflectionRounds += 1;
+        const reflection: AgentReflection = {
+          understanding: decision.summary,
+          blockers: ["改码任务尚未落盘，不能以纯文字结束。"],
+          plannedNext:
+            "请调用 file.mutation / file.replace / patch.apply 或 shell.run.prepare 完成写盘后再总结。",
+          source: "runtime",
+        };
+        emitReflection(emit, task.id, reflection);
+        pushReflectionToMessages(messages, reflection, buildRuntimeCheckpoint(runState));
+        const pressure =
+          buildEditWritePressureNudge(runState, iteration, maxIterations) ??
+          buildEditWriteTailNudge(iteration, maxIterations);
+        messages.push({ role: "user", content: pressure });
+        emitPlan({ lastAction: "reflect" });
+        continue;
+      }
       summary = decision.summary;
       emitPlan({ lastAction: "final" });
       break;
@@ -1418,29 +1697,38 @@ export async function runAgentLoop(
     });
     toolContext = runResult.toolContext;
     messages.push(runResult.observationMessage);
+    flushDeferredPostToolTurnMessages(messages, deferredPostToolTurnMessages);
     const jsonPendingShell = pendingShellFromToolRun(
       decision.tool,
       `json_${decision.tool}_${iteration}`,
       runResult,
     );
     if (jsonPendingShell && isShellLoopResumeEnabled()) {
-      saveLoopShellCheckpoint({
-        threadId: thread.id,
-        taskId: task.id,
-        savedAt: nowIso(),
-        iteration,
-        maxIterations,
-        effectiveUserRequest,
-        messages: [...messages],
-        runState: { ...runState },
-        pendingShell: jsonPendingShell,
-        uiContext: input.uiContext,
-      });
+      saveShellPauseAndCheckpoint(
+        emit,
+        {
+          threadId: thread.id,
+          taskId: task.id,
+          savedAt: nowIso(),
+          iteration,
+          maxIterations,
+          effectiveUserRequest,
+          messages: [...messages],
+          runState: { ...runState },
+          pendingShell: jsonPendingShell,
+          uiContext: input.uiContext,
+        },
+        trace.id,
+      );
       pausedForShellApproval = true;
       pausedShellApprovalId = jsonPendingShell.approvalId;
       break;
     }
     continue;
+  }
+
+  if (input.signal?.aborted) {
+    return finishLoopCancelled({ trace, thread, task, turn, events, emit });
   }
 
   if (pausedForShellApproval && pausedShellApprovalId) {
@@ -1467,21 +1755,27 @@ export async function runAgentLoop(
   }
 
   if (summary === GRACEFUL_FINAL_DEFAULT_SUMMARY) {
-    const loopModel =
-      input.model ??
-      (agentMessagesHaveImages(messages)
-        ? getApiConfig()?.visionModel
-        : undefined);
-    const graceful = await attemptGracefulLoopFinal({
-      messages,
-      provider,
-      taskId: task.id,
-      model: loopModel,
-      userRequest: effectiveUserRequest,
-    });
-    if (graceful) {
-      summary = graceful;
-      emit({ type: "model.delta", taskId: task.id, text: graceful });
+    if (!shouldSkipTextOnlyGracefulFinal(runState)) {
+      const loopModel =
+        input.model ??
+        (agentMessagesHaveImages(messages)
+          ? getApiConfig()?.visionModel
+          : undefined);
+      const graceful = await attemptGracefulLoopFinal({
+        messages,
+        provider,
+        taskId: task.id,
+        model: loopModel,
+        userRequest: effectiveUserRequest,
+      });
+      if (graceful) {
+        summary = graceful;
+        emit({ type: "model.delta", taskId: task.id, text: graceful });
+        emitPlan({ lastAction: "final" });
+      }
+    } else {
+      summary = buildEditIncompleteGracefulHint();
+      emit({ type: "model.delta", taskId: task.id, text: summary });
       emitPlan({ lastAction: "final" });
     }
   }
@@ -1625,6 +1919,17 @@ export async function runAgentLoop(
       latestMemory?.memoryContent.slice(0, 500) ?? thread.contextSummary,
   };
 
+  emit(
+    buildTraceCheckpointEvent({
+      taskId: task.id,
+      traceId: trace.id,
+      checkpoint: {
+        kind: "task_completed",
+        label: "",
+        eventCount: events.length + 1,
+      },
+    }),
+  );
   emit({
     type: "task.completed",
     taskId: task.id,

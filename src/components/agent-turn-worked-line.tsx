@@ -7,7 +7,7 @@ import { GitStatusView } from "@/components/git-status-view";
 import { type GitStatusSnapshot } from "@/lib/git-status";
 import { formatPatchToolResultSummary } from "@/lib/patch-summary";
 import { ChevronIcon } from "@/components/chevron-icon";
-import { agentToolIcon } from "@/lib/agent-tool-icons";
+import { formatReflectionBlockersLine } from "@/lib/reflection-blockers-ui";
 
 const TOOL_LABELS: Record<string, string> = {
   "workspace.inspect": "检查工作区",
@@ -133,8 +133,10 @@ function WorkedLine({
 
 export function TurnWorkedLine({
   event,
+  taskStillRunning = false,
 }: {
   event: AgentEvent;
+  taskStillRunning?: boolean;
 }) {
   switch (event.type) {
     case "tool.completed": {
@@ -198,7 +200,9 @@ export function TurnWorkedLine({
           detail={[
             event.reflection.understanding,
             event.reflection.blockers.length > 0
-              ? `阻塞：${event.reflection.blockers.join("；")}`
+              ? formatReflectionBlockersLine(event.reflection.blockers, {
+                  taskStillRunning,
+                })
               : null,
             event.reflection.plannedNext,
           ]

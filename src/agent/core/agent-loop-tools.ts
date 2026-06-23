@@ -50,6 +50,7 @@ import {
 } from "@/agent/devtools/performance-stop-result";
 import { readBrowserNetworkForAgent } from "@/agent/devtools/network-read";
 import { isCdpGuestReady } from "@/agent/devtools/cdp-guest-wait";
+import { resolveUserSavePath } from "@/lib/user-path";
 import {
   getOrBuildProjectIndex,
   locateFilesForRequest,
@@ -89,8 +90,16 @@ import {
 import { buildPrepareEvidenceFromSearch } from "@/agent/approval/prepare-evidence";
 import type { AgentUiContext } from "@/agent/types";
 import type { WorkspaceInfo } from "@/agent/workspace";
+import { collectWorkspaceStructureFacts } from "@/agent/workspace/workspace-structure-facts";
+import { collectAgentDiagnosePayload } from "@/agent/core/agent-diagnose";
+import {
+  buildKernelBootstrapPlan,
+  normalizeKernelRelativePath,
+} from "@/agent/core/kernel-bootstrap-policy";
 
 export type AgentLoopToolName =
+  | "agent.diagnose"
+  | "agent.bootstrap.check"
   | "workspace.inspect"
   | "project.index"
   | "file.locate"
@@ -415,12 +424,75 @@ function parseGitMutationOperation(
 
 export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
   {
+    name: "agent.diagnose",
+    description:
+      "Read-only runtime health: MCP connection, CDP browser bridge, desktop paths, and suggested fallbacks. Call when browser/screenshot/MCP tools fail or task is stuck.",
+    args: {},
+    async execute(_args, context) {
+      const payload = await collectAgentDiagnosePayload(context.workspace);
+      return { result: payload };
+    },
+  },
+  {
+    name: "agent.bootstrap.check",
+    description:
+      "Before editing src/agent kernel: check path allowlist, suggested npm run validate:* scripts, and whether dev restart is needed. Call when extending Agent tools or self-bootstrap.",
+    args: {
+      paths:
+        "optional comma-separated or JSON array of workspace-relative paths to check",
+      intent: "optional short description of planned kernel change",
+    },
+    async execute(args) {
+      const paths: string[] = [];
+      if (typeof args.paths === "string" && args.paths.trim()) {
+        const raw = args.paths.trim();
+        if (raw.startsWith("[")) {
+          try {
+            const parsed = JSON.parse(raw) as unknown;
+            if (Array.isArray(parsed)) {
+              for (const item of parsed) {
+                if (typeof item === "string" && item.trim()) {
+                  paths.push(normalizeKernelRelativePath(item.trim()));
+                }
+              }
+            }
+          } catch {
+            paths.push(normalizeKernelRelativePath(raw));
+          }
+        } else {
+          for (const part of raw.split(/[,，\n]/)) {
+            const trimmed = part.trim();
+            if (trimmed) paths.push(normalizeKernelRelativePath(trimmed));
+          }
+        }
+      }
+      if (paths.length === 0 && typeof args.intent === "string") {
+        for (const match of args.intent.matchAll(
+          /src\/agent[\w./-]*|src\/agent-server[\w./-]*/gi,
+        )) {
+          paths.push(normalizeKernelRelativePath(match[0]));
+        }
+      }
+      if (paths.length === 0) {
+        paths.push("src/agent/core/agent-loop-tools.ts");
+      }
+      const plan = buildKernelBootstrapPlan(paths);
+      return {
+        result: {
+          ...plan,
+          intent: typeof args.intent === "string" ? args.intent : null,
+        },
+      };
+    },
+  },
+  {
     name: "workspace.inspect",
     description:
       "Read current workspace metadata, structured git status (dirty + files[]), and rule file names.",
     args: {},
     async execute(_args, context) {
       const workspace = context.workspace;
+      const structure = await collectWorkspaceStructureFacts(workspace);
       let lastPostExecuteVerification: unknown;
       try {
         const raw = await fs.readFile(
@@ -438,6 +510,7 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
           packageManager: workspace.packageManager,
           framework: workspace.framework,
           packageName: workspace.packageName,
+          structure,
           git: workspace.git,
           lastPostExecuteVerification,
           rules: workspace.rules.map((rule) => ({
@@ -975,9 +1048,12 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
   {
     name: "devtools.get_screenshot",
     description:
-      "Capture JPEG screenshot of the in-app browser via CDP Page.captureScreenshot. Requires desktop app and browser tab with loaded page.",
-    args: {},
-    async execute() {
+      "Capture JPEG screenshot of the in-app browser via CDP. Optional filePath saves to disk (~, desktop: alias, or absolute). Requires desktop app and loaded browser tab.",
+    args: {
+      filePath:
+        "optional save path: absolute, ~/Desktop/name.jpg, or desktop:name.jpg",
+    },
+    async execute(args) {
       if (!(await isCdpBridgeAvailable())) {
         return {
           result: {
@@ -987,17 +1063,32 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
         };
       }
       const jpegBase64 = await cdpScreenshotJpegBase64();
+      const filePath =
+        typeof args.filePath === "string" ? args.filePath.trim() : "";
+      let savedTo: string | null = null;
+      if (jpegBase64 && filePath) {
+        const resolved = resolveUserSavePath(filePath);
+        await fs.mkdir(path.dirname(resolved), { recursive: true });
+        await fs.writeFile(
+          resolved,
+          Buffer.from(jpegBase64, "base64"),
+        );
+        savedTo = resolved;
+      }
       return {
         result: {
           ok: Boolean(jpegBase64),
           format: "jpeg",
           byteLength: jpegBase64 ? Math.floor((jpegBase64.length * 3) / 4) : 0,
+          savedTo,
           jpegBase64Preview: jpegBase64
             ? `${jpegBase64.slice(0, 48)}…`
             : null,
-          hint: jpegBase64
-            ? "Full-page CDP capture (scroll area, max ~6000px height). Off-screen text also in browser.inspect textPreview/domOutline."
-            : "Screenshot empty.",
+          hint: savedTo
+            ? `Screenshot saved to ${savedTo}`
+            : jpegBase64
+              ? "Captured in memory. Pass filePath (~/Desktop/… or desktop:name.jpg) to save."
+              : "Screenshot empty — open a page in the browser tab first.",
         },
       };
     },

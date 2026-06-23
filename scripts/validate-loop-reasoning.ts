@@ -28,8 +28,10 @@ import {
   syncTaskEvidenceComplete,
 } from "../src/agent/core/evidence-gate";
 import {
+  hasHardWorkspaceSignalsInRequest,
   isWorkspaceGroundedUserRequest,
   reasoningRequiresWorkspaceGather,
+  requiresFactualWorkspaceGather,
 } from "../src/agent/core/workspace-grounding";
 import {
   collectPlaybookAcceleratorHints,
@@ -47,21 +49,33 @@ async function main(): Promise<void> {
   const runner = await read("src/agent/core/agent-loop-tool-runner.ts");
 
   assert.ok(loop.includes("workspaceToSnapshotInput"), "loop injects workspace snapshot");
+  assert.ok(loop.includes("collectWorkspaceStructureFacts"), "loop collects structure facts");
+  assert.ok(loop.includes("workspace.inspect"), "loop preloads workspace inspect");
+  assert.ok(!loop.includes("finishLoopWorkspaceBlocked"), "no workspace hard stop");
   assert.ok(loop.includes("normalizeTaskReasoning"), "loop normalizes reasoning");
-  assert.ok(loop.includes("evaluateFinalEvidenceGate"), "loop uses final evidence gate");
+  assert.ok(!loop.includes("evaluateFinalEvidenceGate"), "loop no longer blocks final via gate");
+  const groundingSrc = await read("src/agent/core/workspace-grounding.ts");
+  assert.ok(
+    groundingSrc.includes("requiresFactualWorkspaceGather"),
+    "A164 primary gather resolver",
+  );
+  assert.ok(
+    !groundingSrc.includes("商业计划"),
+    "no domain negative wordlist in grounding",
+  );
   assert.ok(runner.includes("syncTaskEvidenceComplete"), "tool runner syncs evidence complete");
-  assert.ok(runner.includes("taskEvidenceComplete"), "tool runner sets evidence complete flag");
   assert.ok(loop.includes("isMetaExplainRequest"), "loop detects meta explain");
   assert.ok(loop.includes("evaluateReasoningTurn"), "loop uses adaptive reasoning mode");
   assert.ok(loop.includes("buildAdaptiveReasoningSkipHint"), "loop injects skip hint");
   assert.ok(loop.includes("collectPlaybookAcceleratorHints"), "loop uses accelerator hints");
   assert.ok(!loop.includes("conversation-recall"), "no hardcoded recall playbook in loop");
   assert.ok(!loop.includes("browser-live-page"), "no hardcoded browser-live playbook in loop");
-  assert.ok(runner.includes("evaluateToolEvidenceGate"), "tool runner uses evidence gate");
+  assert.ok(!runner.includes("evaluateToolEvidenceGate"), "tool runner no longer blocks via gate");
   assert.ok(!playbooks.includes("browser-live-page"), "playbook removed browser-live-page");
   assert.ok(!playbooks.includes("conversation-recall"), "playbook removed conversation-recall");
   assert.ok(playbooks.includes("collectPlaybookAcceleratorHints"), "accelerator hints export");
-  assert.ok(prompt.includes("Intent disambiguation"), "prompt has disambiguation");
+  assert.ok(prompt.includes("WORKSPACE_STRUCTURE"), "prompt has structure facts block");
+  assert.ok(prompt.includes("derive prerequisite"), "prompt derives prerequisites");
   assert.ok(!prompt.includes("禁止** project.index"), "no hardcoded browser title rule");
 
   const reasoningJson = JSON.stringify({
@@ -270,12 +284,14 @@ async function main(): Promise<void> {
 
   const advisoryRequest =
     "帮我设计一个水产品团购产品方案和商业计划，面向四五线城市微信社群";
+  assert.equal(hasHardWorkspaceSignalsInRequest(advisoryRequest), false);
   assert.equal(isWorkspaceGroundedUserRequest(advisoryRequest), false);
   const advisoryState = createAgentLoopRunState(advisoryRequest);
   advisoryState.taskReasoning = {
     understanding: "用户要商业与产品规划，不依赖仓库代码事实",
     intent: "analysis",
     risk: "read_only",
+    grounding: "none",
     evidenceNeeded: [],
     planSteps: ["输出 PRD 大纲", "列出 MVP 功能", "给出运营节奏"],
     ambiguity: null,
@@ -287,12 +303,30 @@ async function main(): Promise<void> {
     reasoningRequiresWorkspaceGather(advisoryState.taskReasoning!),
     false,
   );
+  assert.equal(requiresFactualWorkspaceGather(advisoryState.taskReasoning!), false);
   const advisoryFinal = evaluateFinalEvidenceGate(advisoryState);
   assert.equal(
     advisoryFinal.allowed,
     true,
     "advisory tasks must not require file.read gather",
   );
+
+  const legalAdvisory =
+    "请帮我起草一份劳动合同解除协议的风险要点，不涉及代码仓库";
+  const legalState = createAgentLoopRunState(legalAdvisory);
+  legalState.taskReasoning = {
+    understanding: "法律咨询草稿",
+    intent: "analysis",
+    risk: "read_only",
+    evidenceNeeded: [],
+    planSteps: ["列出风险点", "给出条款建议"],
+    ambiguity: null,
+    canAnswerNow: true,
+    plannedNext: "中文 final",
+    source: "model",
+  };
+  assert.equal(requiresFactualWorkspaceGather(legalState.taskReasoning!), false);
+  assert.equal(evaluateFinalEvidenceGate(legalState).allowed, true);
 
   const indexState = createAgentLoopRunState("标题");
   indexState.taskReasoning = {

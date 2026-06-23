@@ -3,17 +3,20 @@
 import type { ReactNode } from "react";
 import { BrowserPanel } from "@/components/browser-panel";
 import { WorkspaceFileTree } from "@/components/workspace-file-tree";
+import { TripleRightPanelToggleIcon } from "@/components/triple-right-panel-toggle-icon";
 
-export type AgentRightRailTab = "review" | "files" | "browser";
+export type AgentRightRailTab = "review" | "files" | "browser" | "terminal";
 
 type AgentRightRailProps = {
   workspaceEnabled: boolean;
   onSelectFilePath: (path: string) => void;
   treeHighlightPath?: string | null;
   reviewPanel: ReactNode;
+  terminalPanel: ReactNode;
   pendingReviewCount?: number;
   tab: AgentRightRailTab;
   onTabChange: (tab: AgentRightRailTab) => void;
+  onHideRightPanel?: () => void;
 };
 
 /** Electron webview 是原生层，不能用 inset-0 铺满右栏（会挡住文件树等点击） */
@@ -79,6 +82,27 @@ const TABS: {
       </svg>
     ),
   },
+  {
+    id: "terminal",
+    label: "终端",
+    icon: (
+      <svg
+        viewBox="0 0 16 16"
+        className="h-4 w-4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        aria-hidden
+      >
+        <path
+          d="M3.5 4.5 6.5 8 3.5 11.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <path d="M8 11.5h4.5" strokeLinecap="round" />
+      </svg>
+    ),
+  },
 ];
 
 /** 右侧栏：审查 / 文件树 / 浏览器 同级 Tab（对齐 Cursor 右侧面板）。 */
@@ -87,17 +111,20 @@ export function AgentRightRail({
   onSelectFilePath,
   treeHighlightPath = null,
   reviewPanel,
+  terminalPanel,
   pendingReviewCount = 0,
   tab,
   onTabChange,
+  onHideRightPanel,
 }: AgentRightRailProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div
-        className="flex shrink-0 items-center gap-0.5 border-b border-zinc-200 px-1.5 py-1 dark:border-zinc-800"
+        className="flex shrink-0 items-center gap-1 border-b border-zinc-200 px-1.5 py-1 dark:border-zinc-800"
         role="tablist"
         aria-label="右侧面板"
       >
+        <div className="flex min-w-0 flex-1 items-center gap-0.5">
         {TABS.map((item) => {
           const active = tab === item.id;
           const showBadge =
@@ -129,6 +156,18 @@ export function AgentRightRail({
             </button>
           );
         })}
+        </div>
+        {onHideRightPanel ? (
+          <button
+            type="button"
+            onClick={onHideRightPanel}
+            title="隐藏右侧面板"
+            aria-label="隐藏右侧面板"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800/80 dark:hover:text-zinc-300"
+          >
+            <TripleRightPanelToggleIcon />
+          </button>
+        ) : null}
       </div>
 
       <div className="relative min-h-0 flex-1 overflow-hidden" role="tabpanel">
@@ -152,6 +191,12 @@ export function AgentRightRail({
                 variant="panel"
               />
             )}
+          </div>
+        )}
+
+        {tab === "terminal" && (
+          <div className="relative z-0 flex h-full min-h-0 flex-col overflow-hidden">
+            {terminalPanel}
           </div>
         )}
 

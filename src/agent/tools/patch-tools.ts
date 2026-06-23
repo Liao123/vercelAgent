@@ -14,6 +14,10 @@ import {
   resolveInsideWorkspace,
   toWorkspaceRelative,
 } from "@/agent/tools/path-safety";
+import {
+  assertKernelWriteAllowedMany,
+  resolvePathsFromPatch,
+} from "@/agent/core/kernel-bootstrap-policy";
 
 export type PatchMode = "preview" | "apply";
 
@@ -419,6 +423,7 @@ export async function applyUnifiedPatchDirect(input: {
   rootPath: string;
   patch: string;
 }): Promise<PatchResult> {
+  assertKernelWriteAllowedMany(resolvePathsFromPatch(input.patch));
   const parsedFiles = parseUnifiedDiff(input.patch);
   const changes: PatchFileChange[] = [];
 

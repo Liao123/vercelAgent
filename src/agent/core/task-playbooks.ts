@@ -7,13 +7,13 @@ import {
   isLikelyCodeEditRequest,
 } from "@/agent/core/agent-loop-state";
 import { isUiLocationQuery } from "@/agent/core/prepare-gate";
-import { isWorkspaceGroundedUserRequest } from "@/agent/core/workspace-grounding";
 
 export type TaskPlaybookId =
   | "browser-doc"
   | "design-replicate"
   | "capability-extension"
   | "dev-run"
+  | "screenshot-save"
   | "ui-visible-edit"
   | "file-exact-edit"
   | "read-only-audit"
@@ -76,11 +76,21 @@ export function isDesignReplicateRequest(input: string): boolean {
   return hasUrl && replicateIntent && buildIntent;
 }
 
+/** 截图并保存到桌面/指定路径（环境任务，优先 CDP / MCP）。 */
+export function isScreenshotSaveRequest(input: string): boolean {
+  const text = input.trim();
+  if (!text) return false;
+  if (!/截图|screenshot|截屏/i.test(text)) return false;
+  return (
+    /桌面|desktop|保存|save|filePath|存到|保存为/i.test(text) ||
+    /截图到/.test(text)
+  );
+}
+
 /** 启动 dev / 验证项目能否跑起来（只跑命令，不改代码）。 */
 export function isDevRunRequest(input: string): boolean {
   const text = input.trim();
   if (!text) return false;
-  if (!isWorkspaceGroundedUserRequest(text)) return false;
   if (isExplicitReadOnlyRequest(text)) return false;
   if (isCapabilityExtensionRequest(text)) return false;
   if (isBrowserDocAnalysisRequest(text)) return false;
@@ -160,7 +170,7 @@ const DESIGN_REPLICATE: TaskPlaybook = {
   openingPlannedNext:
     "browser.open(demo URL) → devtools.extract_design_spec → file.read → file.replace/prepare → browser.open 本地页验证。",
   loopHint:
-    "【任务提示】页面复刻：先打开 demo URL 并 devtools.extract_design_spec（结构化样式，勿凭截图猜），再改 workspace 页面文件，最后 browser.open 本地路由对比验证。",
+    "【软提示】页面复刻：结合 WORKSPACE_STRUCTURE 与用户目标 URL，自行推导取证、脚手架（若需要）与写盘顺序。",
   softMaxToolRounds: 10,
   goldenSteps: [
     {
@@ -222,6 +232,36 @@ const DESIGN_REPLICATE: TaskPlaybook = {
   ],
 };
 
+const SCREENSHOT_SAVE: TaskPlaybook = {
+  id: "screenshot-save",
+  title: "截图保存到磁盘",
+  openingPlannedNext:
+    "agent.diagnose（若 MCP/CDP 不明）→ devtools.get_screenshot 或 mcp.*.take_screenshot，filePath 用 desktop:name.jpg。",
+  loopHint:
+    "【任务提示】截图到桌面：先 agent.diagnose 确认 CDP/MCP；优先 devtools.get_screenshot（filePath: desktop:xxx.jpg）。MCP take_screenshot 失败立即改内置，不要结束。需 npm run dev:desktop 且浏览器 Tab 已打开页面。",
+  softMaxToolRounds: 6,
+  goldenSteps: [
+    { id: "diagnose", label: "环境诊断", tools: ["agent.diagnose"] },
+    {
+      id: "capture",
+      label: "截图并写盘",
+      tools: ["devtools.get_screenshot", "mcp.chrome-devtools.take_screenshot"],
+    },
+  ],
+  circuitBreakers: [
+    {
+      tool: "mcp.chrome-devtools.take_screenshot",
+      threshold: 1,
+      redirectTool: "devtools.get_screenshot",
+      message:
+        "MCP 截图失败或未连接，请立即改用 devtools.get_screenshot 并传 filePath（desktop:name.jpg）。",
+      understanding: "MCP 浏览器工具不可用。",
+      plannedNext:
+        "devtools.get_screenshot { filePath: 'desktop:shot.jpg' }；仍失败则 agent.diagnose。",
+    },
+  ],
+};
+
 const DEV_RUN: TaskPlaybook = {
   id: "dev-run",
   title: "启动开发服务",
@@ -268,13 +308,13 @@ const CAPABILITY_EXTENSION: TaskPlaybook = {
   openingPlannedNext:
     "file.read 相关内核文件 → file.replace/patch.apply 改工具注册 → shell.run.prepare 跑 validate → 中文说明是否需重启 dev。",
   loopHint:
-    "【任务提示】扩展 Agent 能力：先 file.read（agent-loop-tools.ts、shell-tools.ts、prompts），再改代码，用 shell.run.prepare 或 shell.command.prepare 跑 npm run validate:* / verify:* 验证；改 Loop 内核后提醒用户重启 npm run dev 或 dev:desktop。",
+    "【任务提示】扩展 Agent 能力：先 agent.bootstrap.check 确认路径与 validate 脚本 → file.read 内核文件 → 改代码 → shell.run.prepare 跑 npm run validate:*；改 Loop/MCP 后提醒重启 npm run dev 或 dev:desktop。禁止改 .env。",
   softMaxToolRounds: 12,
   goldenSteps: [
     {
       id: "read-kernel",
-      label: "读取内核与工具注册",
-      tools: ["file.read", "file.search", "file.locate", "project.index"],
+      label: "检查自举策略并读取内核",
+      tools: ["agent.bootstrap.check", "file.read", "file.search", "file.locate", "project.index"],
     },
     {
       id: "edit-kernel",
@@ -422,6 +462,11 @@ const ORDERED_PLAYBOOKS: Array<{
     reason: "demo 页面复刻",
   },
   {
+    playbook: SCREENSHOT_SAVE,
+    match: (input) => isScreenshotSaveRequest(input),
+    reason: "截图保存到桌面",
+  },
+  {
     playbook: CAPABILITY_EXTENSION,
     match: (input) => isCapabilityExtensionRequest(input),
     reason: "Agent 能力自举扩展",
@@ -529,7 +574,7 @@ export type PlaybookToolRedirect = {
   plannedNext: string;
 };
 
-/** Playbook 级工具边界：复刻任务须先 extract design spec，再改代码。 */
+/** @deprecated 软提示数据保留供 UI/文档；runtime 不再拦截工具调用。 */
 export function findPlaybookToolRedirect(
   playbook: TaskPlaybook,
   toolName: string,

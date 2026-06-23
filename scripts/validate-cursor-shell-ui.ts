@@ -55,6 +55,7 @@ async function main(): Promise<void> {
   );
   assert.ok(rightRail.includes('label: "文件"'), "files tab present");
   assert.ok(rightRail.includes('label: "浏览器"'), "browser tab present");
+  assert.ok(rightRail.includes('label: "终端"'), "terminal tab present");
   assert.ok(changeCard.includes("应用更改"), "turn card apply button");
   assert.ok(
     changeCard.includes("showInlineActions"),

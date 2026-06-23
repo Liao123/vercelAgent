@@ -25,6 +25,22 @@ async function main(): Promise<void> {
     "review panel header + list rows",
   );
   assert.ok(
+    reviewPanel.includes("defaultAcceptMode") &&
+      reviewPanel.includes("撤销更改"),
+    "default accept + revert on hover",
+  );
+  assert.ok(
+    panel.includes("revert-file") && panel.includes("defaultAcceptMode"),
+    "triple review revert wiring",
+  );
+  assert.ok(
+    await fs
+      .access(path.join(ROOT, "src/lib/workspace-revert-file.ts"))
+      .then(() => true)
+      .catch(() => false),
+    "workspace revert helper",
+  );
+  assert.ok(
     reviewPanel.includes("buildReviewEmptyHint"),
     "contextual empty hints",
   );

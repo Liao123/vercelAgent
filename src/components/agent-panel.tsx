@@ -13,7 +13,7 @@ import { formatCompactMethod, formatCompactionLayers } from "@/lib/compaction-la
 import { AgentEventTimeline } from "@/components/agent-event-timeline";
 import { AgentReviewPanel } from "@/components/agent-review-panel";
 import { AgentComposer } from "@/components/agent-composer";
-import { AgentCommandApprovalBar } from "@/components/agent-command-approval-bar";
+import { AgentTerminalPanel } from "@/components/agent-terminal-panel";
 import {
   useAgentWorkspaceBridge,
   type TraceRestorePayload,
@@ -47,6 +47,7 @@ import {
   collectReviewDisplay,
   extractFileChangesFromApproval,
 } from "@/lib/approval-file-changes";
+import type { KernelBootstrapReviewHint } from "@/lib/kernel-file-hint";
 import { normalizeRepoPath } from "@/lib/git-tree-decoration";
 import { workspaceRelativePath } from "@/lib/workspace-tree-paths";
 import { workspaceIdsEqual } from "@/lib/workspace-path";
@@ -63,12 +64,17 @@ import {
   shouldResumeLoopAfterApprovalExecute,
 } from "@/lib/approval-loop-continuation";
 import { appendApprovalExecutionEvents, buildCommandResultNotice, appendCommandApprovalRejectedEvents } from "@/lib/approval-chat-events";
+import { appendKernelBootstrapRestartAfterValidate } from "@/lib/kernel-bootstrap-restart";
 import {
   collectPendingCommandApprovals,
   extractShellVerificationResult,
   isAwaitingCommandExecution,
 } from "@/lib/command-approval-state";
 import { summarizeShellFailureOutput } from "@/agent/tools/shell-output";
+import {
+  createTerminalLogEntry,
+  type TerminalLogEntry,
+} from "@/lib/terminal-session-log";
 import { useDesktopApp } from "@/lib/use-desktop-app";
 import { extractAtMentionPaths } from "@/lib/composer-at-mention";
 import type { EditorSelectionContext } from "@/agent/core/attached-files";
@@ -87,6 +93,7 @@ import {
   writeTripleLayoutPrefs,
 } from "@/lib/triple-layout-prefs";
 import { TripleLayoutResizeHandle } from "@/components/triple-layout-resize-handle";
+import { TripleRightPanelToggleIcon } from "@/components/triple-right-panel-toggle-icon";
 import {
   buildOpenEditorUiContext,
   mergeBrowserTabIntoUiContext,
@@ -340,7 +347,11 @@ function bucketEvents(events: AgentEvent[]): EventBucket {
     else if (event.type === "approval.required") bucket.approvals.push(event);
     else if (event.type === "verification.completed") {
       bucket.verifications.push(event);
-    } else if (event.type === "task.completed" || event.type === "task.failed") {
+    } else if (
+      event.type === "task.completed" ||
+      event.type === "task.failed" ||
+      event.type === "task.cancelled"
+    ) {
       bucket.finals.push(event);
     } else {
       bucket.others.push(event);
@@ -722,6 +733,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
   const [recentAttachedPaths, setRecentAttachedPaths] = useState<string[]>([]);
   const [tripleLeftWidth, setTripleLeftWidth] = useState(TRIPLE_LEFT_DEFAULT);
   const [tripleRightWidth, setTripleRightWidth] = useState(TRIPLE_RIGHT_DEFAULT);
+  const [tripleRightCollapsed, setTripleRightCollapsed] = useState(false);
   const tripleWidthsRef = useRef({
     leftWidth: TRIPLE_LEFT_DEFAULT,
     rightWidth: TRIPLE_RIGHT_DEFAULT,
@@ -732,10 +744,17 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
   } | null>(null);
   /** 与 running 同步，避免 approve 回调闭包读到 stale running */
   const runningRef = useRef(false);
+  /** A165：中止当前 Loop 流式请求 */
+  const loopAbortRef = useRef<AbortController | null>(null);
   /** Loop 仍在跑时用户已批准命令，待本轮结束后自动续跑 */
   const pendingApprovalContinuationRef = useRef<{
     request: string;
     shellResume?: { approvalId: string; result: VerificationResult };
+  } | null>(null);
+  /** A166：task.awaiting_approval 时记录，用于 shellResume 而非 Phase A 续跑 */
+  const shellAwaitingRef = useRef<{
+    threadId: string;
+    approvalId: string;
   } | null>(null);
   const [currentThreadId, setCurrentThreadId] = useState<string | null>(null);
   const [continueThreadMemory, setContinueThreadMemory] = useState(true);
@@ -745,6 +764,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
   >([]);
   const desktopShell = useDesktopApp();
   const [rightRailTab, setRightRailTab] = useState<AgentRightRailTab>("files");
+  const [terminalLogs, setTerminalLogs] = useState<TerminalLogEntry[]>([]);
   useEffect(() => {
     runningRef.current = running;
   }, [running]);
@@ -761,7 +781,32 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     const prefs = readTripleLayoutPrefs();
     setTripleLeftWidth(prefs.leftWidth);
     setTripleRightWidth(prefs.rightWidth);
+    setTripleRightCollapsed(prefs.rightCollapsed === true);
   }, [layout]);
+
+  function persistTripleLayoutPrefs(
+    patch: Partial<{
+      leftWidth: number;
+      rightWidth: number;
+      rightCollapsed: boolean;
+    }> = {},
+  ) {
+    writeTripleLayoutPrefs({
+      leftWidth: patch.leftWidth ?? tripleLeftWidth,
+      rightWidth: patch.rightWidth ?? tripleRightWidth,
+      rightCollapsed: patch.rightCollapsed ?? tripleRightCollapsed,
+    });
+  }
+
+  function hideTripleRightPanel() {
+    setTripleRightCollapsed(true);
+    persistTripleLayoutPrefs({ rightCollapsed: true });
+  }
+
+  function showTripleRightPanel() {
+    setTripleRightCollapsed(false);
+    persistTripleLayoutPrefs({ rightCollapsed: false });
+  }
 
   function beginTripleColumnResize() {
     tripleResizeStartRef.current = { ...tripleWidthsRef.current };
@@ -784,7 +829,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
   }
 
   function endTripleColumnResize() {
-    writeTripleLayoutPrefs(tripleWidthsRef.current);
+    persistTripleLayoutPrefs();
     tripleResizeStartRef.current = null;
   }
 
@@ -797,6 +842,9 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     null,
   );
   const [reviewFileKey, setReviewFileKey] = useState<string | null>(null);
+  const [revertingFilePath, setRevertingFilePath] = useState<string | null>(
+    null,
+  );
 
   const focusApproval = useCallback(
     (approvalId: string, filePath?: string) => {
@@ -917,7 +965,12 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     })();
 
     setApprovalStatus("已从历史 Trace 恢复活动流；右侧已筛选「仅本次任务」审批。");
-  }, []);
+    if (layout === "triple") {
+      setReviewFileKey(null);
+      setFocusedApprovalId(null);
+      queueMicrotask(() => void loadWorkspace(true));
+    }
+  }, [layout]);
 
   const startNewSession = useCallback(() => {
     if (running) return;
@@ -1002,11 +1055,11 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     });
   }, []);
 
-  async function loadWorkspace() {
-    if (workspaceBusy) return;
+  async function loadWorkspace(force = false) {
+    if (!force && workspaceBusy) return;
 
     setError(null);
-    setWorkspaceStatus(null);
+    if (!force) setWorkspaceStatus(null);
     setLoadingWorkspace(true);
 
     try {
@@ -1015,7 +1068,9 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
       if (!res.ok) throw new Error(data.error ?? "Failed to load workspace.");
       setWorkspace(data.workspace);
       setWorkspacePath(data.workspace.rootPath);
-      setWorkspaceStatus(workspaceStatusFromPayload(data.workspace));
+      if (!force) {
+        setWorkspaceStatus(workspaceStatusFromPayload(data.workspace));
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "读取 Workspace 失败。");
     } finally {
@@ -1045,7 +1100,12 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
           ? "已通过桌面选择器设置 Workspace。"
           : "Workspace 已设置。",
       );
+      setApprovals([]);
+      setReviewFileKey(null);
+      setFocusedApprovalId(null);
       setSidebarRefreshKey((key) => key + 1);
+      void loadApprovals();
+      queueMicrotask(() => void loadWorkspace(true));
       return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to set workspace.");
@@ -1275,6 +1335,13 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     void runLoopWithRequest(fixRequest);
   }
 
+  function cancelRunningLoop() {
+    const controller = loopAbortRef.current;
+    if (!controller || controller.signal.aborted) return;
+    controller.abort();
+    setApprovalStatus("正在停止…");
+  }
+
   async function runLoopWithRequest(
     loopUserRequest: string,
     options?: {
@@ -1322,6 +1389,10 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     runningRef.current = true;
     setRunning(true);
 
+    loopAbortRef.current?.abort();
+    const loopAbortController = new AbortController();
+    loopAbortRef.current = loopAbortController;
+
     let uiContext = buildOpenEditorUiContext({
       layout,
       attachedPaths: pathsForLoop,
@@ -1352,6 +1423,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
       const res = await fetch("/api/agent/loop", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: loopAbortController.signal,
         body: JSON.stringify({
           userRequest: trimmed || "【shell 执行续跑】",
           referenceImages: imagesForLoop,
@@ -1378,6 +1450,15 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
       let sawApprovalThisRun = false;
 
       while (true) {
+        if (loopAbortController.signal.aborted) {
+          try {
+            await reader.cancel();
+          } catch {
+            /* ignore */
+          }
+          break;
+        }
+
         const { value, done } = await reader.read();
         if (done) break;
 
@@ -1431,7 +1512,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
               }
             } else {
               const autoApply =
-                readAutoApplyFileChanges() &&
+                (layout === "triple" || readAutoApplyFileChanges()) &&
                 canAutoApplyFileApproval(nextApproval, true);
               if (autoApply) {
                 setApprovalStatus("已收到文件变更，正在自动应用…");
@@ -1441,12 +1522,16 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
                 void approveAndExecute(nextApproval);
               } else {
                 setApprovalStatus(
-                  "已收到文件变更，请在右侧「审查」查看 diff 并点击「应用更改」。",
+                  layout === "triple"
+                    ? "已收到文件变更，请在右侧「审查」查看 diff。"
+                    : "已收到文件变更，请在右侧「审查」查看 diff 并点击「应用更改」。",
                 );
                 if (layout === "triple") {
                   setRightRailTab("review");
                 }
-                queueMicrotask(() => focusApproval(nextApproval.id));
+                if (layout !== "triple") {
+                  queueMicrotask(() => focusApproval(nextApproval.id));
+                }
               }
             }
           }
@@ -1468,13 +1553,24 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
           if (parsed.type === "task.failed") {
             setError(parsed.error);
             setTaskSummary(null);
+            shellAwaitingRef.current = null;
+          }
+          if (parsed.type === "task.cancelled") {
+            setApprovalStatus("已停止运行");
+            setTaskSummary(null);
+            shellAwaitingRef.current = null;
           }
           if (parsed.type === "task.awaiting_approval") {
             sawApprovalThisRun = true;
+            shellAwaitingRef.current = {
+              threadId: parsed.threadId,
+              approvalId: parsed.approvalId,
+            };
             setApprovalStatus("等待批准 shell 命令…");
           }
           if (parsed.type === "task.completed") {
             setTaskSummary(parsed.summary);
+            shellAwaitingRef.current = null;
             if (!sawApprovalThisRun) {
               setApprovalStatus(
                 "任务已结束，但未生成审批。请看事件流或重试。",
@@ -1485,15 +1581,26 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown agent error.");
+      const aborted =
+        loopAbortController.signal.aborted ||
+        (err instanceof DOMException && err.name === "AbortError");
+      if (aborted) {
+        setApprovalStatus("已停止运行");
+      } else {
+        setError(err instanceof Error ? err.message : "Unknown agent error.");
+      }
     } finally {
+      const userCancelled = loopAbortController.signal.aborted;
+      loopAbortRef.current = null;
       runningRef.current = false;
       setRunning(false);
       setReferenceImages([]);
       setAttachedFiles([]);
       setSidebarRefreshKey((key) => key + 1);
       void loadApprovals();
-      flushPendingApprovalContinuation();
+      if (!userCancelled) {
+        flushPendingApprovalContinuation();
+      }
     }
   }
 
@@ -1517,7 +1624,14 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
       ? findUserRequestForTask(approval.taskId, events)
       : null;
     const shellResult = extractShellVerificationResult(execPayload, approval);
-    const useShellResume = Boolean(shellResult && currentThreadId);
+    const shellAwaiting = shellAwaitingRef.current;
+    const useShellResume = Boolean(
+      shellResult &&
+        currentThreadId &&
+        shellAwaiting?.approvalId === approval.id &&
+        shellAwaiting.threadId === currentThreadId,
+    );
+    shellAwaitingRef.current = null;
     const continuation = useShellResume
       ? "【shell 执行续跑】"
       : buildApprovalLoopContinuationRequest(
@@ -1545,24 +1659,51 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     });
   }
 
+  function pushShellOutputToTerminal(
+    approval: ApprovalRecordView,
+    execPayload: Record<string, unknown>,
+  ) {
+    const result = extractShellVerificationResult(execPayload, approval);
+    if (!result) return;
+    setTerminalLogs((current) => [
+      ...current,
+      createTerminalLogEntry({
+        id: `${approval.id}_${Date.now()}`,
+        command: result.command,
+        success: result.success,
+        output: result.output,
+        completedAt: result.completedAt,
+      }),
+    ]);
+    if (layout === "triple") {
+      setRightRailTab("terminal");
+    }
+  }
+
   function pushShellExecutionToChat(
     approval: ApprovalRecordView,
     execPayload: Record<string, unknown>,
   ) {
+    pushShellOutputToTerminal(approval, execPayload);
     if (!isCommandLikeApproval(approval)) return;
     const result = extractShellVerificationResult(execPayload, approval);
     if (!result) return;
     const taskId = approval.taskId ?? currentTaskId ?? "shell_manual";
     const execution = (execPayload.approval as ApprovalRecordView | undefined)
       ?.execution;
-    setEvents((current) =>
-      appendApprovalExecutionEvents(current, {
+    setEvents((current) => {
+      const next = appendApprovalExecutionEvents(current, {
         taskId,
         approval: (execPayload.approval as ApprovalRequest) ?? approval,
         result,
         summary: execution?.summary,
-      }),
-    );
+      });
+      return appendKernelBootstrapRestartAfterValidate(next, {
+        taskId,
+        command: result.command,
+        success: result.success,
+      });
+    });
   }
 
   async function approveAndExecute(approval: ApprovalRecordView) {
@@ -1959,22 +2100,61 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
         currentTaskId,
         focusedApprovalId,
         workspace?.git?.files,
+        layout === "triple" ? { gitOnly: true } : undefined,
       ),
     [
       reviewApprovals,
       currentTaskId,
       focusedApprovalId,
       workspace?.git?.files,
+      layout,
     ],
   );
 
+  const kernelBootstrapHint = useMemo((): KernelBootstrapReviewHint | null => {
+    let hint: KernelBootstrapReviewHint | null = null;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event?.type !== "kernel.bootstrap.validate") continue;
+      if (currentTaskId && event.taskId !== currentTaskId) continue;
+      hint = {
+        paths: event.paths,
+        validateScripts: event.validateScripts,
+        validateCommand: event.validateCommand,
+        requiresDevRestart: event.requiresDevRestart,
+        autoValidatePrepared: event.autoValidatePrepared,
+      };
+      break;
+    }
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event?.type !== "kernel.bootstrap.restart") continue;
+      if (currentTaskId && event.taskId !== currentTaskId) continue;
+      return {
+        ...(hint ?? {
+          paths: [],
+          validateScripts: [],
+          validateCommand: event.validateCommand ?? null,
+          requiresDevRestart: true,
+        }),
+        restartRecommended: true,
+        restartMessage: event.message,
+        restartCommand: event.restartCommand ?? null,
+      };
+    }
+    return hint;
+  }, [events, currentTaskId]);
+
   const pendingReviewCount = useMemo(() => {
+    if (layout === "triple") {
+      return reviewDisplay.files.length;
+    }
     const pendingApprovals = reviewApprovals.filter(
       (a) => a.status === "pending",
     ).length;
     if (pendingApprovals > 0) return pendingApprovals;
     return reviewDisplay.source === "git" ? reviewDisplay.files.length : 0;
-  }, [reviewApprovals, reviewDisplay]);
+  }, [layout, reviewApprovals, reviewDisplay]);
 
   const reviewHighlightPath = useMemo(() => {
     if (layout !== "triple" || !reviewFileKey) return null;
@@ -2019,10 +2199,16 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
 
   useEffect(() => {
     if (layout !== "triple" || rightRailTab !== "review") return;
-    void loadWorkspace();
-    const id = window.setInterval(() => void loadWorkspace(), 8000);
+    void loadWorkspace(true);
+    const id = window.setInterval(() => void loadWorkspace(true), 8000);
     return () => window.clearInterval(id);
-  }, [layout, rightRailTab]);
+  }, [layout, rightRailTab, workspace?.rootPath]);
+
+  useEffect(() => {
+    if (layout !== "triple" || !workspace?.rootPath) return;
+    setReviewFileKey(null);
+    setFocusedApprovalId(null);
+  }, [layout, workspace?.rootPath]);
 
   const reviewCompact = layout === "triple";
 
@@ -2289,25 +2475,64 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     return approval;
   }, [reviewDisplay, reviewApprovals]);
 
+  async function revertReviewFile(path: string) {
+    if (revertingFilePath) return;
+
+    setRevertingFilePath(path);
+    setError(null);
+    try {
+      const res = await fetch("/api/agent/workspace/revert-file", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "撤销文件更改失败。");
+      await loadWorkspace();
+      setReviewFileKey((current) => {
+        const norm = normalizeRepoPath(path);
+        const revertedKey = `git:${norm}`;
+        if (current === revertedKey) return null;
+        return current;
+      });
+      setApprovalStatus(`已撤销 ${path} 的更改。`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "撤销文件更改失败。");
+    } finally {
+      setRevertingFilePath(null);
+    }
+  }
+
   const reviewPanel = (
     <AgentReviewPanel
+      key={workspace?.rootPath ?? "no-workspace"}
       embedded={layout === "triple"}
+      defaultAcceptMode={layout === "triple"}
       approvals={reviewApprovals}
       currentTaskId={currentTaskId}
       focusedApprovalId={focusedApprovalId}
       gitFiles={workspace?.git?.files}
       selectedFileKey={reviewFileKey}
       onSelectFile={setReviewFileKey}
-      autoApplyEnabled={readAutoApplyFileChanges()}
+      autoApplyEnabled={
+        layout === "triple" || readAutoApplyFileChanges()
+      }
+      onRevertFile={
+        layout === "triple" ? (path) => void revertReviewFile(path) : undefined
+      }
+      revertingFilePath={revertingFilePath}
+      kernelBootstrapHint={kernelBootstrapHint}
       reviewActions={
-        reviewPendingApproval
-          ? {
-              approvalId: reviewPendingApproval.id,
-              busy: loadingApprovals,
-              onAccept: (id) => applyApprovalFromTurn(id),
-              onReject: (id) => void resolveApproval(id, "rejected"),
-            }
-          : null
+        layout === "triple"
+          ? null
+          : reviewPendingApproval
+            ? {
+                approvalId: reviewPendingApproval.id,
+                busy: loadingApprovals,
+                onAccept: (id) => applyApprovalFromTurn(id),
+                onReject: (id) => void resolveApproval(id, "rejected"),
+              }
+            : null
       }
       onRevealInTree={(path) => {
         const rel = workspaceRelativePath(path, workspace?.rootPath);
@@ -2334,6 +2559,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
             currentTaskId={currentTaskId}
             currentThreadId={currentThreadId}
             refreshKey={sidebarRefreshKey}
+            activeWorkspaceId={workspace?.rootPath ?? null}
             onSelectThread={(threadId) => {
               setCurrentThreadId(threadId);
               if (threadId) setContinueThreadMemory(true);
@@ -2364,7 +2590,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
         <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-white dark:bg-zinc-950">
           <div
             ref={chatScrollRef}
-            className="min-h-0 flex-1 overflow-auto px-4 py-5 sm:px-6"
+            className="scrollbar-hide min-h-0 flex-1 overflow-auto px-4 py-5 sm:px-6"
           >
             <div className="mx-auto w-full max-w-3xl">
             {error && (
@@ -2407,12 +2633,6 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
             className="hidden"
             onChange={(e) => void onPickReferenceImages(e)}
           />
-          <AgentCommandApprovalBar
-            approvals={pendingCommandApprovals}
-            busy={loadingApprovals}
-            onApprove={approveCommandFromTurn}
-            onReject={(id) => void resolveApproval(id, "rejected")}
-          />
           <AgentComposer
             request={request}
             onRequestChange={setRequest}
@@ -2446,30 +2666,57 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
             onAgentPrefsChange={() => {
               setApprovalStatus(null);
             }}
+            onCancel={cancelRunningLoop}
           />
         </main>
 
-        <TripleLayoutResizeHandle
-          side="right"
-          onResizeStart={beginTripleColumnResize}
-          onResize={resizeTripleRightColumn}
-          onResizeEnd={endTripleColumnResize}
-        />
+        {tripleRightCollapsed ? (
+          <div className="flex w-9 shrink-0 flex-col items-center border-l border-zinc-200 bg-zinc-50/50 pt-2 dark:border-zinc-800 dark:bg-zinc-900/40">
+            <button
+              type="button"
+              onClick={showTripleRightPanel}
+              title="显示右侧面板"
+              aria-label="显示右侧面板"
+              className="flex h-7 w-7 items-center justify-center rounded-md text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800/80 dark:hover:text-zinc-300"
+            >
+              <TripleRightPanelToggleIcon />
+            </button>
+          </div>
+        ) : (
+          <>
+            <TripleLayoutResizeHandle
+              side="right"
+              onResizeStart={beginTripleColumnResize}
+              onResize={resizeTripleRightColumn}
+              onResizeEnd={endTripleColumnResize}
+            />
 
-        <aside
-          className="flex shrink-0 flex-col border-l border-zinc-200 bg-zinc-50/50 dark:border-zinc-800 dark:bg-zinc-900/40"
-          style={{ width: tripleRightWidth }}
-        >
-          <AgentRightRail
-            workspaceEnabled={Boolean(workspace?.rootPath)}
-            onSelectFilePath={handleTreeSelectPath}
-            treeHighlightPath={reviewHighlightPath}
-            reviewPanel={reviewPanel}
-            pendingReviewCount={pendingReviewCount}
-            tab={rightRailTab}
-            onTabChange={setRightRailTab}
-          />
-        </aside>
+            <aside
+              className="flex shrink-0 flex-col border-l border-zinc-200 bg-zinc-50/50 dark:border-zinc-800 dark:bg-zinc-900/40"
+              style={{ width: tripleRightWidth }}
+            >
+              <AgentRightRail
+                workspaceEnabled={Boolean(workspace?.rootPath)}
+                onSelectFilePath={handleTreeSelectPath}
+                treeHighlightPath={reviewHighlightPath}
+                reviewPanel={reviewPanel}
+                terminalPanel={
+                  <AgentTerminalPanel
+                    entries={terminalLogs}
+                    visible={rightRailTab === "terminal"}
+                    workspaceLabel={workspace?.rootPath ?? null}
+                    interactiveEnabled={Boolean(workspace?.rootPath)}
+                    onClear={() => setTerminalLogs([])}
+                  />
+                }
+                pendingReviewCount={pendingReviewCount}
+                tab={rightRailTab}
+                onTabChange={setRightRailTab}
+                onHideRightPanel={hideTripleRightPanel}
+              />
+            </aside>
+          </>
+        )}
       </div>
     );
   }

@@ -5,9 +5,16 @@ export type ReviewEmptyContext = {
   pendingApprovalCount: number;
   gitDirtyCount: number;
   autoApplyEnabled: boolean;
+  defaultAcceptMode?: boolean;
 };
 
 export function buildReviewEmptyHint(ctx: ReviewEmptyContext): string {
+  if (ctx.defaultAcceptMode) {
+    if (ctx.gitDirtyCount > 0) {
+      return "正在加载工作区 diff…";
+    }
+    return "暂无文件变更。Agent 写入后会在此展示 diff，悬停文件可撤销更改。";
+  }
   if (ctx.pendingApprovalCount > 0) {
     return "有待确认的变更，正在加载 diff…若长时间空白请点「刷新」。";
   }

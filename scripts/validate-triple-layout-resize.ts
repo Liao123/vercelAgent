@@ -18,6 +18,8 @@ async function main(): Promise<void> {
   assert.ok(panel.includes("TripleLayoutResizeHandle"), "panel wires resize");
   assert.ok(panel.includes("tripleLeftWidth"), "left column width state");
   assert.ok(panel.includes("tripleRightWidth"), "right column width state");
+  assert.ok(panel.includes("tripleRightCollapsed"), "right column collapse state");
+  assert.ok(panel.includes("onHideRightPanel"), "right rail hide button wired");
   assert.ok(!panel.includes("w-56 shrink-0"), "fixed left width removed");
 
   console.log("validate-triple-layout-resize: passed");

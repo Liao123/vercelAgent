@@ -14,6 +14,7 @@ import type { AgentEvent } from "@/agent/types";
 import type { AgentLoopRunState } from "@/agent/core/agent-loop-state";
 import type { AppliedFileMutation } from "@/agent/tools/file-mutations";
 import type { PatchResult } from "@/agent/tools/patch-tools";
+import { emitKernelBootstrapValidateFlow } from "@/agent/core/kernel-bootstrap-validate";
 
 export const DIRECT_MUTATION_TOOL_NAMES = new Set([
   "file.replace",
@@ -29,8 +30,12 @@ export function isEditTaskSatisfied(state: AgentLoopRunState): boolean {
   return state.editApplied === true || state.approvalPrepared;
 }
 
+import { isGracefulRecoveryEnabled } from "@/agent/core/loop-graceful-recovery-config";
+
 export function isEditRecoveryEnabled(): boolean {
-  return process.env.AGENT_EDIT_RECOVERY === "1";
+  return (
+    process.env.AGENT_EDIT_RECOVERY === "1" || isGracefulRecoveryEnabled()
+  );
 }
 
 export function isFinalPrepareNudgeEnabled(): boolean {
@@ -90,7 +95,7 @@ export async function emitDirectApplySideEffects(input: {
   fileResult?: AppliedFileMutation;
   patchResult?: PatchResult;
   patchText?: string;
-}): Promise<void> {
+}): Promise<string | null> {
   const changedPaths: string[] = [];
   const fileEvents: Array<{ path: string; diff: string }> = [];
 
@@ -131,7 +136,7 @@ export async function emitDirectApplySideEffects(input: {
     });
   }
 
-  if (changedPaths.length === 0) return;
+  if (changedPaths.length === 0) return null;
 
   const verification = await attachLoopPostExecuteVerification({
     rootPath: input.rootPath,
@@ -163,4 +168,11 @@ export async function emitDirectApplySideEffects(input: {
       }
     }
   }
+
+  return emitKernelBootstrapValidateFlow({
+    taskId: input.taskId,
+    rootPath: input.rootPath,
+    changedPaths,
+    emit: input.emit,
+  });
 }

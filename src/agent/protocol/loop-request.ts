@@ -1,0 +1,202 @@
+import type { ShellLoopResumeInput } from "@/agent/core/shell-loop-resume";
+import type { AgentUiContext } from "@/agent/types";
+import type { EditorSelectionContext } from "@/agent/core/attached-files";
+
+export type AgentLoopRequestBody = {
+  userRequest?: string;
+  referenceImages?: string[];
+  maxIterations?: number;
+  model?: string;
+  threadId?: string;
+  uiContext?: unknown;
+  attachedPaths?: string[];
+  attachedSelections?: Array<{
+    path: string;
+    startLine: number;
+    endLine: number;
+    selectedText?: string;
+  }>;
+  strictPrepare?: boolean;
+  shellResume?: {
+    approvalId: string;
+    result: {
+      command: string;
+      success: boolean;
+      output: string;
+      completedAt?: string;
+    };
+  };
+};
+
+export function parseUiContextFromBody(
+  raw: unknown,
+): AgentUiContext | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const body = raw as {
+    layout?: string;
+    activeRoute?: string;
+    openEditorPaths?: unknown;
+    activeEditorPath?: unknown;
+    browserActiveTab?: unknown;
+  };
+  const layout = body.layout;
+  if (layout !== "default" && layout !== "workspace" && layout !== "triple") {
+    return undefined;
+  }
+  const ctx: AgentUiContext = {
+    layout,
+    activeRoute:
+      typeof body.activeRoute === "string" && body.activeRoute.trim()
+        ? body.activeRoute.trim()
+        : "/",
+  };
+  if (Array.isArray(body.openEditorPaths)) {
+    const openEditorPaths = body.openEditorPaths.filter(
+      (item): item is string => typeof item === "string" && item.trim().length > 0,
+    );
+    if (openEditorPaths.length > 0) {
+      ctx.openEditorPaths = openEditorPaths.map((p) => p.replaceAll("\\", "/"));
+    }
+  }
+  if (
+    typeof body.activeEditorPath === "string" &&
+    body.activeEditorPath.trim()
+  ) {
+    ctx.activeEditorPath = body.activeEditorPath.trim().replaceAll("\\", "/");
+  }
+  if (body.browserActiveTab && typeof body.browserActiveTab === "object") {
+    const tab = body.browserActiveTab as { url?: unknown; title?: unknown };
+    if (typeof tab.url === "string" && tab.url.trim()) {
+      ctx.browserActiveTab = {
+        url: tab.url.trim(),
+        title: typeof tab.title === "string" ? tab.title : null,
+      };
+    }
+  }
+  return ctx;
+}
+
+export function parseShellResumeFromBody(
+  raw: unknown,
+): ShellLoopResumeInput | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const body = raw as {
+    approvalId?: unknown;
+    result?: {
+      command?: unknown;
+      success?: unknown;
+      output?: unknown;
+      completedAt?: unknown;
+    };
+  };
+  if (typeof body.approvalId !== "string" || !body.approvalId.trim()) {
+    return undefined;
+  }
+  const result = body.result;
+  if (!result || typeof result !== "object") return undefined;
+  if (typeof result.command !== "string" || !result.command.trim()) {
+    return undefined;
+  }
+  if (typeof result.success !== "boolean") return undefined;
+  if (typeof result.output !== "string") return undefined;
+  return {
+    approvalId: body.approvalId.trim(),
+    result: {
+      command: result.command.trim(),
+      success: result.success,
+      output: result.output,
+      completedAt:
+        typeof result.completedAt === "string" && result.completedAt.trim()
+          ? result.completedAt.trim()
+          : new Date().toISOString(),
+    },
+  };
+}
+
+export function parseAgentLoopRequestBody(body: AgentLoopRequestBody): {
+  error?: string;
+  userRequest: string;
+  referenceImages?: string[];
+  maxIterations?: number;
+  model?: string;
+  threadId?: string;
+  uiContext?: AgentUiContext;
+  attachedPaths?: string[];
+  attachedSelections?: EditorSelectionContext[];
+  strictPrepare?: boolean;
+  shellResume?: ShellLoopResumeInput;
+} {
+  const userRequest = body.userRequest?.trim() ?? "";
+
+  const referenceImages = Array.isArray(body.referenceImages)
+    ? body.referenceImages.filter(
+        (item): item is string =>
+          typeof item === "string" && item.startsWith("data:image/"),
+      )
+    : undefined;
+
+  if (
+    !userRequest &&
+    !body.shellResume &&
+    (!referenceImages || referenceImages.length === 0)
+  ) {
+    return {
+      error: "userRequest or referenceImages is required.",
+      userRequest: "",
+    };
+  }
+
+  const threadId =
+    typeof body.threadId === "string" && body.threadId.trim()
+      ? body.threadId.trim()
+      : undefined;
+
+  const attachedPaths = Array.isArray(body.attachedPaths)
+    ? body.attachedPaths.filter(
+        (item): item is string =>
+          typeof item === "string" && item.trim().length > 0,
+      )
+    : undefined;
+
+  const attachedSelections = Array.isArray(body.attachedSelections)
+    ? body.attachedSelections
+        .filter(
+          (item): item is {
+            path: string;
+            startLine: number;
+            endLine: number;
+            selectedText?: string;
+          } =>
+            Boolean(
+              item &&
+                typeof item === "object" &&
+                typeof item.path === "string" &&
+                typeof item.startLine === "number" &&
+                typeof item.endLine === "number",
+            ),
+        )
+        .map((item) => ({
+          path: item.path.trim(),
+          startLine: item.startLine,
+          endLine: item.endLine,
+          selectedText:
+            typeof item.selectedText === "string"
+              ? item.selectedText
+              : undefined,
+        }))
+    : undefined;
+
+  return {
+    userRequest: userRequest || "请根据附图完成开发任务。",
+    referenceImages:
+      referenceImages && referenceImages.length > 0 ? referenceImages : undefined,
+    maxIterations: body.maxIterations,
+    model: body.model,
+    threadId,
+    uiContext: parseUiContextFromBody(body.uiContext),
+    attachedPaths,
+    attachedSelections,
+    strictPrepare: body.strictPrepare === true,
+    shellResume: parseShellResumeFromBody(body.shellResume),
+  };
+}

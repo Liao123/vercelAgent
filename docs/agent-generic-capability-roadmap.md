@@ -82,42 +82,19 @@
 | **A161** | `done` | 低风控 shell 自动批准（Composer ⚙ 默认关） | P2 | validate/lint 少点一次 |
 | **A162** | `done` | 失效 workspace 路径回退 | P0 | 修 workspace API 500 |
 | **A163** | `done` | 咨询类任务证据 gate 豁免 | P1 | 产品规划不再须 file.read |
-| **A164** | `todo` | Workspace grounding 去词表化 | P1 | 见下文 |
+| **A164** | `done` | Workspace grounding 去词表化 | P1 | 咨询类不靠领域词表 |
 
-**建议下次**：A164 → 实机 advisory trial → P0 Bash 闭环 / 任务取消。
+**建议下次**：P0 Bash 闭环 / 任务取消 / 实机 advisory trial。
 
 ---
 
-## A164 — Workspace grounding 去词表化（待做）
+## A164 — Workspace grounding 去词表化
 
-**背景（A163）**：`workspace-grounding.ts` 用「商业计划/团购/…」负向词表 + `reasoningRequiresWorkspaceGather` 区分咨询 vs 读盘任务。能修产品规划误拦，但**仍有领域词维护债**，不符合 D049 终局。
+**状态**：`done`（2026-06-22）
 
-**目标**：规则只答「要不要 workspace 取证」；意图分类尽量交给推理 schema。
+**交付**：`requiresFactualWorkspaceGather`；`TaskReasoning.grounding`；删领域负向词表；gather 计划不含 `understanding` 散文。
 
-**方案**：
-
-1. **主判（优先）**  
-   - `evaluateFinalEvidenceGate`：若 `evidenceNeeded.length === 0` 且 `!reasoningRequiresWorkspaceGather(reasoning)` → 一律放行 final（与 userRequest 词表无关）。  
-   - A163 已部分实现；A164 把它提升为**唯一主路径**，词表仅作 tie-break。
-
-2. **推理 schema（可选增强）**  
-   - `TaskReasoning` 增 `grounding: "workspace" | "none"` 或 `intent: "advisory"`。  
-   - `normalizeTaskReasoning` 仅在模型漏标时用极简硬信号兜底（路径、扩展名、`src/`）。
-
-3. **删除/瘦身**  
-   - 逐步移除 `isWorkspaceGroundedUserRequest` 里「商业计划、团购、海鲜…」等领域词。  
-   - 保留：`\.(tsx?|jsx?…)`、`src/`、`package.json`、`网站标题` 等**与仓库强相关**信号。
-
-4. **Playbook**  
-   - `dev-run` / `read-only-audit` 等继续复用 grounding 主函数，不另写句式。
-
-**完成标准**：
-
-- [ ] 主路径不依赖负向词表即可通过 `validate:loop-reasoning` 咨询用例  
-- [ ] 网站标题 / metadata QA 用例仍须 gather（不退化 A145–A148）  
-- [ ] 文档 D054 更新为 done；handoff 收工 3–5 行  
-
-**关键路径**：`workspace-grounding.ts`, `evidence-gate.ts`, `loop-reasoning.ts`, `validate-loop-reasoning.ts`
+**验证**：`npm run validate:loop-reasoning`
 
 ---
 
@@ -217,15 +194,17 @@
 **通用方案**（分阶段）：
 
 1. **Phase A**：批准后同 thread 自动续跑，stdout 作为 user/tool 消息注入（`approval-loop-continuation`，无 checkpoint 时回退路径）
-2. **Phase B**：`shell.run.prepare` 后 Loop 暂停 + checkpoint；批准后 `shellResume` 同上下文续跑（`task.awaiting_approval` → `[SHELL_EXECUTED]` 注入）
-3. 审批边界不变：写命令仍须用户批
+2. **Phase B**：`shell.run.prepare` 后 Loop 暂停 + checkpoint；批准后 `shellResume` 同上下文续跑（`task.awaiting_approval` → tool_result 回灌）
+3. **Phase C（A166）**：`applyShellExecutionToMessages` 替换同 `tool_call_id` 的 tool 消息（对标 Claude Bash）；无 checkpoint 时回退 user 续跑
+4. 审批边界不变：写命令仍须用户批
 
 **完成标准**：
 
 - [x] checkpoint 存取 + `validate:shell-loop-resume`
 - [x] panel 优先 `shellResume` API
 - [x] env `AGENT_LOOP_SHELL_RESUME=0` 可关
-- [ ] 实机 trial：prepare → 批准 → 续跑不丢上下文（`trial:shell-recovery` 可复用）
+- [x] A166 tool_result 回灌 + A167 trial 优先 shellResume
+- [ ] 实机 `npm run trial:shell-recovery`（dev 在线）
 
 **关键路径**：`shell-runner.ts`, `approval-loop-continuation.ts`, `agent-loop-tools.ts`
 

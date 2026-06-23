@@ -15,7 +15,7 @@ async function main(): Promise<void> {
   assert.ok(loop.includes("resolveTaskPlaybook"), "playbook routing");
 
   const runner = await read("src/agent/core/agent-loop-tool-runner.ts");
-  assert.ok(runner.includes("findCircuitBreaker"), "playbook circuit breakers");
+  assert.ok(runner.includes("emitPlaybookProgress"), "runner emits playbook progress");
 
   const state = await read("src/agent/core/agent-loop-state.ts");
   assert.ok(state.includes("toolFailureStreak"), "tool failure streak");

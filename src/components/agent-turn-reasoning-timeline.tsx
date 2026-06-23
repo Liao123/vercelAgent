@@ -2,6 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { formatModelErrorMessage } from "@/lib/model-error-message";
+import {
+  reflectionBlockersLabel,
+  reflectionBlockersToneClass,
+} from "@/lib/reflection-blockers-ui";
 import type { AgentEvent } from "@/agent/types";
 import {
   formatTimelineHeaderLabel,
@@ -157,6 +161,7 @@ function ReasoningStepContent({
   turnCompleted: boolean;
 }) {
   const thinking = isLatestStep && isActiveTurn && !turnCompleted;
+  const taskStillRunning = isActiveTurn && !turnCompleted;
   const hasActions = step.actions.length > 0;
 
   return (
@@ -170,8 +175,11 @@ function ReasoningStepContent({
       <div className="space-y-1 text-[12px] leading-[1.65] text-zinc-500 dark:text-zinc-400">
         <p>{step.reflection.understanding}</p>
         {step.reflection.blockers.length > 0 && (
-          <p className="text-red-600 dark:text-red-400">
-            阻塞：
+          <p className={reflectionBlockersToneClass(taskStillRunning)}>
+            {reflectionBlockersLabel({
+              taskStillRunning,
+              isLatestStep,
+            })}
             {step.reflection.blockers
               .map((item) => formatModelErrorMessage(item))
               .join("；")}

@@ -16,6 +16,10 @@ import type { ApprovalPrepareEvidence } from "@/agent/types";
 import { createApprovalRequest, requireApprovedApproval } from "@/agent/approval";
 import type { ApprovalFileMutationPreview } from "@/agent/types";
 import {
+  assertKernelWriteAllowedMany,
+  mutationOperationPaths,
+} from "@/agent/core/kernel-bootstrap-policy";
+import {
   resolveInsideWorkspace,
   toWorkspaceRelative,
 } from "@/agent/tools/path-safety";
@@ -403,6 +407,7 @@ export async function commitPreparedFileMutation(
   rootPath: string,
   prepared: PreparedFileMutation,
 ): Promise<AppliedFileMutation> {
+  assertKernelWriteAllowedMany(mutationOperationPaths(prepared.operation));
   const operation = prepared.operation;
   if (operation.type === "rename") {
     const fromAbsolute = resolveInsideWorkspace(rootPath, operation.fromPath);
@@ -434,6 +439,7 @@ export async function executeFileMutationDirect(input: {
   taskId: string;
   operation: FileMutationOperation;
 }): Promise<AppliedFileMutation> {
+  assertKernelWriteAllowedMany(mutationOperationPaths(input.operation));
   const prepared = await prepareFileMutation({
     rootPath: input.rootPath,
     taskId: input.taskId,

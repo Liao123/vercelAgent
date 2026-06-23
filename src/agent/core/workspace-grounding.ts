@@ -1,8 +1,11 @@
 /**
- * 判断用户任务是否依赖当前 workspace 事实（边界信号，非句式→工具硬路由）。
+ * 判断任务是否依赖当前 workspace 取证（A164：主靠推理字段，用户句仅硬信号兜底）。
  */
 import type { TaskReasoning } from "@/agent/core/loop-reasoning";
 
+export type TaskGrounding = "workspace" | "none" | "unknown";
+
+/** 推理计划里出现即视为需要 workspace / 浏览器 gather（不含 understanding 散文）。 */
 const WORKSPACE_GATHER_SIGNALS = [
   "file.read",
   "file.locate",
@@ -21,51 +24,93 @@ const WORKSPACE_GATHER_SIGNALS = [
   "package.json",
   "layout.tsx",
   "layout.jsx",
+  "layout metadata",
+  "page title",
+  "package name",
   "agents.md",
   "readme.md",
 ] as const;
 
-export function reasoningRequiresWorkspaceGather(
-  reasoning: TaskReasoning,
-): boolean {
-  const blob = [
+function gatherPlanBlob(reasoning: TaskReasoning): string {
+  return [
     ...reasoning.evidenceNeeded,
     ...reasoning.planSteps,
     reasoning.plannedNext,
-    reasoning.understanding,
   ]
     .join(" ")
     .toLowerCase();
+}
+
+export function reasoningRequiresWorkspaceGather(
+  reasoning: TaskReasoning,
+): boolean {
+  const blob = gatherPlanBlob(reasoning);
   return WORKSPACE_GATHER_SIGNALS.some((signal) => blob.includes(signal));
 }
 
-export function isWorkspaceGroundedUserRequest(userRequest: string): boolean {
+/** 用户句中的硬信号：路径、扩展名、显式工具/仓库词（无领域负向词表）。 */
+export function hasHardWorkspaceSignalsInRequest(
+  userRequest: string,
+): boolean {
   const text = userRequest.trim();
-  if (!text) return true;
-
-  const codeSignals =
+  if (!text) return false;
+  return (
     /\.(tsx?|jsx?|vue|py|go|rs|md|json)\b/i.test(text) ||
     /src\/|components\/|pages?\//i.test(text) ||
     /@\S+\.\w+/.test(text) ||
-    /\b(file\.read|layout\.tsx|package\.json|agent-panel|npm run|npx |git (status|diff|push)|eslint|typescript|组件|路由|改代码|修bug|实现|重构|读文件|工作区里|这个项目里|本仓库|vec-next|网站标题|页面标题)\b/i.test(
+    /\b(file\.read|layout\.tsx|package\.json|npm run|npx |git (status|diff|push)|eslint|typescript)\b/i.test(
       text,
-    );
-  if (codeSignals) return true;
+    ) ||
+    /网站标题|页面标题|工作区里|这个项目里|本仓库/.test(text)
+  );
+}
 
-  const advisorySignals =
-    /产品设计|商业计划|商业方案|运营方案|创业|PRD|需求文档|团购|海鲜|水产|私域|获客|盈利|融资|市场分析|用户画像|落地方案|商业模式|同城配送|微信社群|小程序运营/i.test(
-      text,
-    );
-  if (advisorySignals) return false;
+/**
+ * @deprecated A164 后用 `requiresFactualWorkspaceGather`；保留别名供 playbook 等只问「句子里有没有硬信号」。
+ */
+export function isWorkspaceGroundedUserRequest(
+  userRequest: string,
+): boolean {
+  return hasHardWorkspaceSignalsInRequest(userRequest);
+}
 
-  if (
-    /设计.{0,12}(产品|方案|计划|商业|运营)/.test(text) &&
-    !/界面|页面|组件|ui|代码/i.test(text)
-  ) {
-    return false;
+/** 只读 final gate：本轮是否必须先 workspace gather（主路径 = 推理 plan + grounding 字段）。 */
+export function requiresFactualWorkspaceGather(
+  reasoning: TaskReasoning,
+  userRequest?: string,
+): boolean {
+  if (reasoning.grounding === "none") return false;
+  if (reasoning.grounding === "workspace") return true;
+
+  if (reasoningRequiresWorkspaceGather(reasoning)) return true;
+
+  if (reasoning.evidenceNeeded.length === 0) return false;
+
+  if (userRequest && hasHardWorkspaceSignalsInRequest(userRequest)) {
+    return true;
   }
 
-  if (text.length > 180 && !codeSignals) return false;
+  return false;
+}
 
-  return true;
+export function parseTaskGrounding(value: unknown): TaskGrounding {
+  if (value === "workspace" || value === "none") return value;
+  return "unknown";
+}
+
+export function inferTaskGrounding(
+  reasoning: TaskReasoning,
+  userRequest?: string,
+): TaskGrounding {
+  if (reasoning.grounding && reasoning.grounding !== "unknown") {
+    return reasoning.grounding;
+  }
+  if (requiresFactualWorkspaceGather(reasoning, userRequest)) return "workspace";
+  if (
+    reasoning.evidenceNeeded.length === 0 &&
+    !reasoningRequiresWorkspaceGather(reasoning)
+  ) {
+    return "none";
+  }
+  return "unknown";
 }

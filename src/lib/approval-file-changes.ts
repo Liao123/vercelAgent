@@ -6,6 +6,7 @@ import type {
   ApprovalRequest,
 } from "@/agent/types";
 import { computeLineDiff } from "@/lib/line-diff";
+import { isKernelBootstrapPath } from "@/lib/kernel-file-hint";
 import { snapshotDiffHint, snapshotDiffText } from "@/lib/snapshot-diff-text";
 
 export type FileChangeEntry = {
@@ -14,6 +15,8 @@ export type FileChangeEntry = {
   deletions: number;
   /** 用于右侧 diff 定位 */
   fileKey: string;
+  /** 阶段 C：src/agent 内核自举文件 */
+  isKernel?: boolean;
   patchFile?: ApprovalPatchFilePreview;
   /** 单文件 mutation 的 diff 快照 */
   singleFileDiff?: {
@@ -82,6 +85,7 @@ function entryFromPatchFile(file: ApprovalPatchFilePreview): FileChangeEntry {
     deletions: stats.deletions,
     fileKey: patchFileKey(file),
     patchFile: file,
+    isKernel: isKernelBootstrapPath(patchFilePath(file)),
   };
 }
 
@@ -118,6 +122,7 @@ export function extractFileChangesFromDetails(
           before: preview.oldContent,
           after: preview.newContent,
         },
+        isKernel: isKernelBootstrapPath(path),
       },
     ];
   }
@@ -182,7 +187,7 @@ export function collectTurnFileChanges(
         status: "applied",
         files: sortByChangeSize([
           ...(pending?.files ?? []),
-          { path, additions: 0, deletions: 0, fileKey: path },
+          { path, additions: 0, deletions: 0, fileKey: path, isKernel: isKernelBootstrapPath(path) },
         ]),
         totalAdditions: pending?.totalAdditions ?? 0,
         totalDeletions: pending?.totalDeletions ?? 0,
@@ -302,21 +307,17 @@ export type ReviewDisplay = {
 };
 
 /** 无 Agent 审批时，用 Git 工作区脏文件填充审查列表（只读对比）。 */
-export function collectReviewDisplay(
-  approvals: Parameters<typeof collectReviewFileChanges>[0],
-  currentTaskId?: string | null,
-  focusedApprovalId?: string | null,
+function buildGitReviewDisplay(
   gitFiles?: Array<{ path: string; status: string }>,
 ): ReviewDisplay {
-  const fromApproval = collectReviewFileChanges(
-    approvals,
-    currentTaskId,
-    focusedApprovalId,
-  );
-  if (fromApproval.files.length > 0) return fromApproval;
-
   if (!gitFiles?.length) {
-    return { ...fromApproval, source: "git" };
+    return {
+      approvalId: null,
+      files: [],
+      totalAdditions: 0,
+      totalDeletions: 0,
+      source: "git",
+    };
   }
 
   const files = sortByChangeSize(
@@ -328,6 +329,7 @@ export function collectReviewDisplay(
         additions: isDelete ? 0 : 1,
         deletions: isDelete ? 1 : 0,
         fileKey: `git:${path}`,
+        isKernel: isKernelBootstrapPath(path),
       };
     }),
   );
@@ -337,6 +339,31 @@ export function collectReviewDisplay(
     ...summarizeFileChanges(files),
     source: "git",
   };
+}
+
+export function collectReviewDisplay(
+  approvals: Parameters<typeof collectReviewFileChanges>[0],
+  currentTaskId?: string | null,
+  focusedApprovalId?: string | null,
+  gitFiles?: Array<{ path: string; status: string }>,
+  options?: { preferGit?: boolean; gitOnly?: boolean },
+): ReviewDisplay {
+  if (options?.gitOnly) {
+    return buildGitReviewDisplay(gitFiles);
+  }
+
+  if (options?.preferGit && gitFiles?.length) {
+    return buildGitReviewDisplay(gitFiles);
+  }
+
+  const fromApproval = collectReviewFileChanges(
+    approvals,
+    currentTaskId,
+    focusedApprovalId,
+  );
+  if (fromApproval.files.length > 0) return fromApproval;
+
+  return buildGitReviewDisplay(gitFiles);
 }
 
 export function fileBasename(path: string): string {

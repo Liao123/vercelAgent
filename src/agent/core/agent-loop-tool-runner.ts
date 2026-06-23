@@ -6,6 +6,17 @@ import {
   type AgentLoopToolContext,
 } from "@/agent/core/agent-loop-tools";
 import {
+  callMcpTool,
+  isMcpInternalToolName,
+  parseMcpInternalToolName,
+  resolveMcpToolBinding,
+} from "@/agent/mcp";
+import { resolveFilePathArg, resolveUserSavePath } from "@/lib/user-path";
+import {
+  suggestMcpToolFallback,
+  suggestMcpToolNotFound,
+} from "@/agent/mcp/tool-fallback";
+import {
   buildRuntimeCheckpoint,
   isExplicitReadOnlyRequest,
   recordToolCall,
@@ -20,14 +31,9 @@ import { captureUiPrepareHintFromFileRead } from "@/agent/core/ui-prepare-nudge"
 import type { PlanProgressHint } from "@/agent/core/agent-loop-plan";
 import {
   computePlaybookProgress,
-  findCircuitBreaker,
-  findPlaybookToolRedirect,
   type ResolvedTaskPlaybook,
 } from "@/agent/core/task-playbooks";
-import {
-  evaluateToolEvidenceGate,
-  syncTaskEvidenceComplete,
-} from "@/agent/core/evidence-gate";
+import { syncTaskEvidenceComplete } from "@/agent/core/evidence-gate";
 import { buildToolObservationMessage } from "@/agent/memory/loop-context-compactor";
 import type { AppliedFileMutation } from "@/agent/tools/file-mutations";
 import type { PatchResult } from "@/agent/tools/patch-tools";
@@ -112,6 +118,9 @@ export async function runAgentLoopToolCall(input: {
   const tool = getAgentLoopTool(input.toolName);
 
   if (!tool) {
+    if (isMcpInternalToolName(input.toolName)) {
+      return runMcpLoopToolCall(input);
+    }
     const observation = {
       error: `Tool is not allowed: ${input.toolName}`,
     };
@@ -143,146 +152,6 @@ export async function runAgentLoopToolCall(input: {
     toolCallId: input.toolCallId ?? toolCall.id,
   };
   deps.emit({ type: "tool.started", taskId: deps.taskId, toolCall });
-
-  const circuitRule = findCircuitBreaker(
-    deps.playbook,
-    tool.name,
-    deps.runState.toolFailureStreak,
-  );
-  if (circuitRule) {
-    const observation = {
-      error: circuitRule.message,
-      useInstead: circuitRule.redirectTool,
-    };
-    recordToolCall(deps.runState, tool.name, observation, observation.error);
-    deps.emit({
-      type: "tool.completed",
-      taskId: deps.taskId,
-      toolCall: completeLoopToolCallRecord(toolCall, observation.error),
-      result: observation,
-    });
-    deps.emitPlaybookProgress();
-    const observationMessage = buildToolObservationMessage(
-      tool.name,
-      observation,
-      observationCtx,
-    );
-    deps.runState.reflectionRounds += 1;
-    deps.emitReflection({
-      understanding: circuitRule.understanding,
-      blockers: [observation.error],
-      plannedNext: circuitRule.plannedNext,
-      source: "runtime",
-    });
-    return {
-      observationText:
-        typeof observationMessage.content === "string"
-          ? observationMessage.content
-          : JSON.stringify(observationMessage.content),
-      observationMessage,
-      toolContext: deps.getToolContext(),
-    };
-  }
-
-  const playbookRedirect = findPlaybookToolRedirect(
-    deps.playbook,
-    tool.name,
-    deps.runState.toolsCalled,
-  );
-  if (playbookRedirect) {
-    const observation = {
-      error: playbookRedirect.message,
-      useInstead: playbookRedirect.redirectTool,
-    };
-    recordToolCall(deps.runState, tool.name, observation, observation.error);
-    deps.emit({
-      type: "tool.completed",
-      taskId: deps.taskId,
-      toolCall: completeLoopToolCallRecord(toolCall, observation.error),
-      result: observation,
-    });
-    deps.emitPlaybookProgress();
-    const observationMessage = buildToolObservationMessage(
-      tool.name,
-      observation,
-      observationCtx,
-    );
-    deps.runState.reflectionRounds += 1;
-    deps.emitReflection({
-      understanding: playbookRedirect.understanding,
-      blockers: [observation.error],
-      plannedNext: playbookRedirect.plannedNext,
-      source: "runtime",
-    });
-    return {
-      observationText:
-        typeof observationMessage.content === "string"
-          ? observationMessage.content
-          : JSON.stringify(observationMessage.content),
-      observationMessage,
-      toolContext: deps.getToolContext(),
-    };
-  }
-
-  const evidenceGate = evaluateToolEvidenceGate(tool.name, input.args, deps.runState);
-  if (!evidenceGate.allowed) {
-    const proceedToFinal = evidenceGate.proceedToFinal === true;
-    if (proceedToFinal) {
-      deps.runState.taskEvidenceComplete = true;
-    }
-    const observation = proceedToFinal
-      ? {
-          skipped_by_gate: true,
-          reason: evidenceGate.message,
-          instruction: evidenceGate.plannedNext,
-        }
-      : { error: evidenceGate.message };
-    recordToolCall(
-      deps.runState,
-      tool.name,
-      observation,
-      proceedToFinal ? undefined : evidenceGate.message,
-    );
-    deps.emit({
-      type: "tool.completed",
-      taskId: deps.taskId,
-      toolCall: completeLoopToolCallRecord(
-        toolCall,
-        proceedToFinal ? undefined : evidenceGate.message,
-      ),
-      result: observation,
-    });
-    deps.emitPlaybookProgress();
-    const observationMessage = buildToolObservationMessage(
-      tool.name,
-      observation,
-      observationCtx,
-    );
-    if (!proceedToFinal) {
-      deps.runState.reflectionRounds += 1;
-    }
-    deps.emitReflection({
-      understanding: evidenceGate.understanding,
-      blockers: proceedToFinal ? [] : [evidenceGate.message],
-      plannedNext: proceedToFinal
-        ? `【证据已齐】${evidenceGate.plannedNext}`
-        : evidenceGate.plannedNext,
-      source: "runtime",
-    });
-    if (proceedToFinal) {
-      deps.pushUserNudge?.(
-        `【证据已齐】${evidenceGate.plannedNext} 请直接输出中文 final，不要再调用任何工具。`,
-      );
-    }
-    return {
-      observationText:
-        typeof observationMessage.content === "string"
-          ? observationMessage.content
-          : JSON.stringify(observationMessage.content),
-      observationMessage,
-      toolContext: deps.getToolContext(),
-    };
-  }
 
   try {
     let toolContext = deps.getToolContext();
@@ -360,7 +229,7 @@ export async function runAgentLoopToolCall(input: {
         files?: PatchResult["files"];
       };
       if (directResult.mutation?.applied) {
-        await emitDirectApplySideEffects({
+        const bootstrapHint = await emitDirectApplySideEffects({
           taskId: deps.taskId,
           toolName: tool.name,
           rootPath: deps.rootPath,
@@ -368,8 +237,11 @@ export async function runAgentLoopToolCall(input: {
           runState: deps.runState,
           fileResult: directResult.mutation,
         });
+        if (bootstrapHint) {
+          deps.pushUserNudge?.(bootstrapHint);
+        }
       } else if (tool.name === "patch.apply" && directResult.applied === true) {
-        await emitDirectApplySideEffects({
+        const bootstrapHint = await emitDirectApplySideEffects({
           taskId: deps.taskId,
           toolName: tool.name,
           rootPath: deps.rootPath,
@@ -378,6 +250,9 @@ export async function runAgentLoopToolCall(input: {
           patchResult: directResult as PatchResult,
           patchText: input.patchTextFallback,
         });
+        if (bootstrapHint) {
+          deps.pushUserNudge?.(bootstrapHint);
+        }
       }
     }
 
@@ -483,16 +358,119 @@ export async function runAgentLoopToolCall(input: {
   }
 }
 
-export function shouldInterceptNativeFinal(
-  runState: AgentLoopRunState,
-  iteration: number,
-  maxIterations: number,
-): boolean {
-  return (
-    runState.likelyEditRequest &&
-    !isExplicitReadOnlyRequest(runState.userRequest) &&
-    !isEditTaskSatisfied(runState) &&
-    runState.reflectionRounds < 4 &&
-    iteration < maxIterations
+async function runMcpLoopToolCall(input: {
+  toolName: string;
+  args: Record<string, unknown>;
+  rationale?: string;
+  toolCallId?: string;
+  deps: AgentLoopToolRunnerDeps;
+}): Promise<AgentLoopToolRunResult> {
+  const { deps } = input;
+  const binding =
+    resolveMcpToolBinding(input.toolName) ??
+    (() => {
+      const parsed = parseMcpInternalToolName(input.toolName);
+      return parsed
+        ? { serverId: parsed.serverId, toolName: parsed.toolName }
+        : null;
+    })();
+
+  if (!binding) {
+    const suggested = suggestMcpToolNotFound(input.toolName);
+    const observation = {
+      error: suggested.error,
+      hint: suggested.hint,
+      ...(suggested.useInstead ? { useInstead: suggested.useInstead } : {}),
+    };
+    recordToolCall(deps.runState, input.toolName, observation, observation.error);
+    const observationMessage = buildToolObservationMessage(
+      input.toolName,
+      observation,
+      {
+        workspaceRoot: deps.rootPath,
+        toolName: input.toolName,
+        toolCallId: input.toolCallId,
+      },
+    );
+    return {
+      observationText:
+        typeof observationMessage.content === "string"
+          ? observationMessage.content
+          : JSON.stringify(observationMessage.content),
+      observationMessage,
+      toolContext: deps.getToolContext(),
+    };
+  }
+
+  const toolCall = createLoopToolCallRecord(
+    deps.taskId,
+    input.toolName,
+    input.args,
+    input.rationale,
   );
+  const observationCtx = {
+    workspaceRoot: deps.rootPath,
+    toolName: input.toolName,
+    toolCallId: input.toolCallId ?? toolCall.id,
+  };
+
+  deps.emit({ type: "tool.started", taskId: deps.taskId, toolCall });
+
+  try {
+    const result = await callMcpTool(
+      binding,
+      resolveFilePathArg(input.args, deps.rootPath),
+    );
+    recordToolCall(deps.runState, input.toolName, result);
+    deps.emit({
+      type: "tool.completed",
+      taskId: deps.taskId,
+      toolCall: completeLoopToolCallRecord(toolCall),
+      result,
+    });
+    const observationMessage = buildToolObservationMessage(
+      input.toolName,
+      result,
+      observationCtx,
+    );
+    return {
+      observationText:
+        typeof observationMessage.content === "string"
+          ? observationMessage.content
+          : JSON.stringify(observationMessage.content),
+      observationMessage,
+      toolContext: deps.getToolContext(),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "MCP tool failed";
+    const fallback = suggestMcpToolFallback(binding.serverId, binding.toolName);
+    const observation = {
+      error: message,
+      ...(fallback
+        ? { useInstead: fallback.useInstead, hint: fallback.hint }
+        : {
+            hint: "调用 agent.diagnose 查看 MCP/CDP 状态，并改用内置 browser.* / devtools.*。",
+          }),
+    };
+    recordToolCall(deps.runState, input.toolName, observation, message);
+    deps.emit({
+      type: "tool.completed",
+      taskId: deps.taskId,
+      toolCall: completeLoopToolCallRecord(toolCall, message),
+      result: observation,
+    });
+    const observationMessage = buildToolObservationMessage(
+      input.toolName,
+      observation,
+      observationCtx,
+    );
+    return {
+      observationText:
+        typeof observationMessage.content === "string"
+          ? observationMessage.content
+          : JSON.stringify(observationMessage.content),
+      observationMessage,
+      toolContext: deps.getToolContext(),
+    };
+  }
 }

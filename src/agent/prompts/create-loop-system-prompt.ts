@@ -13,6 +13,8 @@ import {
   renderPrompt,
 } from "@/agent/prompts/load-prompt";
 import { isNativeToolLoopEnabled } from "@/agent/core/loop-protocol";
+import { formatMcpToolsForPrompt } from "@/agent/mcp/prompt-block";
+import type { McpRegistrySnapshot } from "@/agent/mcp/types";
 
 let cachedJsonTemplate: string | null = null;
 let cachedNativeTemplate: string | null = null;
@@ -34,6 +36,8 @@ export function createLoopSystemPrompt(
   workspaceRoot: string,
   uiContext?: AgentUiContext,
   workspaceSnapshot?: WorkspaceSnapshotInput,
+  mcpSnapshot?: McpRegistrySnapshot | null,
+  workspaceStructureBlock?: string,
 ): string {
   const toolList = AGENT_LOOP_TOOLS.map((tool) => ({
     name: tool.name,
@@ -47,15 +51,19 @@ export function createLoopSystemPrompt(
     ? formatWorkspaceSnapshotForPrompt(workspaceSnapshot)
     : "";
 
+  const mcpBlock = formatMcpToolsForPrompt(mcpSnapshot);
+
   return normalizePromptWhitespace(
     renderPrompt(getLoopSystemTemplate(), {
       WORKSPACE_ROOT: workspaceRoot,
       WORKSPACE_SNAPSHOT: snapshotBlock,
+      WORKSPACE_STRUCTURE: workspaceStructureBlock ?? "",
       UI_CONTEXT: describeUiContextForPrompt(uiContext) ?? "",
       TOOLS_JSON: isNativeToolLoopEnabled()
         ? ""
         : JSON.stringify(toolList),
       WORKSPACE_MEMORY_BLOCK: memoryBlock,
+      MCP_TOOLS_BLOCK: mcpBlock,
     }),
   );
 }

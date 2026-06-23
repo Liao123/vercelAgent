@@ -2,23 +2,115 @@
 
 更新时间：2026-06-22
 
-> 下次开工：**本文** → **A164**（`workspace-grounding` 去词表化，见下）→ `npm run validate:agent`。改 Loop 后重启 dev。
+> 下次开工：**本文** → `npm run validate:agent`。改 Loop/MCP/agent-server 后重启 dev。
 
 ---
 
-## 待办（下次优先 · A164）
+## 接续收工（2026-06-22 · 阶段 D Harness · done）
 
-**目标**：A163 咨询类 gate 豁免再通用化——少维护中英文词表，主靠推理结构化字段。
+**自研 Codex-like harness 收工**：协议 v1.0 · trace 检查点 · 失败/trace 代理 · 验收 trial。
 
-| 项 | 说明 |
+| 块 | 内容 |
 | --- | --- |
-| **主路径** | `evidenceNeeded` 为空且 `planSteps`/`plannedNext` 无 gather 工具名 → `evaluateFinalEvidenceGate` 不拦 final |
-| **推理 schema** | 可选新增 `intent: advisory \| generative`（或 `grounding: workspace \| none`），gate 只认字段 |
-| **词表瘦身** | `isWorkspaceGroundedUserRequest` 负向词表逐步删，仅保留路径/扩展名等硬信号作兜底 |
-| **回归** | `validate:loop-reasoning` 增商业/法律/写码三例；可选 `trial:advisory-qa`（路径指标：无 gather 可 final） |
-| **锚点** | `src/agent/core/workspace-grounding.ts`、`evidence-gate.ts`、`loop-reasoning.ts` |
+| **D-1 env** | agent-server 读 `.env.local`；`dev:desktop` 默认 `AGENT_LOOP_REMOTE=0` |
+| **D-2 协议** | `src/agent/protocol/harness.ts` + [`agent-harness-protocol.md`](agent-harness-protocol.md)；`/health` → `harness.version` |
+| **D-3 trace** | `trace.checkpoint`（started / shell_paused / completed / cancelled / failed）；`GET /trace`；Next traces 远程代理 |
+| **验收** | `npm run validate:harness-protocol` · `npm run trial:harness-acceptance`（在线需 dev） |
 
-**现状（A163，已交付）**：词表 + `reasoningRequiresWorkspaceGather` 双层；够用但有领域词维护债。详见 [`agent-generic-capability-roadmap.md`](agent-generic-capability-roadmap.md) **A164**、**D054**。
+```bash
+npm run validate:agent
+npm run trial:harness-acceptance
+npm run build
+```
+
+**暂缓**：JSON-RPC 层、完整 CDP depth（见 `agent-architecture.md`）。
+
+---
+
+**阶段 A（任务内自救）**：MCP 失败 → 内置工具 fallback + `agent.diagnose`；模型 API 限流/502 退避；MCP 连接超时 25s。
+
+**阶段 B（agent-server 长驻）**：`npm run agent-server` / `dev:desktop` 自动起 agent-server；`AGENT_SERVER_URL` 时 Next 代理 MCP + Loop + PTY；`AGENT_LOOP_GRACEFUL_RECOVERY` 默认开（模型失败确定性兜底 + edit.recovery）。
+
+**阶段 C（受控自举）**：`AGENT_KERNEL_BOOTSTRAP` 默认允许写 `src/agent/*`、`src/agent-server/*`（`.env` 等始终禁止）；`agent.bootstrap.check`；改内核后自动 `shell.run.prepare` validate（`AGENT_KERNEL_AUTO_VALIDATE=0` 可关）；审查区 kernel 横幅；validate 通过后绿色重启提示 + **复制重启命令**（`AGENT_KERNEL_RESTART_COMMAND` 可覆盖）。
+
+```bash
+npm run validate:agent   # 已含 resilience / agent-server / kernel-bootstrap / mcp-integration
+npm run trial:kernel-bootstrap          # 在线需 npm run dev
+npm run build
+```
+
+**env（新增常用）**：`AGENT_SERVER_URL`、`AGENT_LOOP_REMOTE`（`dev:desktop` 默认 `0`：MCP 远程、Loop 本地）、`AGENT_LOOP_GRACEFUL_RECOVERY=0`、`AGENT_KERNEL_BOOTSTRAP=0`、`AGENT_KERNEL_AUTO_VALIDATE=0`、`AGENT_KERNEL_RESTART_COMMAND`。
+
+---
+
+## 接续收工（2026-06-22 · 阶段 D · task_failed + trace 代理）
+
+**交付**：Loop 异常时 `trace.checkpoint(task_failed)` + `task.failed`（带 traceId 时写入 trace）；`GET /api/agent/traces` 在 `AGENT_LOOP_REMOTE≠0` 时代理 agent-server `/trace`。
+
+```bash
+npm run validate:harness-protocol
+npm run trial:harness-acceptance   # 在线需 dev（+ 可选 agent-server）
+```
+
+---
+
+## 接续收工（2026-06-22 · A168 交互式 PTY）
+
+**交付**：`node-pty` + `/api/agent/pty`（spawn/write/resize/kill）+ SSE 流；终端 Tab 打开 workspace 后自动连 shell，可输入；Agent 批准命令日志仍追加显示。
+
+```bash
+npm run validate:pty-terminal
+npm run validate:terminal-panel
+npm run build
+```
+
+**env**：`AGENT_PTY_ENABLED=0` 关闭交互 PTY（仅保留只读日志）。
+
+---
+
+## 接续收工（2026-06-22 · A167 终端面板 + shellRecovery trial）
+
+**交付**：三栏右栏新增「终端」Tab（xterm.js 只读日志）；批准 shell 后自动跳转并写入 stdout；`trial:shell-recovery` 优先 `shellResume` 续跑。
+
+```bash
+npm run validate:terminal-panel
+npm run validate:cursor-shell-ui
+npm run trial:shell-recovery   # 需 npm run dev
+```
+
+---
+
+## 接续收工（2026-06-22 · A166 Bash tool_result 真闭环）
+
+**交付**：shell 批准后 `applyShellExecutionToMessages` 替换同 `tool_call_id` 的 tool 消息（对标 Claude/Cursor）；仅 checkpoint 缺失时回退 `[SHELL_EXECUTED]` user 消息；panel 用 `shellAwaitingRef` 精确走 `shellResume`。
+
+```bash
+npm run validate:shell-loop-resume
+npm run validate:agent && npm run build
+```
+
+---
+
+## 接续收工（2026-06-22 · A165 任务取消）
+
+**交付**：Composer 运行中发送钮变「停止」；`AbortController` 中止 `/api/agent/loop` 流；`request.signal` 传入 `runAgentLoop` 每轮检查；emit `task.cancelled`；取消时不自动续跑 shell checkpoint。
+
+```bash
+npm run validate:loop-cancel
+npm run validate:agent && npm run build
+```
+
+---
+
+## 接续收工（2026-06-22 · A164 Grounding 去词表化）
+
+**交付**：`requiresFactualWorkspaceGather` 主判（`grounding` 字段 + gather 计划，无领域负向词表）；`TaskReasoning.grounding`；推理 prompt 增 `workspace|none`；`reasoningRequiresWorkspaceGather` 不再读 `understanding` 散文。
+
+```bash
+npm run validate:loop-reasoning
+```
+
+~~A164 待办（已完成，见上）~~
 
 ---
 
@@ -202,7 +294,7 @@ npm run validate:agent && npm run build
 
 **A141-follow 已交付**：`dev-run` playbook；`suggestAlternateDevPort`；`validate:shell-recovery`；在线 `trial:shell-recovery`（2026-06-18 实机 **PASSED**：失败后续跑 prepare `npm run dev -- --port 5175`）。
 
-**架构债**：Claude/Cursor 的 Bash 在 Loop 内 `tool_result` 闭环；我们是 prepare → 批准 → execute → 再开 Loop。每条新命令仍要用户批准。
+**架构债（更新）**：A166 已用 tool_result 替换回灌；审批边界不变（每条新 prepare 仍须用户批）。
 
 ```bash
 npm run validate:agent
@@ -215,11 +307,8 @@ npm run build
 
 | 项 | 说明 |
 | --- | --- |
-| **A164** | **下次优先**：`workspace-grounding` 去词表化（见文首待办 + roadmap） |
-| ~~trial:shell-recovery~~ | ✅ 2026-06-18 实机 PASSED |
-| ~~A147–A159~~ | ✅ done |
-| **对标 Claude Bash** | Loop 内 tool_result 真闭环（A151 已 Phase B，长期） |
-| P2 PTY 终端 UI | 审批+执行已有，缺 xterm 面板 |
+| **对标 Claude Bash** | ~~Loop 内 tool_result 真闭环~~ → A166 done；每条新命令仍须批准 |
+| P2 交互式 PTY | ~~node-pty~~ → A168 done（`AGENT_PTY_ENABLED=0` 可关） |
 
 ---
 
@@ -244,6 +333,11 @@ npm run build
 | `AGENT_LOOP_PARALLEL_GATHER=0` | 开 | 关闭单轮并行 gather |
 | `AGENT_LOOP_SHELL_RESUME=0` | 开 | 关闭 shell 同 Loop 续跑 |
 | `AGENT_MODEL_RETRY=0` | 开 | 关闭模型 API 退避重试 |
+| `AGENT_SERVER_URL` | — | Next 复用 agent-server 的 MCP/Loop/PTY |
+| `AGENT_LOOP_GRACEFUL_RECOVERY=0` | 开 | 关闭阶段 B 韧性 |
+| `AGENT_KERNEL_BOOTSTRAP=0` | 开 | 禁止写 Agent 内核 |
+| `AGENT_KERNEL_AUTO_VALIDATE=0` | 开 | 关内核改完自动 validate prepare |
+| `AGENT_KERNEL_RESTART_COMMAND` | `npm run dev:desktop` | validate 通过后复制重启命令 |
 
 完整列表见 `.env.example`。
 
@@ -258,6 +352,7 @@ npm run build
 | Shell | `src/agent/tools/shell-runner.ts`, `shell-output.ts` |
 | 命令审批 UI | `src/components/agent-panel.tsx`, `agent-turn-worked-line.tsx` |
 | 批准后续跑 | `src/lib/approval-loop-continuation.ts` |
+| **agent-server / harness** | `src/agent-server/*`, `src/agent/protocol/harness.ts`, [`agent-harness-protocol.md`](agent-harness-protocol.md) |
 | 内核审计 | `docs/agent-kernel-audit.md` |
 | **通用能力路线图** | `docs/agent-generic-capability-roadmap.md` |
 | 进度台账 | `docs/agent-progress.md` |
@@ -268,6 +363,7 @@ npm run build
 
 - 日常自动写盘（低/中风险）；见 `agent-defaults.md`
 - 命令 / Git push 须用户批准
+- 改码任务末轮：**写盘延长期**（`loop-edit-write-tail.ts`）— 未落盘时主轮次后再保留 2 轮工具、拒绝纯文字 final、空工作区注入 scaffold 提示；graceful final 对改码任务改为「未完成写盘」说明
 - 改 Loop 内核后重启 `npm run dev` / `dev:desktop`
 
 ---
@@ -279,6 +375,7 @@ npm run build
 | **agent-handoff.md** | 接续入口（本文） |
 | **agent-progress.md** | 工作项状态 |
 | **agent-memory.md** | 架构决策 Dxxx |
+| **agent-harness-protocol.md** | Harness HTTP/SSE 契约（阶段 D） |
 | **agent-kernel-audit.md** | vs Claude Code / Cursor 内核对照 |
 | **agent-architecture.md** | 长期架构参考 |
 | **agent-defaults.md** | 产品默认策略 |

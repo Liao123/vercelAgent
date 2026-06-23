@@ -9,6 +9,7 @@ import {
   formatPatchToolResultSummary,
 } from "@/lib/patch-summary";
 import { formatCompactionMeta } from "@/lib/compaction-labels";
+import { formatReflectionBlockersLine } from "@/lib/reflection-blockers-ui";
 import { extractApprovalIdFromUnknown } from "@/lib/approval-anchor";
 import {
   formatGitStatusDetail,
@@ -312,6 +313,7 @@ function renderAgentEvent(
   index: number,
   showDebug: boolean,
   compact: boolean,
+  taskStillRunning: boolean,
   onFocusApproval?: (approvalId: string) => void,
   onFocusCompactedMemory?: () => void,
 ) {
@@ -388,7 +390,9 @@ function renderAgentEvent(
             .join("\n")}
           meta={
             event.reflection.blockers.length > 0
-              ? `阻塞: ${event.reflection.blockers.join("; ")}`
+              ? formatReflectionBlockersLine(event.reflection.blockers, {
+                  taskStillRunning,
+                })
               : undefined
           }
           showDebug={showDebug}
@@ -505,6 +509,30 @@ function renderAgentEvent(
           compact={compact}
         />
       );
+    case "trace.checkpoint":
+      return (
+        <EventRow
+          key={`${event.type}-${index}`}
+          tone={
+            event.checkpoint.kind === "task_failed"
+              ? "error"
+              : event.checkpoint.kind === "shell_paused"
+                ? "neutral"
+                : "success"
+          }
+          title={event.checkpoint.label}
+          meta={
+            event.checkpoint.command
+              ? event.checkpoint.command
+              : event.checkpoint.approvalId
+                ? `approval ${event.checkpoint.approvalId}`
+                : undefined
+          }
+          showDebug={showDebug}
+          debugJson={event}
+          compact={compact}
+        />
+      );
     case "task.completed":
       return (
         <EventRow
@@ -524,6 +552,18 @@ function renderAgentEvent(
           tone="error"
           title="任务失败"
           body={event.error}
+          showDebug={showDebug}
+          debugJson={event}
+          compact={compact}
+        />
+      );
+    case "task.cancelled":
+      return (
+        <EventRow
+          key={`${event.type}-${index}`}
+          tone="neutral"
+          title="任务已停止"
+          body={event.task.error ?? "用户已停止运行"}
           showDebug={showDebug}
           debugJson={event}
           compact={compact}

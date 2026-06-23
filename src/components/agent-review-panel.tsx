@@ -17,6 +17,10 @@ import {
   REVIEW_ACTION_APPLY_BUSY,
   REVIEW_ACTION_DISCARD,
 } from "@/lib/review-empty-hint";
+import {
+  kernelBootstrapHintFromFiles,
+  type KernelBootstrapReviewHint,
+} from "@/lib/kernel-file-hint";
 import { ReviewEditorDiff } from "@/components/review-editor-diff";
 
 type ReviewApproval = {
@@ -49,6 +53,11 @@ type AgentReviewPanelProps = {
   } | null;
   embedded?: boolean;
   autoApplyEnabled?: boolean;
+  /** 三栏默认接受：不展示审批底栏，文件行悬停可撤销 */
+  defaultAcceptMode?: boolean;
+  onRevertFile?: (path: string) => void;
+  revertingFilePath?: string | null;
+  kernelBootstrapHint?: KernelBootstrapReviewHint | null;
 };
 
 function fileDirHint(path: string): string | null {
@@ -93,6 +102,11 @@ function FileChip({
       <span className="min-w-0 truncate font-mono text-[11px] text-zinc-800 dark:text-zinc-200">
         {fileBasename(file.path)}
       </span>
+      {file.isKernel ? (
+        <span className="shrink-0 rounded bg-amber-500/20 px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-200">
+          kernel
+        </span>
+      ) : null}
       <span className="shrink-0 font-mono text-[10px] tabular-nums">
         {file.additions > 0 && (
           <span className="text-emerald-600 dark:text-emerald-400">
@@ -113,58 +127,173 @@ function FileListRow({
   selected,
   onSelect,
   onRevealInTree,
+  onRevert,
+  reverting,
 }: {
   file: FileChangeEntry;
   selected: boolean;
   onSelect: () => void;
   onRevealInTree?: () => void;
+  onRevert?: () => void;
+  reverting?: boolean;
 }) {
   const dir = fileDirHint(file.path);
 
   return (
-    <button
-      type="button"
-      onClick={onSelect}
-      onDoubleClick={(e) => {
-        e.preventDefault();
-        onRevealInTree?.();
-      }}
-      title={
-        onRevealInTree
-          ? `${file.path}\n双击在文件树中定位（未写入磁盘的变更可能无法展开）`
-          : file.path
-      }
-      className={`flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition ${
+    <div
+      className={`group relative flex w-full items-center gap-1 rounded-md px-1.5 py-1 transition ${
         selected
           ? "bg-blue-500/10 ring-1 ring-inset ring-blue-500/40 dark:bg-blue-500/15"
           : "hover:bg-zinc-100 dark:hover:bg-zinc-800/60"
       }`}
     >
-      <span
-        className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-          selected ? "bg-blue-500" : "bg-zinc-300 dark:bg-zinc-600"
-        }`}
-      />
-      <span className="min-w-0 flex-1">
-        <span className="block truncate font-mono text-[11px] text-zinc-800 dark:text-zinc-200">
-          {fileBasename(file.path)}
-        </span>
-        {dir && (
-          <span className="block truncate text-[10px] text-zinc-400">{dir}</span>
-        )}
-      </span>
-      <span className="shrink-0 font-mono text-[10px] tabular-nums">
-        {file.additions > 0 && (
-          <span className="text-emerald-600 dark:text-emerald-400">
-            +{file.additions}
+      <button
+        type="button"
+        onClick={onSelect}
+        onDoubleClick={(e) => {
+          e.preventDefault();
+          onRevealInTree?.();
+        }}
+        title={
+          onRevealInTree
+            ? `${file.path}\n双击在文件树中定位`
+            : file.path
+        }
+        className="flex min-w-0 flex-1 items-center gap-2 px-1 py-1 text-left"
+      >
+        <span
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+            selected ? "bg-blue-500" : "bg-zinc-300 dark:bg-zinc-600"
+          }`}
+        />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate font-mono text-[11px] text-zinc-800 dark:text-zinc-200">
+            {fileBasename(file.path)}
+            {file.isKernel ? (
+              <span className="ml-1.5 rounded bg-amber-500/20 px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-200">
+                kernel
+              </span>
+            ) : null}
           </span>
+          {dir && (
+            <span className="block truncate text-[10px] text-zinc-400">{dir}</span>
+          )}
+        </span>
+        <span className="shrink-0 font-mono text-[10px] tabular-nums">
+          {file.additions > 0 && (
+            <span className="text-emerald-600 dark:text-emerald-400">
+              +{file.additions}
+            </span>
+          )}
+          {file.additions > 0 && file.deletions > 0 && " "}
+          {file.deletions > 0 && (
+            <span className="text-red-600 dark:text-red-400">-{file.deletions}</span>
+          )}
+        </span>
+      </button>
+      {onRevert && (
+        <button
+          type="button"
+          disabled={reverting}
+          onClick={(e) => {
+            e.stopPropagation();
+            onRevert();
+          }}
+          className="mr-0.5 shrink-0 rounded border border-zinc-200 bg-white px-2 py-0.5 text-[10px] font-medium text-zinc-600 opacity-0 shadow-sm transition hover:bg-zinc-50 group-hover:opacity-100 disabled:opacity-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+        >
+          {reverting ? "撤销中…" : "撤销更改"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function KernelBootstrapBanner({
+  hint,
+}: {
+  hint: KernelBootstrapReviewHint;
+}) {
+  const [copyHint, setCopyHint] = useState<string | null>(null);
+  const restartCommand =
+    hint.restartCommand?.trim() || "npm run dev:desktop";
+
+  async function copyRestartCommand() {
+    try {
+      await navigator.clipboard.writeText(restartCommand);
+      setCopyHint("已复制");
+      window.setTimeout(() => setCopyHint(null), 2000);
+    } catch {
+      setCopyHint("复制失败");
+      window.setTimeout(() => setCopyHint(null), 2000);
+    }
+  }
+
+  return (
+    <div
+      className={
+        hint.restartRecommended
+          ? "shrink-0 border-b border-emerald-500/35 bg-emerald-50 px-3 py-2.5 dark:border-emerald-600/30 dark:bg-emerald-950/40"
+          : "shrink-0 border-b border-amber-500/35 bg-amber-50 px-3 py-2.5 dark:border-amber-600/30 dark:bg-amber-950/50"
+      }
+    >
+      <p
+        className={
+          hint.restartRecommended
+            ? "text-[11px] font-semibold text-emerald-950 dark:text-emerald-100"
+            : "text-[11px] font-semibold text-amber-950 dark:text-amber-100"
+        }
+      >
+        {hint.restartRecommended ? "内核 validate 已通过" : "内核自举变更"}
+      </p>
+      <p
+        className={
+          hint.restartRecommended
+            ? "mt-0.5 text-[10px] leading-relaxed text-emerald-900/90 dark:text-emerald-100/85"
+            : "mt-0.5 text-[10px] leading-relaxed text-amber-900/90 dark:text-amber-100/85"
+        }
+      >
+        {hint.restartRecommended ? (
+          <>
+            {hint.restartMessage ??
+              "请在外部终端重启 dev，使 Loop / MCP / agent-server 改动生效。"}
+            {" · "}
+            <span className="font-mono">{restartCommand}</span>
+          </>
+        ) : (
+          <>
+            {hint.paths.length} 个 Agent 内核文件已修改（src/agent 或
+            agent-server）。
+            {hint.validateCommand ? (
+              <>
+                {" "}
+                建议验证：
+                <span className="font-mono">{hint.validateCommand}</span>
+              </>
+            ) : null}
+            {hint.autoValidatePrepared
+              ? " · 已自动准备 validate 命令审批"
+              : null}
+            {hint.requiresDevRestart
+              ? " · 改动 Loop/MCP 后请重启 npm run dev 或 dev:desktop"
+              : null}
+          </>
         )}
-        {file.additions > 0 && file.deletions > 0 && " "}
-        {file.deletions > 0 && (
-          <span className="text-red-600 dark:text-red-400">-{file.deletions}</span>
-        )}
-      </span>
-    </button>
+      </p>
+      {hint.restartRecommended ? (
+        <div className="mt-1.5 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void copyRestartCommand()}
+            className="rounded border border-emerald-600/40 bg-white px-2 py-0.5 text-[10px] font-medium text-emerald-800 shadow-sm transition hover:bg-emerald-50 dark:border-emerald-500/40 dark:bg-emerald-950 dark:text-emerald-200 dark:hover:bg-emerald-900/60"
+          >
+            {copyHint ?? "复制重启命令"}
+          </button>
+          <span className="text-[10px] text-emerald-800/80 dark:text-emerald-200/80">
+            在运行 dev 的终端 Ctrl+C 后粘贴执行
+          </span>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -173,11 +302,13 @@ function ReviewPanelHeader({
   pendingApprovalCount,
   hasActions,
   fileNav,
+  defaultAcceptMode,
 }: {
   review: ReviewDisplay;
   pendingApprovalCount: number;
   hasActions: boolean;
   fileNav?: ReactNode;
+  defaultAcceptMode?: boolean;
 }) {
   return (
     <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-200/90 bg-gradient-to-b from-zinc-50 to-zinc-50/40 px-3 py-2.5 dark:border-zinc-800 dark:from-zinc-900/80 dark:to-zinc-950/40">
@@ -186,19 +317,25 @@ function ReviewPanelHeader({
           <h3 className="text-[12px] font-semibold tracking-tight text-zinc-800 dark:text-zinc-100">
             代码审查
           </h3>
-          {pendingApprovalCount > 0 && (
+          {!defaultAcceptMode && pendingApprovalCount > 0 && (
             <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-900 dark:text-amber-200">
               {pendingApprovalCount} 待确认
             </span>
           )}
-          {hasActions && (
+          {!defaultAcceptMode && hasActions && (
             <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
               可应用更改
             </span>
           )}
         </div>
         <p className="mt-0.5 truncate text-[10px] text-zinc-500">
-          {review.source === "git" ? "Git 工作区（只读）" : "Agent 变更"}
+          {defaultAcceptMode
+            ? review.source === "git"
+              ? "工作区变更（已自动应用）"
+              : "Agent 变更（已自动应用）"
+            : review.source === "git"
+              ? "Git 工作区（只读）"
+              : "Agent 变更"}
           {review.files.length > 0 && ` · ${review.files.length} 个文件`}
           {(review.totalAdditions > 0 || review.totalDeletions > 0) && (
             <span className="ml-1 font-mono">
@@ -464,6 +601,10 @@ export function AgentReviewPanel({
   reviewActions = null,
   embedded = false,
   autoApplyEnabled = false,
+  defaultAcceptMode = false,
+  onRevertFile,
+  revertingFilePath = null,
+  kernelBootstrapHint = null,
 }: AgentReviewPanelProps) {
   const review = useMemo(
     () =>
@@ -472,9 +613,15 @@ export function AgentReviewPanel({
         currentTaskId,
         focusedApprovalId,
         gitFiles,
+        defaultAcceptMode ? { gitOnly: true } : undefined,
       ),
-    [approvals, currentTaskId, focusedApprovalId, gitFiles],
+    [approvals, currentTaskId, focusedApprovalId, gitFiles, defaultAcceptMode],
   );
+
+  const kernelBanner = useMemo((): KernelBootstrapReviewHint | null => {
+    if (kernelBootstrapHint) return kernelBootstrapHint;
+    return kernelBootstrapHintFromFiles(review.files);
+  }, [kernelBootstrapHint, review.files]);
 
   const pendingApprovalCount = useMemo(
     () => approvals.filter((a) => a.status === "pending").length,
@@ -482,6 +629,7 @@ export function AgentReviewPanel({
   );
 
   const hasReviewActions =
+    !defaultAcceptMode &&
     review.source === "approval" &&
     reviewActions != null &&
     reviewActions.approvalId === review.approvalId;
@@ -548,8 +696,11 @@ export function AgentReviewPanel({
           pendingApprovalCount={pendingApprovalCount}
           hasActions={hasReviewActions}
           fileNav={fileNav}
+          defaultAcceptMode={defaultAcceptMode}
         />
       )}
+
+      {kernelBanner ? <KernelBootstrapBanner hint={kernelBanner} /> : null}
 
       {review.files.length === 0 ? (
         <p className="flex flex-1 items-center justify-center px-4 py-10 text-center text-[11px] leading-relaxed text-zinc-500">
@@ -557,6 +708,7 @@ export function AgentReviewPanel({
             pendingApprovalCount,
             gitDirtyCount: gitFiles?.length ?? 0,
             autoApplyEnabled,
+            defaultAcceptMode,
           })}
         </p>
       ) : (
@@ -584,6 +736,12 @@ export function AgentReviewPanel({
                             ? () => onRevealInTree(file.path)
                             : undefined
                         }
+                        onRevert={
+                          defaultAcceptMode && onRevertFile
+                            ? () => onRevertFile(file.path)
+                            : undefined
+                        }
+                        reverting={revertingFilePath === file.path}
                       />
                     </li>
                   );

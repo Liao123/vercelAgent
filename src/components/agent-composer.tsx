@@ -59,6 +59,8 @@ type AgentComposerProps = {
   maxAttachedFiles: number;
   approvalStatus: string | null;
   approvalStatusTone?: "success" | "error" | "neutral";
+  /** A165：运行中点击停止 */
+  onCancel?: () => void;
   workspaceAtEnabled?: boolean;
   recentAttachedPaths?: string[];
   onPickAttachedPath?: (path: string) => void;
@@ -70,6 +72,14 @@ function SendIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
       <path d="M8.99992 16V6.41407L5.70696 9.70704C5.31643 10.0976 4.68342 10.0976 4.29289 9.70704C3.90237 9.31652 3.90237 8.6835 4.29289 8.29298L9.29289 3.29298C9.68342 2.90245 10.3164 2.90245 10.707 3.29298L15.707 8.29298C16.0975 8.6835 16.0975 9.31652 15.707 9.70704C15.3164 10.0976 14.6834 10.0976 14.293 9.70704L10.9999 6.41407V16C10.9999 16.5523 10.5522 17 9.99992 17C9.44764 17 8.99992 16.5523 8.99992 16Z" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden>
+      <rect x="5" y="5" width="10" height="10" rx="1.5" />
     </svg>
   );
 }
@@ -95,6 +105,7 @@ export function AgentComposer({
   maxAttachedFiles,
   approvalStatus,
   approvalStatusTone = "neutral",
+  onCancel,
   workspaceAtEnabled = false,
   recentAttachedPaths = [],
   onPickAttachedPath,
@@ -630,13 +641,25 @@ export function AgentComposer({
                 />
               </div>
               <button
-                type="submit"
-                disabled={!canRun}
+                type={running && onCancel ? "button" : "submit"}
+                disabled={running ? !onCancel : !canRun}
+                onClick={
+                  running && onCancel
+                    ? (event) => {
+                        event.preventDefault();
+                        onCancel();
+                      }
+                    : undefined
+                }
                 className="flex h-8 w-8 items-center justify-center rounded-full bg-zinc-900 text-white transition hover:bg-zinc-800 disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-zinc-200"
-                title={running ? "运行中" : "发送（Enter）"}
+                title={running ? "停止运行" : "发送（Enter）"}
               >
                 {running ? (
-                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white dark:border-zinc-400/30 dark:border-t-zinc-900" />
+                  onCancel ? (
+                    <StopIcon />
+                  ) : (
+                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white dark:border-zinc-400/30 dark:border-t-zinc-900" />
+                  )
                 ) : (
                   <SendIcon />
                 )}

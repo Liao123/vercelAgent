@@ -187,10 +187,10 @@ const panel = fs.readFileSync(
   path.join(process.cwd(), "src/components/agent-panel.tsx"),
   "utf8",
 );
-assert.ok(panel.includes("AgentCommandApprovalBar"), "triple layout wires command bar");
+assert.ok(panel.includes("onApproveCommand"), "panel wires chat command approval");
 assert.ok(
-  panel.includes("pendingCommandApprovals"),
-  "panel derives pending shell approvals for bar",
+  panel.includes("pendingCommandApprovalIds"),
+  "panel passes pending command ids to chat timeline",
 );
 assert.ok(
   fs.existsSync(path.join(process.cwd(), "src/components/agent-command-approval-bar.tsx")),

@@ -98,12 +98,20 @@ export function isLikelyCodeEditRequest(input: string): boolean {
     "新增",
     "添加",
     "重构",
+    "写到",
+    "写入",
+    "复刻",
+    "实现",
+    "创建",
+    "生成",
     "rename",
     "replace",
     "remove",
     "delete",
     "change",
     "update",
+    "write to",
+    "implement",
   ];
   return editKeywords.some((keyword) => stripped.includes(keyword));
 }
@@ -203,6 +211,7 @@ export function recordToolCall(
   ) {
     state.toolFailureStreak = undefined;
     state.lastPrepareError = undefined;
+    state.lastToolError = undefined;
     if (
       toolName === "file.replace" ||
       toolName === "file.mutation" ||
@@ -213,6 +222,7 @@ export function recordToolCall(
     }
   } else {
     state.toolFailureStreak = undefined;
+    state.lastToolError = undefined;
   }
 }
 

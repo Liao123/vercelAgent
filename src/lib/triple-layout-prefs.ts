@@ -13,6 +13,7 @@ export const TRIPLE_RIGHT_DEFAULT = 384;
 export type TripleLayoutPrefs = {
   leftWidth: number;
   rightWidth: number;
+  rightCollapsed?: boolean;
 };
 
 function clamp(n: number, min: number, max: number): number {
@@ -41,6 +42,7 @@ export function readTripleLayoutPrefs(): TripleLayoutPrefs {
         TRIPLE_RIGHT_MIN,
         TRIPLE_RIGHT_MAX,
       ),
+      rightCollapsed: parsed.rightCollapsed === true,
     };
   } catch {
     return defaultTripleLayoutPrefs();
@@ -51,6 +53,7 @@ export function defaultTripleLayoutPrefs(): TripleLayoutPrefs {
   return {
     leftWidth: TRIPLE_LEFT_DEFAULT,
     rightWidth: TRIPLE_RIGHT_DEFAULT,
+    rightCollapsed: false,
   };
 }
 
@@ -70,6 +73,7 @@ export function writeTripleLayoutPrefs(prefs: TripleLayoutPrefs): void {
           TRIPLE_RIGHT_MIN,
           TRIPLE_RIGHT_MAX,
         ),
+        rightCollapsed: prefs.rightCollapsed === true,
       }),
     );
   } catch {

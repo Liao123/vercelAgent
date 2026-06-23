@@ -7,6 +7,7 @@ import {
   isCapabilityExtensionRequest,
   isDesignReplicateRequest,
   isDevRunRequest,
+  isScreenshotSaveRequest,
   collectPlaybookAcceleratorHints,
   resolveTaskPlaybook,
 } from "../src/agent/core/task-playbooks";
@@ -25,8 +26,8 @@ async function main(): Promise<void> {
   assert.ok(loop.includes("playbook.matched"), "loop emits playbook.matched");
   assert.ok(loop.includes("playbook.progress"), "loop emits playbook.progress");
   assert.ok(loop.includes("resolveTaskPlaybook"), "loop uses resolveTaskPlaybook");
-  assert.ok(runner.includes("findCircuitBreaker"), "runner uses circuit breakers");
   assert.ok(runner.includes("emitPlaybookProgress"), "runner emits progress");
+  assert.ok(!runner.includes("findCircuitBreaker"), "runner no longer hard-blocks via circuit breakers");
   assert.ok(feed.includes("extractPlaybookFromEvents"), "feed extracts playbook");
   assert.ok(feed.includes("filterNarrativeEvents"), "feed filters duplicate started");
 
@@ -63,6 +64,13 @@ async function main(): Promise<void> {
   assert.ok(isDevRunRequest("跑一下 dev 能跑吗"), "dev run detect");
   const devPb = resolveTaskPlaybook("跑一下 dev能跑吗");
   assert.equal(devPb.id, "dev-run");
+
+  assert.ok(
+    isScreenshotSaveRequest("把当前页面截图保存到桌面 desktop:test.jpg"),
+    "screenshot save detect",
+  );
+  const shotPb = resolveTaskPlaybook("截图到桌面保存为 test.jpg");
+  assert.equal(shotPb.id, "screenshot-save");
 
   const uiPb = resolveTaskPlaybook(GOLDEN_UI_QUERY);
   assert.equal(uiPb.id, "ui-visible-edit");

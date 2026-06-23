@@ -19,9 +19,16 @@ export function modelCallMaxRetries(): number {
 }
 
 export function isRetriableModelError(error: unknown): boolean {
-  const message = formatModelErrorMessage(error).toLowerCase();
+  const raw =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : String(error);
+  const message = `${raw} ${formatModelErrorMessage(error)}`.toLowerCase();
   return (
     /524|502|503|504|429/.test(message) ||
+    /rate_limit|concurrency limit|too many requests/.test(message) ||
     /timeout|超时|gateway|temporarily unavailable|rate limit|fetch failed|econnreset|enotfound/.test(
       message,
     )
@@ -33,7 +40,7 @@ export async function withModelCallRetry<T>(
   options?: { maxRetries?: number; delayMs?: number },
 ): Promise<T> {
   const maxRetries = options?.maxRetries ?? modelCallMaxRetries();
-  const delayMs = options?.delayMs ?? 1_200;
+  const delayMs = options?.delayMs ?? 2_000;
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {

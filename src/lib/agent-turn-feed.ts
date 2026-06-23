@@ -22,7 +22,7 @@ export type AgentTurnFeed = {
   referenceImages?: string[];
   createdAt: string;
   completedAt?: string;
-  status: "running" | "completed" | "failed";
+  status: "running" | "completed" | "failed" | "cancelled";
   summary?: string;
   error?: string;
   streamingPreview?: string;
@@ -84,6 +84,7 @@ const HIGHLIGHT_TYPES = new Set<AgentEvent["type"]>([
   "verification.completed",
   "task.completed",
   "task.failed",
+  "task.cancelled",
 ]);
 
 function chipFromApproval(approval: ApprovalRequest): AgentChangeChip[] {
@@ -215,6 +216,15 @@ function resolveTurnSummary(events: AgentEvent[]): {
     };
   }
 
+  const cancelled = events.find((e) => e.type === "task.cancelled");
+  if (cancelled && cancelled.type === "task.cancelled") {
+    return {
+      status: "cancelled",
+      error: cancelled.task.error ?? "用户已停止运行",
+      completedAt: cancelled.task.completedAt ?? cancelled.task.updatedAt,
+    };
+  }
+
   const completed = events.find((e) => e.type === "task.completed");
   if (completed) {
     return {
@@ -299,7 +309,11 @@ function splitTurnEvents(events: AgentEvent[]): {
 
   for (const event of events) {
     if (HIGHLIGHT_TYPES.has(event.type)) {
-      if (event.type === "task.completed" || event.type === "task.failed") {
+      if (
+        event.type === "task.completed" ||
+        event.type === "task.failed" ||
+        event.type === "task.cancelled"
+      ) {
         continue;
       }
       highlights.push(event);

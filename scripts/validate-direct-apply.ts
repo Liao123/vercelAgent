@@ -19,7 +19,20 @@ import { getAgentLoopTool } from "../src/agent/core/agent-loop-tools";
 async function main(): Promise<void> {
   assert(isDirectMutationToolName("file.replace"));
   assert(isDirectMutationToolName("patch.apply"));
-  assert.equal(isEditRecoveryEnabled(), process.env.AGENT_EDIT_RECOVERY === "1");
+  const prevGraceful = process.env.AGENT_LOOP_GRACEFUL_RECOVERY;
+  const prevEditRecovery = process.env.AGENT_EDIT_RECOVERY;
+  process.env.AGENT_LOOP_GRACEFUL_RECOVERY = "0";
+  process.env.AGENT_EDIT_RECOVERY = "0";
+  assert.equal(isEditRecoveryEnabled(), false);
+  delete process.env.AGENT_EDIT_RECOVERY;
+  delete process.env.AGENT_LOOP_GRACEFUL_RECOVERY;
+  assert.equal(isEditRecoveryEnabled(), true, "graceful recovery default on");
+  process.env.AGENT_LOOP_GRACEFUL_RECOVERY = "0";
+  assert.equal(isEditRecoveryEnabled(), false);
+  if (prevGraceful === undefined) delete process.env.AGENT_LOOP_GRACEFUL_RECOVERY;
+  else process.env.AGENT_LOOP_GRACEFUL_RECOVERY = prevGraceful;
+  if (prevEditRecovery === undefined) delete process.env.AGENT_EDIT_RECOVERY;
+  else process.env.AGENT_EDIT_RECOVERY = prevEditRecovery;
 
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "vec-direct-"));
   const relPath = "src/direct-apply-test.txt";

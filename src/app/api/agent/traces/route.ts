@@ -5,6 +5,10 @@
  */
 import { resolveThreadIdFromTrace } from "@/agent/memory/agent-thread-index";
 import {
+  isRemoteTraceEnabled,
+  proxyTraceGet,
+} from "@/agent-server/remote-trace";
+import {
   getTrace,
   getTraceByTaskId,
   listTraces,
@@ -13,6 +17,10 @@ import {
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
+  if (isRemoteTraceEnabled()) {
+    return proxyTraceGet(request);
+  }
+
   const url = new URL(request.url);
   const traceId = url.searchParams.get("id");
   const taskId = url.searchParams.get("taskId");

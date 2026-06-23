@@ -341,10 +341,36 @@ export type AgentReflection = {
   source: "model" | "runtime";
 };
 
+export type TraceCheckpointKind =
+  | "task_started"
+  | "shell_paused"
+  | "task_completed"
+  | "task_failed"
+  | "task_cancelled";
+
+export type TraceCheckpointPayload = {
+  kind: TraceCheckpointKind;
+  label: string;
+  resumable?: boolean;
+  threadId?: string;
+  approvalId?: string;
+  iteration?: number;
+  eventCount?: number;
+  command?: string;
+  reason?: string;
+};
+
 export type AgentEvent =
   | { type: "thread.created"; threadId: string; thread: Thread }
   | { type: "task.created"; taskId: string; task: Task }
   | { type: "trace.linked"; taskId: string; traceId: string }
+  | {
+      type: "trace.checkpoint";
+      taskId: string;
+      traceId: string;
+      at: string;
+      checkpoint: TraceCheckpointPayload;
+    }
   | { type: "turn.created"; turnId: string; turn: Turn }
   | { type: "plan.updated"; taskId: string; plan: AgentPlan }
   | {
@@ -396,6 +422,22 @@ export type AgentEvent =
     }
   | { type: "file.changed"; taskId: string; filePath: string; diff: string }
   | {
+      type: "kernel.bootstrap.validate";
+      taskId: string;
+      paths: string[];
+      validateScripts: string[];
+      validateCommand: string | null;
+      requiresDevRestart: boolean;
+      autoValidatePrepared?: boolean;
+    }
+  | {
+      type: "kernel.bootstrap.restart";
+      taskId: string;
+      message: string;
+      validateCommand?: string | null;
+      restartCommand?: string | null;
+    }
+  | {
       type: "verification.completed";
       taskId: string;
       result: VerificationResult;
@@ -430,7 +472,13 @@ export type AgentEvent =
       approvalId: string;
       task: Task;
     }
-  | { type: "task.failed"; taskId: string; task?: Task; error: string };
+  | { type: "task.failed"; taskId: string; task?: Task; error: string }
+  | {
+      type: "task.cancelled";
+      taskId: string;
+      task: Task;
+      reason?: "user_abort" | string;
+    };
 
 /** Agent 产品 UI 运行时上下文（由前端传入 Loop，非用户 workspace 代码）。 */
 export type AgentUiLayout = "default" | "workspace" | "triple";

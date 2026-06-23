@@ -6,8 +6,9 @@ import { isDirectMutationToolName } from "@/agent/core/loop-direct-apply";
 import type { AgentLoopRunState } from "@/agent/core/agent-loop-state";
 import type { TaskReasoning } from "@/agent/core/loop-reasoning";
 import {
-  isWorkspaceGroundedUserRequest,
+  hasHardWorkspaceSignalsInRequest,
   reasoningRequiresWorkspaceGather,
+  requiresFactualWorkspaceGather,
 } from "@/agent/core/workspace-grounding";
 import {
   formatMetadataCatalogHints,
@@ -93,8 +94,7 @@ function isFactualReadOnlyReasoning(
     return false;
   }
   if (reasoning.risk !== "read_only") return false;
-  if (userRequest && !isWorkspaceGroundedUserRequest(userRequest)) return false;
-  if (!reasoningRequiresWorkspaceGather(reasoning)) return false;
+  if (!requiresFactualWorkspaceGather(reasoning, userRequest)) return false;
   return true;
 }
 

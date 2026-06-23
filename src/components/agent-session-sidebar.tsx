@@ -96,7 +96,11 @@ type AgentSessionSidebarProps = {
   /** 项目行悬停 ＋：在该工作区下开新会话 */
   onNewSessionInProject?: (project: AgentProjectSidebarItem) => void;
   /** 点击项目名称：切换当前工作区 */
-  onActivateProject?: (project: AgentProjectSidebarItem) => void;
+  onActivateProject?: (
+    project: AgentProjectSidebarItem,
+  ) => void | Promise<void | boolean>;
+  /** 父组件当前工作区（切换后立即高亮，不必等 API 刷新） */
+  activeWorkspaceId?: string | null;
   onThreadDeleted?: (threadId: string) => void;
   onSessionsChanged?: () => void;
 };
@@ -111,6 +115,7 @@ export function AgentSessionSidebar({
   onActivateProject,
   onThreadDeleted,
   onSessionsChanged,
+  activeWorkspaceId = null,
 }: AgentSessionSidebarProps) {
   const bridge = AgentWorkspaceBridge.useAgentWorkspaceBridge();
   const [projects, setProjects] = useState<AgentProjectSidebarItem[]>([]);
@@ -270,11 +275,19 @@ export function AgentSessionSidebar({
     });
   }
 
-  function handleSelectSession(
+  const resolvedWorkspaceId = activeWorkspaceId ?? currentWorkspaceId;
+
+  async function handleSelectSession(
     project: AgentProjectSidebarItem,
     thread: AgentThreadListItem,
   ) {
     setActionError(null);
+    try {
+      await onActivateProject?.(project);
+    } catch {
+      setActionError("切换工作区失败。");
+      return;
+    }
     onSelectThread(thread.threadId);
     const threadTraces = (tracesByThread.get(thread.threadId) ?? []).filter(
       (item) =>
@@ -283,7 +296,7 @@ export function AgentSessionSidebar({
     );
     const latest = threadTraces[0];
     if (latest) {
-      void restoreTrace(latest.id);
+      await restoreTrace(latest.id);
     }
   }
 
@@ -407,8 +420,8 @@ export function AgentSessionSidebar({
         {projects.map((project) => {
           const isExpanded = expandedProjects.has(project.workspaceId);
           const isCurrentWorkspace =
-            currentWorkspaceId != null &&
-            workspaceIdsEqual(currentWorkspaceId, project.workspaceId);
+            resolvedWorkspaceId != null &&
+            workspaceIdsEqual(resolvedWorkspaceId, project.workspaceId);
           const hiddenCount = Math.max(
             0,
             project.threadCount - project.threads.length,
