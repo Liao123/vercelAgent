@@ -1,5 +1,5 @@
 /**
- * A083：UI prepare nudge + recovery 跳过逻辑（无需 LLM）。
+ * A083：UI prepare nudge（无需 LLM）。
  */
 import fs from "node:fs/promises";
 import {
@@ -77,17 +77,17 @@ async function main(): Promise<void> {
   );
   assert(
     !shouldSkipEditRecoveryForUiPrepare(state, GOLDEN_UI_CONTEXT),
-    "recovery allowed before first prepare attempt",
+    "edit recovery removed — always false",
   );
   state.toolsCalled.push("file.replace.prepare");
   assert(
-    shouldSkipEditRecoveryForUiPrepare(state, GOLDEN_UI_CONTEXT),
-    "recovery skipped after prepare attempted with evidence ready",
+    !shouldSkipEditRecoveryForUiPrepare(state, GOLDEN_UI_CONTEXT),
+    "edit recovery still disabled after prepare",
   );
   state.toolsCalled.pop();
 
   const nudge = buildUiPrepareNudgeBlock(state);
-  assert(nudge?.includes("file.replace.prepare"), "nudge should mention prepare");
+  assert(nudge?.includes("file.replace search"), "nudge should mention prepare search");
   assert(nudge?.includes("Candidate 1"), "nudge should list candidates");
   assert(
     sidebarContent.includes(SIDEBAR_PLUS_LINE),

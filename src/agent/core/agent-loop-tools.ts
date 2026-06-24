@@ -1415,14 +1415,14 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
     description:
       "Extract structured design spec from the current browser page and persist to .agent-state/design-specs. Use for demo-to-code / page replicate workflows (A024). Returns summary + persist path.",
     args: {},
-    async execute() {
+    async execute(_args, context) {
       if (!(await isCdpBridgeAvailable())) {
         return {
           result: { ok: false, hint: "CDP bridge offline." },
         };
       }
       const spec = await extractDesignSpecFromPage();
-      const meta = await saveDesignSpec(spec);
+      const meta = await saveDesignSpec(spec, context.workspace.rootPath);
       const summary = summarizeDesignSpec(spec);
       return {
         result: {
@@ -1430,7 +1430,7 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
           summary,
           nodeCount: spec.nodes.length,
           persisted: meta,
-          hint: "完整 spec 已落盘；写码用 summary，勿凭截图猜样式。",
+          hint: "完整 spec 已落盘到当前 workspace；写码用 summary 或 devtools.get_persisted_design_spec，勿 file.read 猜路径。",
         },
       };
     },
@@ -1440,8 +1440,8 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
     description:
       "Read the latest persisted design spec summary from .agent-state (after extract_design_spec).",
     args: {},
-    async execute() {
-      const spec = await loadLatestDesignSpec();
+    async execute(_args, context) {
+      const spec = await loadLatestDesignSpec(context.workspace.rootPath);
       if (!spec) {
         return {
           result: {
@@ -1450,7 +1450,7 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
           },
         };
       }
-      const meta = await loadLatestDesignSpecMeta();
+      const meta = await loadLatestDesignSpecMeta(context.workspace.rootPath);
       return {
         result: {
           ok: true,

@@ -12,9 +12,14 @@ import {
 } from "@/agent/verification/post-execute-verify";
 import type { AgentEvent } from "@/agent/types";
 import type { AgentLoopRunState } from "@/agent/core/agent-loop-state";
+import { isEditTaskSatisfied } from "@/agent/core/agent-loop-state";
+import { recordFilesWritten } from "@/agent/core/loop-deliverable";
 import type { AppliedFileMutation } from "@/agent/tools/file-mutations";
 import type { PatchResult } from "@/agent/tools/patch-tools";
 import { emitKernelBootstrapValidateFlow } from "@/agent/core/kernel-bootstrap-validate";
+import {
+  buildReplicateAfterWriteNudge,
+} from "@/agent/core/loop-replicate-nudge";
 
 export const DIRECT_MUTATION_TOOL_NAMES = new Set([
   "file.replace",
@@ -26,21 +31,7 @@ export function isDirectMutationToolName(toolName: string): boolean {
   return DIRECT_MUTATION_TOOL_NAMES.has(toolName);
 }
 
-export function isEditTaskSatisfied(state: AgentLoopRunState): boolean {
-  return state.editApplied === true || state.approvalPrepared;
-}
-
-import { isGracefulRecoveryEnabled } from "@/agent/core/loop-graceful-recovery-config";
-
-export function isEditRecoveryEnabled(): boolean {
-  return (
-    process.env.AGENT_EDIT_RECOVERY === "1" || isGracefulRecoveryEnabled()
-  );
-}
-
-export function isFinalPrepareNudgeEnabled(): boolean {
-  return process.env.AGENT_FINAL_PREPARE_NUDGE === "1";
-}
+export { isEditTaskSatisfied };
 
 export function changedPathsFromDirectFileResult(
   result: AppliedFileMutation,
@@ -123,6 +114,7 @@ export async function emitDirectApplySideEffects(input: {
 
   input.runState.editApplied = true;
   input.runState.approvalPrepared = true;
+  recordFilesWritten(input.runState, changedPaths);
   if (input.runState.postExecuteFeedback) {
     delete input.runState.postExecuteFeedback;
   }
@@ -169,10 +161,17 @@ export async function emitDirectApplySideEffects(input: {
     }
   }
 
-  return emitKernelBootstrapValidateFlow({
+  const bootstrapHint = await emitKernelBootstrapValidateFlow({
     taskId: input.taskId,
     rootPath: input.rootPath,
     changedPaths,
     emit: input.emit,
   });
+  const replicateHint = buildReplicateAfterWriteNudge(
+    input.runState,
+    changedPaths,
+    input.rootPath,
+  );
+  const hints = [bootstrapHint, replicateHint].filter(Boolean);
+  return hints.length > 0 ? hints.join("\n\n") : null;
 }

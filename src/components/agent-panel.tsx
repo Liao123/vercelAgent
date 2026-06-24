@@ -1342,6 +1342,49 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     setApprovalStatus("正在停止…");
   }
 
+  async function sendGuidance(text: string) {
+    if (!running || !currentThreadId) return;
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    setApprovalStatus("正在发送引导…");
+    setApprovalStatusTone("neutral");
+    try {
+      const res = await fetch("/api/agent/guidance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ threadId: currentThreadId, text: trimmed }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        id?: string;
+        at?: string;
+      };
+      if (!res.ok) {
+        setApprovalStatus(data.error ?? "引导发送失败");
+        setApprovalStatusTone("error");
+        return;
+      }
+
+      const guidanceEvent: AgentEvent = {
+        type: "guidance.received",
+        taskId: currentTaskId ?? "task_pending",
+        threadId: currentThreadId,
+        id: data.id ?? `guidance_local_${Date.now()}`,
+        text: trimmed,
+        at: data.at ?? new Date().toISOString(),
+        applied: false,
+      };
+      setEvents((prev) => [...prev, guidanceEvent]);
+      setRequest("");
+      setApprovalStatus("引导已发送，将在下一轮迭代生效");
+      setApprovalStatusTone("neutral");
+    } catch {
+      setApprovalStatus("引导发送失败");
+      setApprovalStatusTone("error");
+    }
+  }
+
   async function runLoopWithRequest(
     loopUserRequest: string,
     options?: {
@@ -1577,7 +1620,22 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
               );
             }
           }
-          setEvents((prev) => [...prev, parsed]);
+          if (parsed.type === "guidance.received") {
+            setEvents((prev) => {
+              const idx = prev.findIndex(
+                (e) =>
+                  e.type === "guidance.received" && e.id === parsed.id,
+              );
+              if (idx >= 0) {
+                const next = [...prev];
+                next[idx] = parsed;
+                return next;
+              }
+              return [...prev, parsed];
+            });
+          } else {
+            setEvents((prev) => [...prev, parsed]);
+          }
         }
       }
     } catch (err) {
@@ -2043,9 +2101,14 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const userRequest = request.trim();
+    if (running) {
+      if (userRequest) {
+        await sendGuidance(userRequest);
+      }
+      return;
+    }
     if (
-      (!userRequest && referenceImages.length === 0 && attachedFiles.length === 0) ||
-      running
+      (!userRequest && referenceImages.length === 0 && attachedFiles.length === 0)
     )
       return;
 
@@ -2667,6 +2730,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
               setApprovalStatus(null);
             }}
             onCancel={cancelRunningLoop}
+            onSendGuidance={sendGuidance}
           />
         </main>
 
@@ -2783,16 +2847,33 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
           <input
             value={request}
             onChange={(e) => setRequest(e.target.value)}
-            placeholder="描述要做的改动…"
-            disabled={running}
-            className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900"
+            placeholder={
+              running
+                ? "运行中可追加引导…"
+                : "描述要做的改动…"
+            }
+            disabled={false}
+            className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 dark:border-zinc-700 dark:bg-zinc-900"
           />
+          {running && (
+            <button
+              type="button"
+              onClick={cancelRunningLoop}
+              className="rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+            >
+              停止
+            </button>
+          )}
           <button
             type="submit"
-            disabled={!canRunTask}
+            disabled={
+              running
+                ? !request.trim() || !currentThreadId
+                : !canRunTask
+            }
             className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
           >
-            {running ? "运行中" : "运行"}
+            {running ? "发送引导" : "运行"}
           </button>
         </div>
       </form>

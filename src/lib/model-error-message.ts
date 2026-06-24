@@ -1,5 +1,6 @@
 /**
  * 将模型 / 中转 API 错误整理成可展示的一行中文（禁止 HTML 进 UI）。
+ * Cursor 式：透传真实信息，不替用户断定「API 超时」。
  */
 const DEFAULT_MAX = 280;
 
@@ -10,30 +11,11 @@ function collapseWhitespace(text: string): string {
 function parseHtmlErrorPage(html: string): string | null {
   const title = html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim();
   const h1 = html.match(/<h1[^>]*>([^<]+)<\/h1>/i)?.[1]?.trim();
-  const blob = `${title ?? ""} ${h1 ?? ""}`.toLowerCase();
-
-  if (/524|timeout occurred|a timeout occurred/.test(blob)) {
-    return "API 中转超时（524）。请稍后重试，或更换模型 / 检查 API 中转服务是否可用。";
+  const parts = [title, h1].filter(Boolean);
+  if (parts.length > 0) {
+    return `模型服务返回 HTML 错误页（非 JSON）：${parts.join(" · ").slice(0, 200)}`;
   }
-  if (/\b502\b|bad gateway/.test(blob)) {
-    return "API 网关错误（502）。请稍后重试。";
-  }
-  if (/\b503\b|service unavailable/.test(blob)) {
-    return "API 服务暂不可用（503）。请稍后重试。";
-  }
-  if (/\b504\b|gateway timeout/.test(blob)) {
-    return "API 网关超时（504）。请稍后重试。";
-  }
-  if (/\b429\b|rate limit|too many requests/.test(blob)) {
-    return "API 请求过于频繁（429）。请稍后再试。";
-  }
-  if (title) {
-    return `API 返回 HTML 错误页：${title.slice(0, 140)}`;
-  }
-  if (h1) {
-    return `API 错误：${h1.slice(0, 140)}`;
-  }
-  return "API 返回 HTML 错误页（非 JSON）。请检查中转服务或 .env.local 中的 API 配置。";
+  return "模型服务返回 HTML 错误页（非 JSON）。请检查 .env.local 中的 API 地址与 Key。";
 }
 
 export function formatModelErrorMessage(
@@ -53,7 +35,7 @@ export function formatModelErrorMessage(
   );
 
   if (/<!DOCTYPE|<html[\s>]|<body[\s>]/i.test(withoutPrefix)) {
-    return parseHtmlErrorPage(withoutPrefix) ?? "API 返回异常 HTML 响应。";
+    return parseHtmlErrorPage(withoutPrefix) ?? "模型服务返回异常 HTML 响应。";
   }
 
   let message = collapseWhitespace(withoutPrefix);
@@ -79,7 +61,7 @@ export function formatModelErrorMessage(
     /no tool call found for function call output/i.test(message) ||
     /invalid_request_error.*tool_call/i.test(message)
   ) {
-    return "对话历史里 tool 消息顺序异常（非 API 密钥问题）。请新开任务重试；若仍出现请反馈给开发。";
+    return "对话历史里 tool 消息顺序异常。请新开任务重试；若仍出现请反馈给开发。";
   }
 
   if (message.length > maxLen) {

@@ -32,6 +32,7 @@ For code-change requests:
   - New file or full overwrite: **file.mutation** (create/write)
   - Multi-file diff: **patch.apply**
 - Do not finish edit tasks without a successful write when the user asked for implementation — unless you explain why it is impossible.
+- **Page replicate deliverable (runtime boundary):** entry file + styles/script or component code; a bare `index.html` shell alone is NOT done. Keep writing until the page is runnable and visually complete per design spec.
 - After writes, runtime auto-runs scoped lint; fix failures with another file.replace round.
 - User may attach @path files; pre-loaded reads count as evidence.
 - Git/shell: use *.prepare tools only; never assume they ran.
@@ -52,7 +53,13 @@ For code-change requests:
 - Do NOT call browser.open more than once for the same URL.
 - List each API: method, path, query/body params (name, type, required, description) from page text.
 - Finish within ~4 tool rounds when possible (open + inspect + optional one read tool).
+**Page replicate (demo URL → workspace files):**
+- `browser.open` target URL once → `devtools.extract_design_spec` → `devtools.get_persisted_design_spec` (do NOT `file.read` `.agent-state/design-specs/latest.json`).
+- Empty workspace: `file.mutation` create `index.html` + CSS + JS (or framework entry); package.json alone is NOT done.
+- After write: `browser.open` local `file://` path or dev URL to verify visually.
+- MCP `chrome-devtools.*` preferred when listed below; built-in CDP is fallback when MCP is not configured.
 On tool errors: read the error, adjust strategy, retry with different path or exact search. If browser/MCP/screenshot/shell environment errors repeat, call **agent.diagnose** then use `useInstead` / built-in fallback tools — do not stop until user goal is met or truly impossible.
+**Runtime policy:** Tool order and gather/write strategy are YOUR decisions. Runtime only blocks: (1) premature `final` when edit deliverable is incomplete, (2) strictPrepare read-before-write in eval mode, (3) user abort. Playbook hints and golden steps are UI accelerators — not mandatory routes.
 **Parallel gather:** Independent read-only lookups (e.g. multiple `file.read` on different paths) may be issued in **one turn** as multiple `tool_calls`; runtime may execute them concurrently.
 Workspace root: {{WORKSPACE_ROOT}}
 {{WORKSPACE_SNAPSHOT}}

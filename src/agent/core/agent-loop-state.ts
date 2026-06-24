@@ -1,7 +1,17 @@
-/**
- * Agent Loop 运行态：供反思检查点生成结构化摘要（不猜用户句式）。
- */
 import type { TaskReasoning } from "@/agent/core/loop-reasoning";
+import type { TaskPlaybookId } from "@/agent/core/task-playbooks";
+import { applyWorkspaceStructureToRunState } from "@/agent/core/loop-replicate-nudge";
+import type { WorkspaceStructureFacts } from "@/agent/workspace/workspace-structure-facts";
+import { isNativeToolLoopEnabled } from "@/agent/core/loop-protocol";
+import {
+  buildDeliverableCheckpointBlock,
+  isEditDeliverableSatisfied,
+} from "@/agent/core/loop-deliverable";
+import {
+  buildUiDisambiguationReadNudgeBlock,
+  buildUiPrepareNudgeBlock,
+} from "@/agent/core/ui-prepare-nudge";
+import { formatPostExecuteFeedbackBlock } from "@/agent/verification/post-execute-verify";
 
 export type AgentLoopRunState = {
   userRequest: string;
@@ -9,6 +19,10 @@ export type AgentLoopRunState = {
   approvalPrepared: boolean;
   /** A112：已通过 file.replace / file.mutation / patch.apply 直接写盘 */
   editApplied?: boolean;
+  /** 已落盘路径（用于交付物判定，非 tool 计数） */
+  filesWritten?: string[];
+  /** 当前任务匹配的 playbook（交付标准） */
+  playbookId?: TaskPlaybookId;
   toolsCalled: string[];
   filesRead: string[];
   /** UI label 多文件命中时的消歧状态（A076） */
@@ -48,6 +62,9 @@ export type AgentLoopRunState = {
   taskEvidenceComplete?: boolean;
   /** A153：workspace 检测到的框架（供 metadata catalog） */
   workspaceFramework?: string | null;
+  /** 复刻任务：workspace.inspect 结构事实 */
+  workspaceHasPackageJson?: boolean;
+  workspaceLooksEmpty?: boolean;
 };
 
 export function createAgentLoopRunState(userRequest: string): AgentLoopRunState {
@@ -78,42 +95,38 @@ export function isExplicitReadOnlyRequest(input: string): boolean {
   return readOnlyPatterns.some((pattern) => pattern.test(input));
 }
 
-export function isLikelyCodeEditRequest(input: string): boolean {
+export function isLikelyCodeEditRequest(
+  input: string,
+  reasoning?: TaskReasoning,
+): boolean {
+  if (reasoning) {
+    if (
+      reasoning.intent === "code_edit" ||
+      reasoning.intent === "mixed" ||
+      reasoning.intent === "shell"
+    ) {
+      return true;
+    }
+    if (
+      reasoning.risk === "write" ||
+      reasoning.risk === "approval_required"
+    ) {
+      return true;
+    }
+    return false;
+  }
+
   if (isExplicitReadOnlyRequest(input)) return false;
 
-  const normalized = input.toLowerCase();
-  const stripped = normalized
+  const stripped = input
+    .toLowerCase()
     .replace(/不要\s*修改[^。；\n]*/g, " ")
     .replace(/不要\s*改[^变][^。；\n]*/g, " ")
     .replace(/不修改[^。；\n]*/g, " ");
 
-  const editKeywords = [
-    "修改",
-    "改成",
-    "改为",
-    "替换",
-    "删除",
-    "移除",
-    "去掉",
-    "新增",
-    "添加",
-    "重构",
-    "写到",
-    "写入",
-    "复刻",
-    "实现",
-    "创建",
-    "生成",
-    "rename",
-    "replace",
-    "remove",
-    "delete",
-    "change",
-    "update",
-    "write to",
-    "implement",
-  ];
-  return editKeywords.some((keyword) => stripped.includes(keyword));
+  return /修改|改成|替换|删除|移除|去掉|新增|添加|写到|写入|复刻|实现|创建|生成|fix|edit|write|implement|add|create|remove|delete|change|update|patch/i.test(
+    stripped,
+  );
 }
 
 export function recordToolCall(
@@ -123,6 +136,14 @@ export function recordToolCall(
   error?: string,
 ): void {
   state.toolsCalled.push(toolName);
+
+  if (toolName === "workspace.inspect" && result && typeof result === "object") {
+    const structure = (result as { structure?: WorkspaceStructureFacts })
+      .structure;
+    if (structure) {
+      applyWorkspaceStructureToRunState(state, structure);
+    }
+  }
 
   if (toolName === "file.read" && result && typeof result === "object") {
     const path = (result as { path?: unknown }).path;
@@ -226,13 +247,6 @@ export function recordToolCall(
   }
 }
 
-import { isNativeToolLoopEnabled } from "@/agent/core/loop-protocol";
-import {
-  buildUiDisambiguationReadNudgeBlock,
-  buildUiPrepareNudgeBlock,
-} from "@/agent/core/ui-prepare-nudge";
-import { formatPostExecuteFeedbackBlock } from "@/agent/verification/post-execute-verify";
-
 export function buildRuntimeCheckpoint(state: AgentLoopRunState): string {
   const hasIssue = Boolean(
     state.lastToolError ||
@@ -244,6 +258,7 @@ export function buildRuntimeCheckpoint(state: AgentLoopRunState): string {
     "=== Runtime checkpoint ===",
     `User request: ${state.userRequest}`,
     `Edit applied: ${state.editApplied ? "yes" : "no"}`,
+    `Files written: ${state.filesWritten?.length ? state.filesWritten.join(", ") : "(none yet)"}`,
     `Files read: ${state.filesRead.length > 0 ? state.filesRead.join(", ") : "(none yet)"}`,
   ];
   if (state.metaExplainMode) {
@@ -284,23 +299,24 @@ export function buildRuntimeCheckpoint(state: AgentLoopRunState): string {
     }
 
     const prepareNudge = buildUiPrepareNudgeBlock(state);
-    if (prepareNudge && !state.editApplied) {
+    if (prepareNudge && !state.editApplied && state.lastPrepareError) {
       lines.push(prepareNudge);
     }
   }
 
   if (isExplicitReadOnlyRequest(state.userRequest)) {
-    lines.push(
-      "Read-only task: do not mutate files.",
-      "You may action=final when done.",
-    );
-  } else if (state.likelyEditRequest && !isEditTaskSatisfied(state)) {
-    lines.push(
-      "Use file.replace / file.mutation / patch.apply to write changes (preferred).",
-      "Do not action=final until a write succeeded or you exhausted reasonable strategies.",
-    );
-  } else if (isEditTaskSatisfied(state)) {
-    lines.push("File change applied. You may action=final with a short summary.");
+    lines.push("Read-only task: do not mutate files.");
+  }
+
+  if (
+    state.likelyEditRequest &&
+    !isEditTaskSatisfied(state, state.playbookId) &&
+    (hasIssue || state.strictPrepare)
+  ) {
+    const deliverableBlock = buildDeliverableCheckpointBlock(state, state.playbookId);
+    if (deliverableBlock) {
+      lines.push(deliverableBlock);
+    }
   }
 
   lines.push(
@@ -312,6 +328,12 @@ export function buildRuntimeCheckpoint(state: AgentLoopRunState): string {
   return lines.join("\n");
 }
 
-function isEditTaskSatisfied(state: AgentLoopRunState): boolean {
-  return state.editApplied === true || state.approvalPrepared;
+export function isEditTaskSatisfied(
+  state: AgentLoopRunState,
+  playbookId?: TaskPlaybookId,
+): boolean {
+  const pid = playbookId ?? state.playbookId;
+  if (state.approvalPrepared && !state.editApplied) return true;
+  if (!state.editApplied) return false;
+  return isEditDeliverableSatisfied(state, pid);
 }

@@ -11,7 +11,9 @@ export async function generateLoopModelWithProgress(
   emit: (event: AgentEvent) => void,
   taskId: string,
 ): Promise<ModelOutput> {
-  const canStream = !input.tools?.length;
+  const preferNonStream =
+    input.toolChoice === "none" || input.metadata?.reasoningTurn === true;
+  const canStream = !input.tools?.length && !preferNonStream;
 
   if (canStream) {
     try {

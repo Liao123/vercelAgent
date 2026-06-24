@@ -26,13 +26,15 @@ import { isNoisyRuntimeReflection } from "../src/lib/agent-reasoning-steps";
 
 async function main(): Promise<void> {
   const gate = await fs.readFile("src/agent/core/evidence-gate.ts", "utf8");
+  const policy = await fs.readFile("src/agent/core/evidence-gate-policy.ts", "utf8");
   const provider = await fs.readFile(
     "src/agent/model/chat-completions-provider.ts",
     "utf8",
   );
   const loopGen = await fs.readFile("src/agent/core/loop-model-generate.ts", "utf8");
 
-  assert.ok(gate.includes("framework-metadata-catalog"), "gate uses catalog");
+  assert.ok(policy.includes("framework-metadata-catalog"), "policy uses catalog");
+  assert.ok(!gate.includes("evaluateToolEvidenceGate"), "gate no longer blocks tools");
   assert.ok(!gate.includes("LAYOUT_METADATA_PATH"), "no hardcoded layout regex in gate");
   assert.ok(provider.includes("extractAssistantText"), "provider imports extractAssistantText");
   assert.ok(loopGen.includes("withModelCallRetry"), "loop model uses retry");
@@ -56,8 +58,9 @@ async function main(): Promise<void> {
     understanding: "问站点标题",
     intent: "qa",
     risk: "read_only",
-    evidenceNeeded: ["metadata"],
-    planSteps: [],
+    grounding: "workspace",
+    evidenceNeeded: ["page title metadata"],
+    planSteps: ["read index.html"],
     ambiguity: null,
     canAnswerNow: false,
     plannedNext: "read",
@@ -70,7 +73,7 @@ async function main(): Promise<void> {
   assert.ok(formatRuntimeFactsForPrompt(new Date("2026-06-22T12:00:00+08:00")).includes("2026"));
 
   assert.ok(
-    isRetriableModelError(new Error("API 中转超时（524）")),
+    isRetriableModelError(new Error("模型服务返回 HTML 错误页")),
   );
   let attempts = 0;
   const result = await withModelCallRetry(
@@ -87,7 +90,7 @@ async function main(): Promise<void> {
   const html = formatModelErrorMessage(
     "OpenAI 兼容中转 API error: <!DOCTYPE html><title>524: timeout</title>",
   );
-  assert.ok(html.includes("524"));
+  assert.ok(html.includes("HTML 错误页"));
   assert.ok(!html.includes("<!DOCTYPE"));
 
   assert.ok(
@@ -100,9 +103,9 @@ async function main(): Promise<void> {
   );
   assert.ok(
     !isNoisyRuntimeReflection({
-      understanding: "模型调用失败，任务已暂停。",
-      blockers: ["API 超时"],
-      plannedNext: "重试",
+      understanding: "模型本轮调用失败，继续用工具推进。",
+      blockers: ["HTTP 502"],
+      plannedNext: "直接调用工具",
       source: "runtime",
     }),
   );

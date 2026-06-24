@@ -114,7 +114,7 @@ export class ChatCompletionsProvider implements ModelProvider {
       },
       body: JSON.stringify({
         model,
-        messages: input.messages,
+        messages: serializeAgentMessagesForOpenAiApi(input.messages),
         stream: true,
         max_tokens: input.maxTokens,
         temperature: input.temperature,

@@ -15,6 +15,7 @@ import {
   defaultAgentServerListenHost,
   resolveAgentServerPort,
 } from "@/agent-server/config";
+import { handleAgentGuidancePost } from "@/agent-server/guidance-handler";
 import { handleAgentLoopPost } from "@/agent-server/loop-handler";
 import { handleTraceGet } from "@/agent-server/trace-handler";
 import {
@@ -128,6 +129,11 @@ export async function startAgentHttpServer(): Promise<AgentHttpServer> {
 
       if (req.method === "POST" && path === "/loop") {
         await handleAgentLoopPost(req, res);
+        return;
+      }
+
+      if (req.method === "POST" && path === "/guidance") {
+        await handleAgentGuidancePost(req, res);
         return;
       }
 

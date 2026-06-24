@@ -5,6 +5,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { collectAgentDiagnosePayload } from "@/agent/core/agent-diagnose";
 import type { AgentLoopRunState } from "@/agent/core/agent-loop-state";
+import { isDesignReplicateRequest } from "@/agent/core/task-playbooks";
+import { loadLatestDesignSpecMeta } from "@/agent/browser/design-spec-store";
 import { cdpScreenshotJpegBase64 } from "@/agent/devtools/cdp-client";
 import { isCdpBridgeAvailable } from "@/agent/devtools/cdp-bridge-config";
 import type { WorkspaceInfo } from "@/agent/workspace";
@@ -46,6 +48,24 @@ export async function attemptDeterministicModelFailureRecovery(input: {
   userRequest: string;
   runState: AgentLoopRunState;
 }): Promise<DeterministicRecoveryResult | null> {
+  if (
+    isDesignReplicateRequest(input.userRequest) &&
+    input.runState.toolsCalled.includes("devtools.extract_design_spec")
+  ) {
+    const meta = await loadLatestDesignSpecMeta(input.workspace.rootPath);
+    if (meta) {
+      return {
+        recovered: false,
+        summary: [
+          "【确定性恢复】模型暂不可用，但 design spec 已提取到当前 workspace。",
+          `标题: ${meta.title} · 节点: ${meta.nodeCount} · 路径: ${meta.filePath}`,
+          "请重开或续跑：devtools.get_persisted_design_spec → file.mutation.prepare 写 index.html + CSS + JS。",
+          "勿再 file.read latest.json；勿只 gather。",
+        ].join("\n"),
+      };
+    }
+  }
+
   if (!isEnvironmentTaskRequest(input.userRequest)) return null;
 
   const diagnose = await collectAgentDiagnosePayload(input.workspace);

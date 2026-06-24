@@ -25,8 +25,12 @@ import {
 import {
   emitDirectApplySideEffects,
   isDirectMutationToolName,
-  isEditTaskSatisfied,
 } from "@/agent/core/loop-direct-apply";
+import { isEditTaskSatisfied } from "@/agent/core/agent-loop-state";
+import {
+  buildDeliverableCheckpointBlock,
+  inferDeliverableProfile,
+} from "@/agent/core/loop-deliverable";
 import { captureUiPrepareHintFromFileRead } from "@/agent/core/ui-prepare-nudge";
 import type { PlanProgressHint } from "@/agent/core/agent-loop-plan";
 import {
@@ -34,6 +38,10 @@ import {
   type ResolvedTaskPlaybook,
 } from "@/agent/core/task-playbooks";
 import { syncTaskEvidenceComplete } from "@/agent/core/evidence-gate";
+import {
+  buildReplicateAfterExtractNudge,
+  buildReplicateEmptyWorkspaceNudge,
+} from "@/agent/core/loop-replicate-nudge";
 import { buildToolObservationMessage } from "@/agent/memory/loop-context-compactor";
 import type { AppliedFileMutation } from "@/agent/tools/file-mutations";
 import type { PatchResult } from "@/agent/tools/patch-tools";
@@ -172,6 +180,44 @@ export async function runAgentLoopToolCall(input: {
     deps.emitPlaybookProgress();
     syncTaskEvidenceComplete(deps.runState);
 
+    if (tool.name === "workspace.inspect") {
+      const emptyNudge = buildReplicateEmptyWorkspaceNudge(deps.runState);
+      if (emptyNudge) {
+        deps.pushUserNudge?.(emptyNudge);
+      }
+    }
+
+    if (tool.name === "devtools.extract_design_spec") {
+      const extractNudge = buildReplicateAfterExtractNudge(deps.runState);
+      if (extractNudge) {
+        deps.pushUserNudge?.(extractNudge);
+      }
+    }
+
+    if (
+      tool.name === "file.read" &&
+      toolResult.result &&
+      typeof toolResult.result === "object"
+    ) {
+      const readResult = toolResult.result as {
+        path?: unknown;
+        content?: unknown;
+        error?: unknown;
+      };
+      if (
+        typeof readResult.error === "string" &&
+        /design-specs\/latest\.json/i.test(readResult.error)
+      ) {
+        deps.pushUserNudge?.(
+          [
+            "=== Design spec read hint ===",
+            "Do NOT file.read .agent-state/design-specs/latest.json.",
+            "Use devtools.get_persisted_design_spec, then file.mutation.prepare to write page files.",
+          ].join("\n"),
+        );
+      }
+    }
+
     if (
       tool.name === "file.read" &&
       toolResult.result &&
@@ -268,14 +314,25 @@ export async function runAgentLoopToolCall(input: {
 
     if (deps.shouldInjectRuntimeReflection(deps.runState)) {
       deps.runState.reflectionRounds += 1;
+      const satisfied = isEditTaskSatisfied(deps.runState, deps.runState.playbookId);
       const pendingLintFix =
-        Boolean(deps.runState.postExecuteFeedback) && !isEditTaskSatisfied(deps.runState);
+        Boolean(deps.runState.postExecuteFeedback) && !satisfied;
+      const profile = inferDeliverableProfile({
+        userRequest: deps.runState.userRequest,
+        playbookId: deps.runState.playbookId,
+      });
+      const deliverableGap = buildDeliverableCheckpointBlock(
+        deps.runState,
+        deps.runState.playbookId,
+      );
       deps.emitReflection({
-        understanding: isEditTaskSatisfied(deps.runState)
-          ? "文件变更已应用或已就绪。"
-          : pendingLintFix
-            ? "写盘后 lint 未通过，请用 file.replace 修复。"
-            : "工具已运行，任务尚未完成。",
+        understanding: satisfied
+          ? "交付物已满足，可中文总结。"
+          : deps.runState.editApplied
+            ? `已写盘但未满足交付标准：${profile.description}`
+            : pendingLintFix
+              ? "写盘后 lint 未通过，请修复。"
+              : "任务未完成，需继续写盘或取证。",
         blockers: [
           ...(deps.runState.postExecuteFeedback
             ? [deps.runState.postExecuteFeedback.summary]
@@ -287,18 +344,22 @@ export async function runAgentLoopToolCall(input: {
             ? [deps.runState.lastToolError]
             : []),
         ],
-        plannedNext: isEditTaskSatisfied(deps.runState)
+        plannedNext: satisfied
           ? "用中文总结并结束。"
           : pendingLintFix
             ? "file.read 确认原文 → file.replace（精确子串）。"
-            : "继续取证或 file.replace / patch.apply 写盘。",
+            : deliverableGap
+              ? "见 checkpoint 交付物提示，继续写页面/代码文件。"
+              : "继续 file.mutation / file.replace 直到交付物齐。",
         source: "runtime",
       });
       deps.pushReflectionToMessages(
         {
-          understanding: deps.runState.userRequest,
+          understanding: deps.runState.taskReasoning?.understanding ?? deps.runState.userRequest,
           blockers: deps.runState.lastToolError ? [deps.runState.lastToolError] : [],
-          plannedNext: "继续调用工具或写盘。",
+          plannedNext: satisfied
+            ? "总结并结束。"
+            : "继续写盘直至满足交付标准。",
           source: "runtime",
         },
         buildRuntimeCheckpoint(deps.runState),

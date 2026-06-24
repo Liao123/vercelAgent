@@ -67,6 +67,7 @@ const WORKED_TYPES = new Set<AgentEvent["type"]>([
 
 const NARRATIVE_TYPES = new Set<AgentEvent["type"]>([
   "reflection.updated",
+  "guidance.received",
   "tool.completed",
   "tool.started",
 ]);

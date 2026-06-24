@@ -103,3 +103,13 @@ export function extractExistingPatchPaths(patch: string): string[] {
 
   return [...paths];
 }
+
+const PREPARE_TOOL_NAMES = new Set([
+  "file.replace.prepare",
+  "file.mutation.prepare",
+  "patch.prepare",
+]);
+
+export function isPrepareToolName(toolName: string): boolean {
+  return PREPARE_TOOL_NAMES.has(toolName);
+}

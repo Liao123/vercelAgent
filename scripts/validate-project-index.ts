@@ -12,8 +12,8 @@ import {
 import { searchProjectIndex } from "../src/agent/indexer/project-index-search";
 import {
   evaluateToolEvidenceGate,
-  isExplorationGatherIntent,
-} from "../src/agent/core/evidence-gate";
+} from "../src/agent/core/evidence-gate-policy";
+import { isExplorationGatherIntent } from "../src/agent/core/evidence-gate";
 import { createAgentLoopRunState } from "../src/agent/core/agent-loop-state";
 
 async function main(): Promise<void> {

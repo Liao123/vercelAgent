@@ -1,5 +1,5 @@
 /**
- * 改码收尾 / 写盘延长期（更接近 Cursor）。
+ * 改码收尾 / 写盘延长期边界（无 scaffold 硬注入）。
  *
  * 运行：npm run validate:edit-write-tail
  */
@@ -8,7 +8,6 @@ import fs from "node:fs/promises";
 import { createAgentLoopRunState } from "../src/agent/core/agent-loop-state";
 import {
   EDIT_WRITE_TAIL_ITERATIONS,
-  buildWorkspaceScaffoldNudge,
   computeLoopIterationCap,
   shouldForceFinalIteration,
   shouldRejectTextOnlyFinal,
@@ -19,7 +18,7 @@ async function main(): Promise<void> {
   const loop = await fs.readFile("src/agent/core/agent-loop.ts", "utf8");
   assert.ok(loop.includes("loop-edit-write-tail"), "loop wires edit write tail");
   assert.ok(loop.includes("shouldRejectTextOnlyFinal"), "rejects text-only final");
-  assert.ok(loop.includes("buildWorkspaceScaffoldNudge"), "scaffold nudge");
+  assert.ok(!loop.includes("buildWorkspaceScaffoldNudge"), "no scaffold nudge");
 
   const editState = createAgentLoopRunState("复刻首页写到当前项目");
   const max = 14;
@@ -33,19 +32,6 @@ async function main(): Promise<void> {
   readOnly.likelyEditRequest = false;
   assert.equal(computeLoopIterationCap(max, readOnly), max);
   assert.equal(shouldSkipTextOnlyGracefulFinal(readOnly), false);
-
-  const scaffold = buildWorkspaceScaffoldNudge({
-    rootPath: "D:/empty",
-    staleConfiguredPath: null,
-    hasPackageJson: false,
-    hasSrcApp: false,
-    hasAppDir: false,
-    hasPagesDir: false,
-    topLevelEntryCount: 0,
-    topLevelEntries: [],
-    observations: ["no package.json at workspace root"],
-  });
-  assert.ok(scaffold?.includes("file.mutation"));
 
   console.log("validate-edit-write-tail: passed");
 }

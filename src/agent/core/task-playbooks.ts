@@ -1,12 +1,14 @@
 /**
- * 任务剧本：软加速器（hint + 熔断 + 轮次预算），不替模型定路由。
+ * 任务剧本：软加速器（UI 进度 + loopHint），runtime 不拦截工具路由。
  */
+import type { TaskReasoning } from "@/agent/core/loop-reasoning";
 import type { AgentLoopRunState } from "@/agent/core/agent-loop-state";
 import {
   isExplicitReadOnlyRequest,
   isLikelyCodeEditRequest,
 } from "@/agent/core/agent-loop-state";
 import { isUiLocationQuery } from "@/agent/core/prepare-gate";
+import { hasPageUiDeliverable } from "@/agent/core/loop-deliverable";
 
 export type TaskPlaybookId =
   | "browser-doc"
@@ -19,15 +21,6 @@ export type TaskPlaybookId =
   | "read-only-audit"
   | "code-edit-general"
   | "default";
-
-export type PlaybookCircuitBreaker = {
-  tool: string;
-  threshold: number;
-  redirectTool: string;
-  message: string;
-  understanding: string;
-  plannedNext: string;
-};
 
 export type PlaybookGoldenStep = {
   id: string;
@@ -42,7 +35,6 @@ export type TaskPlaybook = {
   loopHint?: string;
   softMaxToolRounds: number;
   goldenSteps: PlaybookGoldenStep[];
-  circuitBreakers: PlaybookCircuitBreaker[];
 };
 
 export type ResolvedTaskPlaybook = TaskPlaybook & {
@@ -151,24 +143,13 @@ const BROWSER_DOC: TaskPlaybook = {
     { id: "open", label: "打开并读取页面", tools: ["browser.wait_and_inspect", "browser.open", "browser.inspect"] },
     { id: "final", label: "整理中文结果", tools: [] },
   ],
-  circuitBreakers: [
-    {
-      tool: "devtools.get_network_requests",
-      threshold: 2,
-      redirectTool: "browser.inspect",
-      message:
-        "devtools.get_network_requests 已连续失败。请改用 browser.inspect 读取页面正文并直接给出中文整理结果，不要再调 Network。",
-      understanding: "Network 工具不可用，应改用 browser.inspect。",
-      plannedNext: "调用 browser.inspect 后在本轮或下一轮直接输出最终整理结果。",
-    },
-  ],
 };
 
 const DESIGN_REPLICATE: TaskPlaybook = {
   id: "design-replicate",
   title: "Demo 页面复刻",
   openingPlannedNext:
-    "browser.open(demo URL) → devtools.extract_design_spec → file.read → file.replace/prepare → browser.open 本地页验证。",
+    "browser.open(demo URL) → devtools.extract_design_spec → devtools.get_persisted_design_spec → file.mutation/prepare 写 index.html+CSS+JS → browser.open 本地验证。",
   loopHint:
     "【软提示】页面复刻：结合 WORKSPACE_STRUCTURE 与用户目标 URL，自行推导取证、脚手架（若需要）与写盘顺序。",
   softMaxToolRounds: 10,
@@ -210,26 +191,6 @@ const DESIGN_REPLICATE: TaskPlaybook = {
       ],
     },
   ],
-  circuitBreakers: [
-    {
-      tool: "devtools.extract_design_spec",
-      threshold: 2,
-      redirectTool: "file.read",
-      message:
-        "design spec 已抽取并落盘。请根据 summary 修改代码，不要重复 extract_design_spec。",
-      understanding: "重复抽取 design spec 无助于写码。",
-      plannedNext: "file.read 目标页面 → file.replace/prepare → browser.open 验证。",
-    },
-    {
-      tool: "browser.inspect",
-      threshold: 4,
-      redirectTool: "devtools.extract_design_spec",
-      message:
-        "复刻任务应先 devtools.extract_design_spec 拿结构化布局/样式，browser.inspect 仅用于最终验证。",
-      understanding: "缺少结构化 design spec。",
-      plannedNext: "browser.open demo URL → devtools.extract_design_spec。",
-    },
-  ],
 };
 
 const SCREENSHOT_SAVE: TaskPlaybook = {
@@ -246,18 +207,6 @@ const SCREENSHOT_SAVE: TaskPlaybook = {
       id: "capture",
       label: "截图并写盘",
       tools: ["devtools.get_screenshot", "mcp.chrome-devtools.take_screenshot"],
-    },
-  ],
-  circuitBreakers: [
-    {
-      tool: "mcp.chrome-devtools.take_screenshot",
-      threshold: 1,
-      redirectTool: "devtools.get_screenshot",
-      message:
-        "MCP 截图失败或未连接，请立即改用 devtools.get_screenshot 并传 filePath（desktop:name.jpg）。",
-      understanding: "MCP 浏览器工具不可用。",
-      plannedNext:
-        "devtools.get_screenshot { filePath: 'desktop:shot.jpg' }；仍失败则 agent.diagnose。",
     },
   ],
 };
@@ -287,18 +236,6 @@ const DEV_RUN: TaskPlaybook = {
       tools: ["shell.run.prepare", "shell.command.prepare"],
     },
     { id: "final", label: "汇报 URL 或阻塞原因", tools: [] },
-  ],
-  circuitBreakers: [
-    {
-      tool: "shell.run.prepare",
-      threshold: 2,
-      redirectTool: "file.read",
-      message:
-        "dev 命令连续 prepare 仍未成功。请先 file.read package.json 确认 dev 脚本，再 prepare 带 --port 的命令。",
-      understanding: "可能脚本名或端口策略不对。",
-      plannedNext:
-        "file.read package.json → shell.run.prepare 带 `--port` 的 dev 命令。",
-    },
   ],
 };
 
@@ -338,17 +275,6 @@ const CAPABILITY_EXTENSION: TaskPlaybook = {
       tools: [],
     },
   ],
-  circuitBreakers: [
-    {
-      tool: "shell.run.prepare",
-      threshold: 3,
-      redirectTool: "file.read",
-      message:
-        "shell 命令多次未通过。请先 file.read 确认 package.json scripts 与改动是否正确，再 prepare 正确的 validate 命令。",
-      understanding: "验证命令或改动可能不正确。",
-      plannedNext: "file.read package.json 与改动文件 → 修正 → shell.run.prepare。",
-    },
-  ],
 };
 
 const UI_VISIBLE_EDIT: TaskPlaybook = {
@@ -365,26 +291,6 @@ const UI_VISIBLE_EDIT: TaskPlaybook = {
     { id: "read", label: "读取源文件", tools: ["file.read"] },
     { id: "write", label: "准备或应用变更", tools: ["file.replace", "file.replace.prepare", "file.mutation.prepare", "patch.apply", "patch.prepare"] },
   ],
-  circuitBreakers: [
-    {
-      tool: "file.search",
-      threshold: 2,
-      redirectTool: "jsx.find_text",
-      message:
-        "file.search 连续无有效结果。UI 任务请改用 ui.trace_from_page + jsx.find_text 定位可见文案。",
-      understanding: "file.search 不适合 UI 文案定位。",
-      plannedNext: "调用 ui.trace_from_page 或 jsx.find_text，再 file.read。",
-    },
-    {
-      tool: "file.locate",
-      threshold: 3,
-      redirectTool: "ui.trace_from_page",
-      message:
-        "file.locate 多次未收敛。请改用 ui.trace_from_page（triple 布局）或 jsx.find_text。",
-      understanding: "定位未收敛，应换 UI 追踪路径。",
-      plannedNext: "ui.trace_from_page → jsx.find_text → file.read。",
-    },
-  ],
 };
 
 const FILE_EXACT_EDIT: TaskPlaybook = {
@@ -398,17 +304,6 @@ const FILE_EXACT_EDIT: TaskPlaybook = {
     { id: "read", label: "读取文件", tools: ["file.read"] },
     { id: "write", label: "替换或审批", tools: ["file.replace", "file.replace.prepare", "file.mutation.prepare"] },
   ],
-  circuitBreakers: [
-    {
-      tool: "file.replace.prepare",
-      threshold: 2,
-      redirectTool: "file.read",
-      message:
-        "file.replace.prepare 连续失败。请重新 file.read 复制 exact search 子串后再 prepare。",
-      understanding: "prepare 的 search 与磁盘不一致。",
-      plannedNext: "file.read 后使用读到的 exact 行作为 search。",
-    },
-  ],
 };
 
 const READ_ONLY_AUDIT: TaskPlaybook = {
@@ -421,7 +316,6 @@ const READ_ONLY_AUDIT: TaskPlaybook = {
     { id: "gather", label: "定位与读取", tools: ["project.index", "file.locate", "file.read", "file.search", "git.status", "git.diff"] },
     { id: "final", label: "总结交付", tools: [] },
   ],
-  circuitBreakers: [],
 };
 
 const CODE_EDIT_GENERAL: TaskPlaybook = {
@@ -434,7 +328,6 @@ const CODE_EDIT_GENERAL: TaskPlaybook = {
     { id: "gather", label: "定位并读取", tools: ["project.index", "file.locate", "file.read", "file.search"] },
     { id: "write", label: "变更或审批", tools: ["file.replace", "file.replace.prepare", "patch.apply", "patch.prepare"] },
   ],
-  circuitBreakers: [],
 };
 
 const DEFAULT_PLAYBOOK: TaskPlaybook = {
@@ -443,9 +336,103 @@ const DEFAULT_PLAYBOOK: TaskPlaybook = {
   openingPlannedNext: "先理解用户意图，再按需取证；避免无关工具。",
   softMaxToolRounds: 10,
   goldenSteps: [],
-  circuitBreakers: [],
 };
 
+const PLAYBOOKS: Record<TaskPlaybookId, TaskPlaybook> = {
+  "browser-doc": BROWSER_DOC,
+  "design-replicate": DESIGN_REPLICATE,
+  "capability-extension": CAPABILITY_EXTENSION,
+  "dev-run": DEV_RUN,
+  "screenshot-save": SCREENSHOT_SAVE,
+  "ui-visible-edit": UI_VISIBLE_EDIT,
+  "file-exact-edit": FILE_EXACT_EDIT,
+  "read-only-audit": READ_ONLY_AUDIT,
+  "code-edit-general": CODE_EDIT_GENERAL,
+  default: DEFAULT_PLAYBOOK,
+};
+
+export function getPlaybookById(id: TaskPlaybookId): TaskPlaybook {
+  return PLAYBOOKS[id] ?? DEFAULT_PLAYBOOK;
+}
+
+/** 推理完成后按 intent 绑定 playbook（非句式硬路由）。 */
+export function inferPlaybookIdFromReasoning(
+  reasoning: TaskReasoning,
+  userRequest: string,
+): TaskPlaybookId {
+  const text = userRequest.trim();
+  if (reasoning.intent === "meta") return "default";
+  if (isBrowserDocAnalysisRequest(text)) return "browser-doc";
+  if (matchesReadOnlyAudit(text)) return "read-only-audit";
+  if (reasoning.intent === "shell") {
+    return isDevRunRequest(text) ? "dev-run" : "code-edit-general";
+  }
+  if (reasoning.intent === "browser") {
+    return "default";
+  }
+  if (
+    reasoning.intent === "code_edit" ||
+    reasoning.risk === "write" ||
+    reasoning.risk === "approval_required"
+  ) {
+    if (isScreenshotSaveRequest(text)) return "screenshot-save";
+    if (isCapabilityExtensionRequest(text)) return "capability-extension";
+    if (isDesignReplicateRequest(text)) return "design-replicate";
+    if (isDevRunRequest(text)) return "dev-run";
+    if (matchesUiVisibleEdit(text)) return "ui-visible-edit";
+    if (matchesFileExactEdit(text)) return "file-exact-edit";
+    return "code-edit-general";
+  }
+  if (reasoning.intent === "qa" || reasoning.intent === "analysis") {
+    if (isBrowserDocAnalysisRequest(text)) return "browser-doc";
+    return "default";
+  }
+  return "default";
+}
+
+export function bootstrapPlaybookId(userRequest: string): TaskPlaybookId {
+  if (matchesReadOnlyAudit(userRequest)) return "read-only-audit";
+  return "default";
+}
+
+export function resolveTaskPlaybook(
+  userRequest: string,
+  state?: AgentLoopRunState,
+): ResolvedTaskPlaybook {
+  const input = state?.userRequest ?? userRequest;
+  const id = state?.taskReasoning
+    ? inferPlaybookIdFromReasoning(state.taskReasoning, input)
+    : bootstrapPlaybookId(input);
+  const playbook = getPlaybookById(id);
+  const matchReason = state?.taskReasoning
+    ? `推理 intent=${state.taskReasoning.intent}`
+    : id === "read-only-audit"
+      ? "用户声明只读"
+      : "默认（推理后细化）";
+  return { ...playbook, matchReason };
+}
+
+/** 软加速器 hint：仅当前 playbook 一条，不堆叠多条硬提示。 */
+export function collectPlaybookAcceleratorHints(
+  userRequest: string,
+  state?: AgentLoopRunState,
+): string[] {
+  const resolved = resolveTaskPlaybook(userRequest, state);
+  return resolved.loopHint ? [resolved.loopHint] : [];
+}
+
+function createMinimalState(userRequest: string): AgentLoopRunState {
+  return {
+    userRequest,
+    likelyEditRequest: isLikelyCodeEditRequest(userRequest),
+    approvalPrepared: false,
+    toolsCalled: [],
+    filesRead: [],
+    reflectionRounds: 0,
+  };
+}
+
+/** @deprecated 仅 validate 保留句式探测；runtime 用 inferPlaybookIdFromReasoning。 */
 const ORDERED_PLAYBOOKS: Array<{
   playbook: TaskPlaybook;
   match: (input: string, state: AgentLoopRunState) => boolean;
@@ -498,105 +485,17 @@ const ORDERED_PLAYBOOKS: Array<{
   },
 ];
 
-export function resolveTaskPlaybook(
+export function detectPlaybookIdFromRequest(
   userRequest: string,
   state?: AgentLoopRunState,
-): ResolvedTaskPlaybook {
+): TaskPlaybookId {
   const input = state?.userRequest ?? userRequest;
   for (const entry of ORDERED_PLAYBOOKS) {
     if (entry.match(input, state ?? createMinimalState(input))) {
-      return { ...entry.playbook, matchReason: entry.reason };
+      return entry.playbook.id;
     }
   }
-  return { ...DEFAULT_PLAYBOOK, matchReason: "默认" };
-}
-
-/** 软加速器 hint（可多条），不替模型定路由。 */
-export function collectPlaybookAcceleratorHints(
-  userRequest: string,
-  state?: AgentLoopRunState,
-): string[] {
-  const input = state?.userRequest ?? userRequest;
-  const minimal = state ?? createMinimalState(input);
-  const hints: string[] = [];
-  for (const entry of ORDERED_PLAYBOOKS) {
-    if (entry.match(input, minimal) && entry.playbook.loopHint) {
-      hints.push(entry.playbook.loopHint);
-    }
-  }
-  return hints;
-}
-
-function createMinimalState(userRequest: string): AgentLoopRunState {
-  return {
-    userRequest,
-    likelyEditRequest: isLikelyCodeEditRequest(userRequest),
-    approvalPrepared: false,
-    toolsCalled: [],
-    filesRead: [],
-    reflectionRounds: 0,
-  };
-}
-
-export function findCircuitBreaker(
-  playbook: TaskPlaybook,
-  toolName: string,
-  streak: { tool: string; count: number } | undefined,
-): PlaybookCircuitBreaker | null {
-  if (!streak || streak.tool !== toolName) return null;
-  return (
-    playbook.circuitBreakers.find(
-      (rule) => rule.tool === toolName && streak.count >= rule.threshold,
-    ) ?? null
-  );
-}
-
-const DESIGN_SPEC_TOOLS = new Set([
-  "devtools.extract_design_spec",
-  "devtools.get_persisted_design_spec",
-]);
-
-const DESIGN_REPLICATE_DISCOURAGED_BEFORE_SPEC = new Set([
-  "devtools.get_accessibility_tree",
-  "devtools.new_page",
-  "file.replace",
-  "file.replace.prepare",
-  "file.mutation",
-  "file.mutation.prepare",
-  "patch.apply",
-  "patch.prepare",
-]);
-
-export type PlaybookToolRedirect = {
-  redirectTool: string;
-  message: string;
-  understanding: string;
-  plannedNext: string;
-};
-
-/** @deprecated 软提示数据保留供 UI/文档；runtime 不再拦截工具调用。 */
-export function findPlaybookToolRedirect(
-  playbook: TaskPlaybook,
-  toolName: string,
-  toolsCalled: string[],
-): PlaybookToolRedirect | null {
-  if (playbook.id !== "design-replicate") return null;
-  if (DESIGN_SPEC_TOOLS.has(toolName)) return null;
-  if (!DESIGN_REPLICATE_DISCOURAGED_BEFORE_SPEC.has(toolName)) return null;
-  if (toolsCalled.some((tool) => DESIGN_SPEC_TOOLS.has(tool))) return null;
-
-  return {
-    redirectTool: "devtools.extract_design_spec",
-    message:
-      "design-replicate 任务应先 devtools.extract_design_spec，再改代码；不要跳过 design spec 直接写盘或用 a11y tree。",
-    understanding: "缺少 design spec，无法稳定复刻布局与样式。",
-    plannedNext:
-      "browser.open demo URL（若尚未打开）→ devtools.extract_design_spec → file.read 目标页面文件。",
-  };
-}
-
-export function countToolRounds(toolsCalled: string[]): number {
-  return toolsCalled.length;
+  return "default";
 }
 
 export type PlaybookProgress = {
@@ -612,6 +511,7 @@ export type PlaybookProgress = {
 export function computePlaybookProgress(
   playbook: TaskPlaybook,
   toolsCalled: string[],
+  filesWritten: string[] = [],
 ): PlaybookProgress {
   const steps = playbook.goldenSteps;
   if (steps.length === 0) {
@@ -631,7 +531,13 @@ export function computePlaybookProgress(
   let currentStepLabel: string | null = steps[0]?.label ?? null;
 
   for (const step of steps) {
-    const done = step.tools.some((tool) => toolsCalled.includes(tool));
+    let done = step.tools.some((tool) => toolsCalled.includes(tool));
+    if (step.id === "write" && playbook.id === "design-replicate") {
+      done = hasPageUiDeliverable({
+        filesWritten,
+        editApplied: filesWritten.length > 0,
+      } as AgentLoopRunState);
+    }
     if (done) {
       completedStepIds.push(step.id);
     }
@@ -667,19 +573,3 @@ export function computePlaybookProgress(
   };
 }
 
-export function buildSoftRoundBudgetHint(
-  playbook: TaskPlaybook,
-  toolRounds: number,
-): string | null {
-  if (toolRounds < playbook.softMaxToolRounds) return null;
-  if (playbook.id === "browser-doc") {
-    return "【轮次提示】文档任务已达建议工具轮次。请根据已有 browser 快照直接输出中文 final，不要再调工具。";
-  }
-  if (playbook.id === "design-replicate") {
-    return "【轮次提示】复刻任务已达建议轮次。请根据 design spec 完成 file.replace/prepare，并 browser.open 本地页验证。";
-  }
-  if (playbook.id === "ui-visible-edit") {
-    return "【轮次提示】UI 任务已达建议轮次。请 file.read 后 file.replace/prepare，或总结阻塞原因。";
-  }
-  return "【轮次提示】已达建议工具轮次。请总结当前证据并给出 final 或明确阻塞。";
-}

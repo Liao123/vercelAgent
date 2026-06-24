@@ -29,6 +29,7 @@ export function isRetriableModelError(error: unknown): boolean {
   return (
     /524|502|503|504|429/.test(message) ||
     /rate_limit|concurrency limit|too many requests/.test(message) ||
+    /html 错误页|html error/.test(message) ||
     /timeout|超时|gateway|temporarily unavailable|rate limit|fetch failed|econnreset|enotfound/.test(
       message,
     )

@@ -61,6 +61,8 @@ type AgentComposerProps = {
   approvalStatusTone?: "success" | "error" | "neutral";
   /** A165：运行中点击停止 */
   onCancel?: () => void;
+  /** 运行中追加引导（Cursor steering） */
+  onSendGuidance?: (text: string) => void | Promise<void>;
   workspaceAtEnabled?: boolean;
   recentAttachedPaths?: string[];
   onPickAttachedPath?: (path: string) => void;
@@ -106,6 +108,7 @@ export function AgentComposer({
   approvalStatus,
   approvalStatusTone = "neutral",
   onCancel,
+  onSendGuidance,
   workspaceAtEnabled = false,
   recentAttachedPaths = [],
   onPickAttachedPath,
@@ -438,9 +441,15 @@ export function AgentComposer({
 
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
+      if (running) {
+        const text = request.trim();
+        if (text && onSendGuidance) void onSendGuidance(text);
+        return;
+      }
       if (canRun) {
         event.currentTarget.form?.requestSubmit();
       }
+      return;
     }
   };
 
@@ -591,8 +600,12 @@ export function AgentComposer({
                 onKeyDown={onKeyDown}
                 onPaste={onPaste}
                 onScroll={syncHighlightScroll}
-                placeholder="描述要做的改动…（@ 附加文件，Ctrl+V / 拖入截图，Enter 发送）"
-                disabled={running}
+                placeholder={
+                  running
+                    ? "运行中可追加引导…（Enter 发送，Shift+Enter 换行）"
+                    : "描述要做的改动…（@ 附加文件，Ctrl+V / 拖入截图，Enter 发送）"
+                }
+                disabled={false}
                 rows={1}
                 className={`relative z-10 block max-h-[200px] min-h-[44px] w-full resize-none bg-transparent px-4 py-3 text-[14px] leading-relaxed outline-none caret-zinc-900 selection:bg-sky-200/40 disabled:opacity-60 dark:caret-zinc-100 dark:selection:bg-sky-900/40 ${
                   request.trim().length > 0
@@ -640,30 +653,40 @@ export function AgentComposer({
                   onPrefsChange={onAgentPrefsChange}
                 />
               </div>
-              <button
-                type={running && onCancel ? "button" : "submit"}
-                disabled={running ? !onCancel : !canRun}
-                onClick={
-                  running && onCancel
-                    ? (event) => {
-                        event.preventDefault();
-                        onCancel();
-                      }
-                    : undefined
-                }
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-zinc-900 text-white transition hover:bg-zinc-800 disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-zinc-200"
-                title={running ? "停止运行" : "发送（Enter）"}
-              >
-                {running ? (
-                  onCancel ? (
+              <div className="flex items-center gap-1">
+                {running && onCancel && (
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      onCancel();
+                    }}
+                    className="flex h-8 w-8 items-center justify-center rounded-full border border-zinc-300 text-zinc-600 transition hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                    title="停止运行"
+                  >
                     <StopIcon />
-                  ) : (
-                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white dark:border-zinc-400/30 dark:border-t-zinc-900" />
-                  )
-                ) : (
-                  <SendIcon />
+                  </button>
                 )}
-              </button>
+                <button
+                  type={running ? "button" : "submit"}
+                  disabled={
+                    running ? !request.trim() || !onSendGuidance : !canRun
+                  }
+                  onClick={
+                    running && onSendGuidance
+                      ? (event) => {
+                          event.preventDefault();
+                          const text = request.trim();
+                          if (text) void onSendGuidance(text);
+                        }
+                      : undefined
+                  }
+                  className="flex h-8 w-8 items-center justify-center rounded-full bg-zinc-900 text-white transition hover:bg-zinc-800 disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-zinc-200"
+                  title={running ? "发送引导（Enter）" : "发送（Enter）"}
+                >
+                  <SendIcon />
+                </button>
+              </div>
             </div>
             </div>
           </div>

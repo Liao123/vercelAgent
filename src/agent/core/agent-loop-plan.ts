@@ -1,9 +1,12 @@
 /**
  * Agent Loop 任务规划（中文步骤 + 运行态同步）。
+ * Cursor 式：不按工具次数假打勾，按真实理解/交付推进。
  */
 import type { AgentPlan, AgentPlanStepStatus } from "@/agent/types";
 import { nowIso } from "@/agent/types";
 import type { AgentLoopRunState } from "@/agent/core/agent-loop-state";
+import { isEditTaskSatisfied } from "@/agent/core/agent-loop-state";
+import { isEditDeliverableSatisfied } from "@/agent/core/loop-deliverable";
 
 const GATHER_TOOLS = new Set([
   "workspace.inspect",
@@ -17,6 +20,9 @@ const GATHER_TOOLS = new Set([
   "symbol.find_references",
   "git.status",
   "git.diff",
+  "browser.inspect",
+  "browser.wait_and_inspect",
+  "devtools.extract_design_spec",
 ]);
 
 const PREPARE_TOOLS = new Set([
@@ -27,6 +33,34 @@ const PREPARE_TOOLS = new Set([
   "shell.command.prepare",
   "shell.run.prepare",
 ]);
+
+const WRITE_TOOLS = new Set([
+  "file.replace",
+  "file.mutation",
+  "patch.apply",
+]);
+
+function isMeaningfulWorkspaceRead(path: string): boolean {
+  const n = path.replaceAll("\\", "/");
+  if (n.includes(".agent-state/tool-results/")) return false;
+  if (n.startsWith(".agent-state/")) return false;
+  return true;
+}
+
+function hasMeaningfulGather(state: AgentLoopRunState): boolean {
+  const meaningfulReads = state.filesRead.filter(isMeaningfulWorkspaceRead);
+  if (meaningfulReads.length > 0) return true;
+  return state.toolsCalled.some((tool) =>
+    [
+      "project.index",
+      "file.locate",
+      "browser.inspect",
+      "browser.wait_and_inspect",
+      "devtools.extract_design_spec",
+      "workspace.inspect",
+    ].includes(tool),
+  );
+}
 
 export function createAgentLoopPlan(userRequest: string): AgentPlan {
   return {
@@ -63,7 +97,7 @@ export function createAgentLoopPlan(userRequest: string): AgentPlan {
       "file.replace.prepare 的 search 必须与磁盘内容完全一致，不能凭中文描述猜测。",
     ],
     verification: [
-      "改代码类任务应以审批就绪或明确阻塞原因结束。",
+      "改代码类任务应以交付物落盘或明确阻塞原因结束。",
     ],
     updatedAt: nowIso(),
   };
@@ -90,11 +124,13 @@ export function syncAgentLoopPlanProgress(
   hint: PlanProgressHint = {},
 ): AgentPlan {
   const steps = plan.steps.map((step) => ({ ...step }));
-  const hasEvidence =
-    state.filesRead.length > 0 ||
-    state.toolsCalled.some((tool) => GATHER_TOOLS.has(tool));
-  const triedPrepare = state.toolsCalled.some((tool) => PREPARE_TOOLS.has(tool));
   const readOnly = !state.likelyEditRequest;
+  const triedPrepare = state.toolsCalled.some((tool) => PREPARE_TOOLS.has(tool));
+  const triedWrite = state.toolsCalled.some((tool) => WRITE_TOOLS.has(tool));
+  const understood =
+    Boolean(state.taskReasoning) || state.reasoningCompleted === true;
+  const gathered = hasMeaningfulGather(state);
+  const deliverableOk = isEditDeliverableSatisfied(state, state.playbookId);
 
   if (hint.taskCompleted) {
     for (const step of steps) {
@@ -103,37 +139,41 @@ export function syncAgentLoopPlanProgress(
     return { ...plan, steps, updatedAt: nowIso() };
   }
 
-  if (hasEvidence || state.reflectionRounds > 0) {
+  if (understood) {
     setStep(steps, "understand", "done");
-    if (readOnly) {
-      setStep(steps, "prepare", "skipped");
-      setStep(
-        steps,
-        "gather",
-        hasEvidence ? "done" : hint.lastAction === "tool" ? "doing" : "todo",
-      );
-    } else if (state.approvalPrepared) {
-      setStep(steps, "gather", "done");
-      setStep(steps, "prepare", "done");
-    } else if (triedPrepare || (hasEvidence && state.likelyEditRequest)) {
-      setStep(steps, "gather", hasEvidence ? "done" : "doing");
-      setStep(steps, "prepare", triedPrepare ? "doing" : "todo");
-    } else {
-      setStep(steps, "gather", hint.lastAction === "tool" ? "doing" : "todo");
-    }
   } else {
-    setStep(steps, "understand", "doing");
+    setStep(steps, "understand", hint.lastAction === "tool" ? "doing" : "doing");
+  }
+
+  if (readOnly) {
+    setStep(steps, "prepare", "skipped");
+    if (state.taskEvidenceComplete || gathered) {
+      setStep(steps, "gather", "done");
+    } else if (hint.lastAction === "tool") {
+      setStep(steps, "gather", "doing");
+    }
+  } else if (deliverableOk) {
+    setStep(steps, "gather", "done");
+    setStep(steps, "prepare", triedPrepare || triedWrite ? "done" : "doing");
+  } else if (triedPrepare) {
+    setStep(steps, "gather", gathered ? "done" : "doing");
+    setStep(steps, "prepare", "doing");
+  } else if (gathered) {
+    setStep(steps, "gather", "done");
+    setStep(steps, "prepare", triedWrite ? "doing" : "todo");
+  } else if (hint.lastAction === "tool") {
+    setStep(steps, "gather", "doing");
   }
 
   if (hint.lastAction === "reflect") {
     setStep(steps, "reflect", "doing");
-  } else if (state.reflectionRounds > 0 && (state.approvalPrepared || readOnly)) {
+  } else if (state.reflectionRounds > 0 && (deliverableOk || readOnly)) {
     setStep(steps, "reflect", "done");
-  } else if (state.reflectionRounds > 0) {
-    setStep(steps, "reflect", "todo");
   }
 
-  if (state.approvalPrepared || (readOnly && hasEvidence)) {
+  if (deliverableOk || (readOnly && state.taskEvidenceComplete)) {
+    setStep(steps, "finish", hint.lastAction === "final" ? "done" : "doing");
+  } else if (isEditTaskSatisfied(state, state.playbookId) && readOnly) {
     setStep(steps, "finish", hint.lastAction === "final" ? "done" : "doing");
   }
 
@@ -156,4 +196,14 @@ export function completedAgentLoopPlan(plan: AgentPlan): AgentPlan {
     ),
     updatedAt: nowIso(),
   };
+}
+
+/** 任务未交付或模型连续失败：finish 标 blocked，不全标 done。 */
+export function failedAgentLoopPlan(plan: AgentPlan): AgentPlan {
+  const steps = plan.steps.map((step) => ({ ...step }));
+  const finish = steps.find((s) => s.id === "finish");
+  if (finish && finish.status !== "skipped") {
+    finish.status = "blocked";
+  }
+  return { ...plan, steps, updatedAt: nowIso() };
 }

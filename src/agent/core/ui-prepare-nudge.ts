@@ -26,7 +26,8 @@ export function extractUiLabelSearchCandidates(
   labels?: string[],
 ): string[] {
   const resolvedLabels =
-    labels && labels.length > 0 ? labels : ["新建 Agent", "Loop", "闭环"];
+    labels && labels.length > 0 ? labels : [];
+  if (resolvedLabels.length === 0) return [];
   const lines = content.split(/\r?\n/);
   const candidates: string[] = [];
 
@@ -132,18 +133,12 @@ export function isUiPrepareEvidenceReady(
   return state.prepareHint.suggestedSearchLines.length > 0;
 }
 
-/** 仅当已尝试过 prepare 仍失败时禁用 recovery，避免未 prepare 时连兜底都没有。 */
+/** @deprecated edit.recovery 已移除；保留供 validate 类型兼容。 */
 export function shouldSkipEditRecoveryForUiPrepare(
-  state: AgentLoopRunState,
-  uiContext?: AgentUiContext,
+  _state: AgentLoopRunState,
+  _uiContext?: AgentUiContext,
 ): boolean {
-  if (!isUiPrepareEvidenceReady(state, uiContext)) return false;
-  return state.toolsCalled.some(
-    (tool) =>
-      tool === "file.replace.prepare" ||
-      tool === "file.mutation.prepare" ||
-      tool === "patch.prepare",
-  );
+  return false;
 }
 
 export function captureUiPrepareHintFromFileRead(
@@ -170,16 +165,13 @@ export function buildUiPrepareNudgeBlock(state: AgentLoopRunState): string | nul
   if (!allDisambiguationCandidatesRead(state)) return null;
 
   const lines = [
-    "=== UI prepare nudge (exact search required) ===",
+    "=== UI prepare hint (exact search from disk) ===",
     `Target file: ${state.prepareHint.path}`,
-    "Copy ONE line below verbatim into file.replace.prepare search (include spaces).",
-    "To remove visible UI controls, replace the matched line with empty string or delete the surrounding block after reading full context.",
+    "If editing, copy ONE Candidate line verbatim into file.replace search.",
     "",
     ...state.prepareHint.suggestedSearchLines.map(
       (line, index) => `Candidate ${index + 1}: ${JSON.stringify(line)}`,
     ),
-    "",
-    'Next tool_call MUST be file.replace.prepare on this path. Do not action=final without prepare.',
   ];
 
   return lines.join("\n");

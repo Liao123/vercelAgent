@@ -20,6 +20,14 @@ import {
   resolveTaskPlaybook,
 } from "../src/agent/core/task-playbooks.ts";
 import {
+  buildReplicateAfterExtractNudge,
+  buildReplicateAfterWriteNudge,
+  buildReplicateEmptyWorkspaceNudge,
+  applyWorkspaceStructureToRunState,
+  isDesignReplicateTask,
+} from "../src/agent/core/loop-replicate-nudge.ts";
+import { createAgentLoopRunState } from "../src/agent/core/agent-loop-state.ts";
+import {
   DEMO_REPLICATE_PAGE_PATH,
   GOLDEN_DESIGN_REPLICATE_QUERY,
 } from "./golden-path-fixtures.ts";
@@ -112,14 +120,31 @@ async function main(): Promise<void> {
     "not browser-doc",
   );
 
-  const pb = resolveTaskPlaybook(GOLDEN_DESIGN_REPLICATE_QUERY);
+  const replicateState = {
+    userRequest: GOLDEN_DESIGN_REPLICATE_QUERY,
+    taskReasoning: {
+      understanding: "复刻首页",
+      intent: "code_edit" as const,
+      risk: "write" as const,
+      evidenceNeeded: [],
+      planSteps: [],
+      ambiguity: null,
+      canAnswerNow: false,
+      plannedNext: "extract",
+      source: "model" as const,
+    },
+  };
+  const pb = resolveTaskPlaybook(
+    GOLDEN_DESIGN_REPLICATE_QUERY,
+    replicateState as import("../src/agent/core/agent-loop-state").AgentLoopRunState,
+  );
   assert.equal(pb.id, "design-replicate");
 
-  const progress = computePlaybookProgress(pb, [
-    "devtools.extract_design_spec",
-    "file.read",
-    "file.replace",
-  ]);
+  const progress = computePlaybookProgress(
+    pb,
+    ["devtools.extract_design_spec", "file.read", "file.replace"],
+    ["src/app/demo-replicate/page.tsx"],
+  );
   assert.equal(progress.completedCount, 3);
   assert.ok(progress.progressLabel.includes("复刻"));
 
@@ -135,6 +160,53 @@ async function main(): Promise<void> {
   assert.equal(loaded?.title, "Example");
   const loadedMeta = await loadLatestDesignSpecMeta();
   assert.equal(loadedMeta?.id, meta.id);
+
+  const state = createAgentLoopRunState(GOLDEN_DESIGN_REPLICATE_QUERY);
+  state.playbookId = "design-replicate";
+  state.toolsCalled.push("devtools.extract_design_spec");
+  assert.ok(isDesignReplicateTask(state));
+  const extractNudge = buildReplicateAfterExtractNudge(state);
+  assert.ok(extractNudge?.includes("get_persisted_design_spec"));
+  assert.ok(extractNudge?.includes("file.mutation"));
+
+  state.filesWritten = ["index.html", "src/styles.css", "src/main.js"];
+  state.editApplied = true;
+  const writeOk = buildReplicateAfterWriteNudge(state, state.filesWritten);
+  assert.ok(writeOk?.includes("deliverable OK"));
+
+  state.filesWritten = ["index.html"];
+  const writeBare = buildReplicateAfterWriteNudge(state, ["index.html"]);
+  assert.ok(writeBare?.includes("incomplete"));
+
+  const emptyState = createAgentLoopRunState(
+    "复刻 http://example.com 写到当前项目",
+  );
+  emptyState.playbookId = "design-replicate";
+  applyWorkspaceStructureToRunState(emptyState, {
+    rootPath: "/tmp/empty",
+    staleConfiguredPath: null,
+    hasPackageJson: false,
+    hasSrcApp: false,
+    hasAppDir: false,
+    hasPagesDir: false,
+    topLevelEntryCount: 0,
+    topLevelEntries: [],
+    observations: ["workspace root appears empty"],
+  });
+  const emptyNudge = buildReplicateEmptyWorkspaceNudge(emptyState);
+  assert.ok(emptyNudge?.includes("index.html"));
+  assert.ok(emptyNudge?.includes("get_persisted_design_spec"));
+
+  const verifyState = createAgentLoopRunState(GOLDEN_DESIGN_REPLICATE_QUERY);
+  verifyState.playbookId = "design-replicate";
+  verifyState.filesWritten = ["index.html", "src/styles.css", "src/main.js"];
+  verifyState.editApplied = true;
+  const verifyNudge = buildReplicateAfterWriteNudge(
+    verifyState,
+    verifyState.filesWritten,
+    process.cwd(),
+  );
+  assert.ok(verifyNudge?.includes("deliverable OK"));
 
   console.log("validate-design-replicate: passed");
 }

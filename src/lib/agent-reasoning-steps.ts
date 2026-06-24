@@ -67,6 +67,25 @@ export function groupNarrativeIntoSteps(
   };
 
   for (const event of events) {
+    if (event.type === "guidance.received") {
+      flush(event.at);
+      current = {
+        id: `guidance-${event.id}`,
+        reflection: {
+          understanding: `用户追加引导：${event.text}`,
+          blockers: [],
+          plannedNext:
+            event.applied === false
+              ? "引导已排队，等待下一轮迭代应用。"
+              : "按最新引导调整下一步。",
+          source: "runtime",
+        },
+        reflectionAt: event.at,
+        actions: [],
+      };
+      continue;
+    }
+
     if (event.type === "reflection.updated") {
       if (isNoisyRuntimeReflection(event.reflection)) {
         if (current) {

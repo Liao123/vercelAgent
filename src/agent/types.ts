@@ -464,6 +464,16 @@ export type AgentEvent =
       reflection: AgentReflection;
       at?: string;
     }
+  | {
+      type: "guidance.received";
+      taskId: string;
+      threadId: string;
+      id: string;
+      text: string;
+      at: string;
+      /** true = 已注入模型上下文；false/缺省 = 用户刚发送、等待下一轮 */
+      applied?: boolean;
+    }
   | { type: "task.completed"; taskId: string; task: Task; summary: string }
   | {
       type: "task.awaiting_approval";

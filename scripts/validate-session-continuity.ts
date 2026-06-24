@@ -31,13 +31,15 @@ async function read(rel: string): Promise<string> {
 
 async function main(): Promise<void> {
   const loopRoute = await read("src/app/api/agent/loop/route.ts");
+  const loopRequest = await read("src/agent/protocol/loop-request.ts");
   const loop = await read("src/agent/core/agent-loop.ts");
   const panel = await read("src/components/agent-panel.tsx");
 
   assert.ok(loop.includes("buildThreadMemoryAfterTask"), "task end saves thread memory");
   assert.ok(loop.includes("evaluateReasoningTurn"), "adaptive reasoning turn");
-  assert.ok(loopRoute.includes("browserActiveTab"), "loop API passes browser tab");
-  assert.ok(loopRoute.includes("openEditorPaths"), "loop API passes open editor paths");
+  assert.ok(loopRoute.includes("parseAgentLoopRequestBody"), "loop API uses request parser");
+  assert.ok(loopRequest.includes("browserActiveTab"), "loop request passes browser tab");
+  assert.ok(loopRequest.includes("openEditorPaths"), "loop request passes open editor paths");
   assert.ok(panel.includes("mergeBrowserTabIntoUiContext"), "panel injects browser tab");
   assert.ok(panel.includes("/api/agent/browser/tabs"), "panel reads browser tabs");
 

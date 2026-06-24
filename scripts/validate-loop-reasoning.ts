@@ -20,11 +20,13 @@ import { createAgentLoopRunState } from "../src/agent/core/agent-loop-state";
 import {
   evaluateFinalEvidenceGate,
   evaluateToolEvidenceGate,
+  shouldProceedToFinalGatherBlock,
+} from "../src/agent/core/evidence-gate-policy";
+import {
   hasLayoutMetadataEvidence,
   hasPackageNameEvidence,
   isNarrowWorkspaceMetadataFromSignals,
   isTaskEvidenceSufficient,
-  shouldProceedToFinalGatherBlock,
   syncTaskEvidenceComplete,
 } from "../src/agent/core/evidence-gate";
 import {
@@ -66,7 +68,8 @@ async function main(): Promise<void> {
   assert.ok(runner.includes("syncTaskEvidenceComplete"), "tool runner syncs evidence complete");
   assert.ok(loop.includes("isMetaExplainRequest"), "loop detects meta explain");
   assert.ok(loop.includes("evaluateReasoningTurn"), "loop uses adaptive reasoning mode");
-  assert.ok(loop.includes("buildAdaptiveReasoningSkipHint"), "loop injects skip hint");
+  assert.ok(loop.includes("rebindPlaybookFromState"), "loop rebinds playbook after reasoning");
+  assert.ok(loop.includes("isLikelyCodeEditRequest"), "loop uses reasoning-aware edit detect");
   assert.ok(loop.includes("collectPlaybookAcceleratorHints"), "loop uses accelerator hints");
   assert.ok(!loop.includes("conversation-recall"), "no hardcoded recall playbook in loop");
   assert.ok(!loop.includes("browser-live-page"), "no hardcoded browser-live playbook in loop");
@@ -225,7 +228,7 @@ async function main(): Promise<void> {
   const { formatModelErrorMessage } = await import("../src/lib/model-error-message");
   const html524 = `<!DOCTYPE html><html><head><title>queqiao.online | 524: A timeout occurred</title></head><body><h1>A timeout occurred</h1></body></html>`;
   const sanitized = formatModelErrorMessage(`OpenAI 兼容中转 API error: ${html524}`);
-  assert.ok(sanitized.includes("524"));
+  assert.ok(sanitized.includes("HTML 错误页"));
   assert.ok(!sanitized.includes("<!DOCTYPE"));
   assert.ok(sanitized.length < 200);
 

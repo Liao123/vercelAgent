@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import {
   computePlaybookProgress,
-  findCircuitBreaker,
+  detectPlaybookIdFromRequest,
+  getPlaybookById,
+  inferPlaybookIdFromReasoning,
   isBrowserDocAnalysisRequest,
   isCapabilityExtensionRequest,
   isDesignReplicateRequest,
@@ -11,6 +13,7 @@ import {
   collectPlaybookAcceleratorHints,
   resolveTaskPlaybook,
 } from "../src/agent/core/task-playbooks";
+import type { TaskReasoning } from "../src/agent/core/loop-reasoning";
 import { GOLDEN_UI_QUERY, GOLDEN_DESIGN_REPLICATE_QUERY } from "./golden-path-fixtures";
 import { createAgentLoopRunState } from "../src/agent/core/agent-loop-state";
 
@@ -18,37 +21,65 @@ async function read(rel: string): Promise<string> {
   return fs.readFile(rel, "utf8");
 }
 
+function withReasoning(
+  userRequest: string,
+  partial: Partial<TaskReasoning> & Pick<TaskReasoning, "intent" | "risk">,
+): ReturnType<typeof createAgentLoopRunState> {
+  const state = createAgentLoopRunState(userRequest);
+  state.taskReasoning = {
+    understanding: partial.understanding ?? userRequest,
+    intent: partial.intent,
+    risk: partial.risk,
+    evidenceNeeded: partial.evidenceNeeded ?? [],
+    planSteps: partial.planSteps ?? [],
+    ambiguity: partial.ambiguity ?? null,
+    canAnswerNow: partial.canAnswerNow ?? false,
+    plannedNext: partial.plannedNext ?? "推进",
+    source: "model",
+  };
+  return state;
+}
+
 async function main(): Promise<void> {
   const loop = await read("src/agent/core/agent-loop.ts");
   const runner = await read("src/agent/core/agent-loop-tool-runner.ts");
   const feed = await read("src/lib/agent-turn-feed.ts");
+  const playbooks = await read("src/agent/core/task-playbooks.ts");
 
   assert.ok(loop.includes("playbook.matched"), "loop emits playbook.matched");
   assert.ok(loop.includes("playbook.progress"), "loop emits playbook.progress");
   assert.ok(loop.includes("resolveTaskPlaybook"), "loop uses resolveTaskPlaybook");
+  assert.ok(loop.includes("rebindPlaybookFromState"), "loop rebinds after reasoning");
   assert.ok(runner.includes("emitPlaybookProgress"), "runner emits progress");
-  assert.ok(!runner.includes("findCircuitBreaker"), "runner no longer hard-blocks via circuit breakers");
+  assert.ok(!runner.includes("findCircuitBreaker"), "runner no circuit breakers");
+  assert.ok(!playbooks.includes("circuitBreakers"), "no circuit breaker data");
+  assert.ok(!playbooks.includes("findPlaybookToolRedirect"), "no tool redirect");
+  assert.ok(playbooks.includes("inferPlaybookIdFromReasoning"), "reasoning playbook bind");
   assert.ok(feed.includes("extractPlaybookFromEvents"), "feed extracts playbook");
-  assert.ok(feed.includes("filterNarrativeEvents"), "feed filters duplicate started");
 
   const docUrl =
     "https://s.apifox.cn/aed7ded5-e044-4fc8-8c17-811dd6b0f909/469140751e0";
   const docRequest = `帮我解析 ${docUrl} 的接口参数`;
   assert.ok(isBrowserDocAnalysisRequest(docRequest), "browser doc detect");
-  const docPb = resolveTaskPlaybook(docRequest);
-  assert.equal(docPb.id, "browser-doc");
+  assert.equal(detectPlaybookIdFromRequest(docRequest), "browser-doc");
+  const docState = withReasoning(docRequest, {
+    intent: "browser",
+    risk: "read_only",
+  });
+  assert.equal(resolveTaskPlaybook(docRequest, docState).id, "browser-doc");
 
   assert.ok(
     isDesignReplicateRequest(GOLDEN_DESIGN_REPLICATE_QUERY),
     "design replicate detect",
   );
-  const replicatePb = resolveTaskPlaybook(GOLDEN_DESIGN_REPLICATE_QUERY);
-  assert.equal(replicatePb.id, "design-replicate");
-
-  const redirect = (
-    await import("../src/agent/core/task-playbooks.ts")
-  ).findPlaybookToolRedirect(replicatePb, "devtools.get_accessibility_tree", []);
-  assert.ok(redirect?.redirectTool === "devtools.extract_design_spec");
+  const replicateState = withReasoning(GOLDEN_DESIGN_REPLICATE_QUERY, {
+    intent: "code_edit",
+    risk: "write",
+  });
+  assert.equal(
+    resolveTaskPlaybook(GOLDEN_DESIGN_REPLICATE_QUERY, replicateState).id,
+    "design-replicate",
+  );
 
   assert.ok(
     isCapabilityExtensionRequest(
@@ -56,24 +87,34 @@ async function main(): Promise<void> {
     ),
     "capability extension detect",
   );
-  const extPb = resolveTaskPlaybook(
+  const extState = withReasoning(
     "扩展 Agent 命令行能力，对齐 Cursor，改 agent-loop-tools 并跑 validate:shell-run",
+    { intent: "code_edit", risk: "write" },
   );
-  assert.equal(extPb.id, "capability-extension");
+  assert.equal(resolveTaskPlaybook(extState.userRequest, extState).id, "capability-extension");
 
   assert.ok(isDevRunRequest("跑一下 dev 能跑吗"), "dev run detect");
-  const devPb = resolveTaskPlaybook("跑一下 dev能跑吗");
-  assert.equal(devPb.id, "dev-run");
+  const devState = withReasoning("跑一下 dev能跑吗", {
+    intent: "shell",
+    risk: "write",
+  });
+  assert.equal(resolveTaskPlaybook("跑一下 dev能跑吗", devState).id, "dev-run");
 
   assert.ok(
     isScreenshotSaveRequest("把当前页面截图保存到桌面 desktop:test.jpg"),
     "screenshot save detect",
   );
-  const shotPb = resolveTaskPlaybook("截图到桌面保存为 test.jpg");
-  assert.equal(shotPb.id, "screenshot-save");
+  const shotState = withReasoning("截图到桌面保存为 test.jpg", {
+    intent: "code_edit",
+    risk: "write",
+  });
+  assert.equal(resolveTaskPlaybook("截图到桌面保存为 test.jpg", shotState).id, "screenshot-save");
 
-  const uiPb = resolveTaskPlaybook(GOLDEN_UI_QUERY);
-  assert.equal(uiPb.id, "ui-visible-edit");
+  const uiState = withReasoning(GOLDEN_UI_QUERY, {
+    intent: "code_edit",
+    risk: "write",
+  });
+  assert.equal(resolveTaskPlaybook(GOLDEN_UI_QUERY, uiState).id, "ui-visible-edit");
 
   const readOnly = resolveTaskPlaybook("只读分析 src/app/page.tsx，不要改代码");
   assert.equal(readOnly.id, "read-only-audit");
@@ -81,39 +122,38 @@ async function main(): Promise<void> {
   assert.equal(
     resolveTaskPlaybook("这个网站的标题是什么").id,
     "default",
-    "ambiguous site title is not hard-routed",
+    "bootstrap stays default until reasoning",
   );
+  assert.equal(
+    inferPlaybookIdFromReasoning(
+      {
+        understanding: "问标题",
+        intent: "qa",
+        risk: "read_only",
+        evidenceNeeded: [],
+        planSteps: [],
+        ambiguity: null,
+        canAnswerNow: false,
+        plannedNext: "read",
+        source: "model",
+      },
+      "这个网站的标题是什么",
+    ),
+    "default",
+  );
+
   const hints = collectPlaybookAcceleratorHints(
     "只读分析 src/app/page.tsx，不要改代码",
   );
   assert.ok(hints.length > 0, "accelerator hints collected");
 
+  const uiPb = getPlaybookById("ui-visible-edit");
   const progress = computePlaybookProgress(uiPb, [
     "ui.trace_from_page",
     "jsx.find_text",
   ]);
   assert.equal(progress.completedCount, 2);
   assert.ok(progress.progressLabel.includes("界面"));
-
-  const breaker = findCircuitBreaker(
-    docPb,
-    "devtools.get_network_requests",
-    { tool: "devtools.get_network_requests", count: 2 },
-  );
-  assert.ok(breaker?.redirectTool === "browser.inspect");
-
-  const uiState = createAgentLoopRunState(GOLDEN_UI_QUERY);
-  uiState.toolFailureStreak = {
-    tool: "file.search",
-    error: "empty",
-    count: 2,
-  };
-  const uiBreaker = findCircuitBreaker(
-    resolveTaskPlaybook(GOLDEN_UI_QUERY, uiState),
-    "file.search",
-    uiState.toolFailureStreak,
-  );
-  assert.ok(uiBreaker?.redirectTool === "jsx.find_text");
 
   console.log("validate-task-playbooks: passed");
 }
