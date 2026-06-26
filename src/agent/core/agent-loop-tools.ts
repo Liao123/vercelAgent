@@ -20,6 +20,7 @@ import {
   loadLatestDesignSpecMeta,
   saveDesignSpec,
 } from "@/agent/browser/design-spec-store";
+import { isDesignToolUrl } from "@/agent/browser/design-tool-url";
 import {
   getBrowserTabsState,
   listBrowserPages,
@@ -1048,10 +1049,17 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
   {
     name: "devtools.get_screenshot",
     description:
-      "Capture JPEG screenshot of the in-app browser via CDP. Optional filePath saves to disk (~, desktop: alias, or absolute). Requires desktop app and loaded browser tab.",
+      "Capture JPEG via CDP. For design sites (js.design/Figma) or when the right-rail webview is too small, pass useCaptureWindow:true — opens a hidden 1920×1080 BrowserWindow independent of panel size. Optional filePath saves to disk.",
     args: {
       filePath:
         "optional save path: absolute, ~/Desktop/name.jpg, or desktop:name.jpg",
+      useCaptureWindow:
+        "true = hidden full-size window (recommended for js.design/Figma export)",
+      url: "optional URL when using capture window (else uses active browser tab URL)",
+      viewportWidth: "capture window width, default 1920",
+      viewportHeight: "capture window height, default 1080",
+      shotMode:
+        "viewport | fullPage | designArtboard — design sites default designArtboard",
     },
     async execute(args) {
       if (!(await isCdpBridgeAvailable())) {
@@ -1062,7 +1070,32 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
           },
         };
       }
-      const jpegBase64 = await cdpScreenshotJpegBase64();
+      const urlArg = typeof args.url === "string" ? args.url.trim() : "";
+      const useCaptureWindow =
+        args.useCaptureWindow === true ||
+        args.useCaptureWindow === "true" ||
+        (urlArg && isDesignToolUrl(urlArg));
+      const shot = await cdpScreenshotJpegBase64({
+        useCaptureWindow,
+        url: urlArg || undefined,
+        viewportWidth:
+          typeof args.viewportWidth === "number"
+            ? args.viewportWidth
+            : Number(args.viewportWidth) || undefined,
+        viewportHeight:
+          typeof args.viewportHeight === "number"
+            ? args.viewportHeight
+            : Number(args.viewportHeight) || undefined,
+        shotMode:
+          args.shotMode === "viewport" ||
+          args.shotMode === "fullPage" ||
+          args.shotMode === "designArtboard"
+            ? args.shotMode
+            : useCaptureWindow
+              ? "designArtboard"
+              : undefined,
+      });
+      const jpegBase64 = shot.jpegBase64;
       const filePath =
         typeof args.filePath === "string" ? args.filePath.trim() : "";
       let savedTo: string | null = null;
@@ -1081,13 +1114,19 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
           format: "jpeg",
           byteLength: jpegBase64 ? Math.floor((jpegBase64.length * 3) / 4) : 0,
           savedTo,
+          captureWindow: shot.captureWindow,
+          mode: shot.mode ?? null,
+          viewportWidth: shot.viewportWidth ?? null,
+          viewportHeight: shot.viewportHeight ?? null,
           jpegBase64Preview: jpegBase64
             ? `${jpegBase64.slice(0, 48)}…`
             : null,
           hint: savedTo
             ? `Screenshot saved to ${savedTo}`
             : jpegBase64
-              ? "Captured in memory. Pass filePath (~/Desktop/… or desktop:name.jpg) to save."
+              ? shot.captureWindow
+                ? "Captured via hidden window (1920×1080). Pass filePath to save."
+                : "Captured from webview panel. For design sites use useCaptureWindow:true."
               : "Screenshot empty — open a page in the browser tab first.",
         },
       };

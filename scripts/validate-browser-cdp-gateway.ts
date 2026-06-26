@@ -37,6 +37,8 @@ async function main(): Promise<void> {
   assert.ok(cdpMain.includes("startCdpBridgeServer"), "CDP HTTP bridge");
   assert.ok(cdpMain.includes("/send"), "bridge /send");
   assert.ok(cdpMain.includes("captureGuestScreenshot"), "full page screenshot");
+  assert.ok(cdpMain.includes("captureUrlInHiddenWindow"), "hidden capture window");
+  assert.ok(cdpMain.includes("useCaptureWindow"), "capture window API");
   assert.ok(cdpMain.includes("captureBeyondViewport"), "CDP beyond viewport");
   assert.ok(cdpMain.includes("/type"), "bridge /type");
   assert.ok(cdpMain.includes("DOMSnapshot.captureSnapshot"), "DOM snapshot CDP");

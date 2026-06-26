@@ -80,7 +80,10 @@ export async function attemptDeterministicModelFailureRecovery(input: {
 
   if (wantsScreenshot && screenshotPath && (await isCdpBridgeAvailable())) {
     try {
-      const jpegBase64 = await cdpScreenshotJpegBase64();
+      const shot = await cdpScreenshotJpegBase64({
+        useCaptureWindow: /js\.design|figma\.com|mastergo/i.test(input.userRequest),
+      });
+      const jpegBase64 = shot.jpegBase64;
       if (jpegBase64) {
         const resolved = resolveUserSavePath(screenshotPath);
         await fs.mkdir(path.dirname(resolved), { recursive: true });

@@ -5,6 +5,7 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { app, ipcMain, webContents } from "electron";
+import { captureUrlInHiddenWindow } from "./browser-capture-window.mjs";
 
 const BRIDGE_PORT = Number(process.env.VEC_CDP_BRIDGE_PORT ?? 19229);
 const MAX_CONSOLE = 80;
@@ -47,6 +48,15 @@ function resolveGuestId(guestId) {
   if (Number.isFinite(id) && guestFromId(id)) return id;
   if (activeGuestId != null && guestFromId(activeGuestId)) return activeGuestId;
   return null;
+}
+
+function getGuestUrl(guestId) {
+  const id = resolveGuestId(guestId);
+  const wc = id != null ? guestFromId(id) : null;
+  if (!wc) return null;
+  const href = wc.getURL();
+  if (typeof href !== "string" || !/^https?:\/\//i.test(href)) return null;
+  return href;
 }
 
 async function writeBridgeState(baseUrl) {
@@ -703,6 +713,56 @@ async function handleBridgeRequest(req, res) {
     }
 
     if (url.startsWith("/screenshot")) {
+      const useCaptureWindow =
+        body.useCaptureWindow === true ||
+        body.mode === "captureWindow" ||
+        body.captureWindow === true;
+
+      if (useCaptureWindow) {
+        const targetUrl =
+          typeof body.url === "string" && body.url.trim()
+            ? body.url.trim()
+            : getGuestUrl(body.guestId ?? guestIdFromQuery);
+        if (!targetUrl) {
+          jsonResponse(res, 400, {
+            ok: false,
+            error:
+              "隐藏窗口截图需要 url，或先在右栏浏览器打开目标页面。",
+          });
+          return;
+        }
+        const shotMode =
+          body.shotMode === "fullPage" ||
+          body.shotMode === "designArtboard" ||
+          body.shotMode === "viewport"
+            ? body.shotMode
+            : /js\.design|figma\.com|mastergo\.com/i.test(targetUrl)
+              ? "designArtboard"
+              : "viewport";
+        const out = await captureUrlInHiddenWindow(targetUrl, {
+          viewportWidth: Number(body.viewportWidth) || 1920,
+          viewportHeight: Number(body.viewportHeight) || 1080,
+          quality: Number(body.quality) || 72,
+          mode: shotMode,
+          waitMs: Number(body.waitMs) || 25_000,
+        });
+        if (!out.ok) {
+          jsonResponse(res, 400, out);
+          return;
+        }
+        jsonResponse(res, 200, {
+          ok: true,
+          jpegBase64: out.jpegBase64,
+          captureWindow: true,
+          mode: out.mode,
+          url: out.url,
+          viewportWidth: out.viewportWidth,
+          viewportHeight: out.viewportHeight,
+          clip: out.clip ?? null,
+        });
+        return;
+      }
+
       const out = await captureGuestScreenshot(
         body.guestId ?? guestIdFromQuery,
         { fullPage: body.fullPage !== false },
@@ -716,6 +776,7 @@ async function handleBridgeRequest(req, res) {
         jpegBase64: out.jpegBase64,
         guestId: out.guestId,
         fullPage: out.fullPage,
+        captureWindow: false,
       });
       return;
     }

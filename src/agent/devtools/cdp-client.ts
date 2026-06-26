@@ -137,9 +137,53 @@ export async function cdpType(selector: string, text: string): Promise<BridgeJso
   return bridgePost("/type", { selector, text });
 }
 
-export async function cdpScreenshotJpegBase64(): Promise<string | null> {
-  const data = await bridgePost("/screenshot", {});
-  return typeof data.jpegBase64 === "string" ? data.jpegBase64 : null;
+export type CdpScreenshotOptions = {
+  /** 在隐藏 BrowserWindow（1920×1080）中截图，不受右栏 webview 尺寸限制 */
+  useCaptureWindow?: boolean;
+  url?: string;
+  viewportWidth?: number;
+  viewportHeight?: number;
+  /** viewport | fullPage | designArtboard — 设计稿站默认 designArtboard */
+  shotMode?: "viewport" | "fullPage" | "designArtboard";
+  fullPage?: boolean;
+  quality?: number;
+};
+
+export type CdpScreenshotResult = {
+  jpegBase64: string | null;
+  captureWindow: boolean;
+  mode?: string;
+  url?: string;
+  viewportWidth?: number;
+  viewportHeight?: number;
+};
+
+export async function cdpScreenshotJpegBase64(
+  options?: CdpScreenshotOptions,
+): Promise<CdpScreenshotResult> {
+  const body: Record<string, unknown> = {};
+  if (options?.useCaptureWindow) {
+    body.useCaptureWindow = true;
+    if (options.url) body.url = options.url;
+    if (options.viewportWidth) body.viewportWidth = options.viewportWidth;
+    if (options.viewportHeight) body.viewportHeight = options.viewportHeight;
+    if (options.shotMode) body.shotMode = options.shotMode;
+    if (options.quality) body.quality = options.quality;
+  } else if (options?.fullPage === false) {
+    body.fullPage = false;
+  }
+  const data = await bridgePost("/screenshot", body);
+  return {
+    jpegBase64:
+      typeof data.jpegBase64 === "string" ? data.jpegBase64 : null,
+    captureWindow: data.captureWindow === true,
+    mode: typeof data.mode === "string" ? data.mode : undefined,
+    url: typeof data.url === "string" ? data.url : undefined,
+    viewportWidth:
+      typeof data.viewportWidth === "number" ? data.viewportWidth : undefined,
+    viewportHeight:
+      typeof data.viewportHeight === "number" ? data.viewportHeight : undefined,
+  };
 }
 
 export async function cdpDomSnapshot(): Promise<unknown> {

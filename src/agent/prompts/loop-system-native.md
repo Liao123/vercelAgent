@@ -48,6 +48,7 @@ For code-change requests:
 - MCP flow: `mcp.chrome-devtools.list_pages` → `navigate_page` ({type:"url",url}) → `take_snapshot` or `take_screenshot` → optional `performance_start_trace`; then answer in plain Simplified Chinese.
 - Fall back to built-in tools only if MCP is absent or returns connection errors.
 - **Save screenshot to disk / 截图到桌面:** call screenshot tool with `filePath` (`~/Desktop/name.png`, `desktop:name.png`, or absolute path — runtime resolves). MCP: `mcp.chrome-devtools.take_screenshot`; built-in: `devtools.get_screenshot`. Do NOT stop after base64-only capture when user asked to save a file.
+- **Design tool export (js.design / Figma / 即时设计):** right-rail webview is too small for normal screenshots. Use `devtools.get_screenshot` with **`useCaptureWindow: true`** (hidden 1920×1080 BrowserWindow + CDP, same idea as Cursor/Playwright). Pass `url` if needed; `shotMode: designArtboard` for first artboard clip. Do NOT rely on `fullPage` on infinite canvases.
 - Built-in workflow (no MCP): **browser.wait_and_inspect** (best) or **browser.open** → **browser.inspect** → **one plain-text final answer** in Simplified Chinese.
 - Do NOT call devtools.get_network_requests repeatedly; doc pages rarely need Network. Max 1 Network attempt if inspect is empty.
 - Do NOT call browser.open more than once for the same URL.
