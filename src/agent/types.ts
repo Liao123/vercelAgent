@@ -43,8 +43,7 @@ export type AgentFunctionToolCall = {
 };
 
 export type AgentContent =
-  | AgentTextContent
-  | Array<AgentTextContentPart | AgentImageContentPart>;
+  AgentTextContent | Array<AgentTextContentPart | AgentImageContentPart>;
 
 export type AgentMessage = {
   role: AgentRole;
@@ -56,6 +55,10 @@ export type AgentMessage = {
 };
 
 export type AgentPlanStepStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  /** Legacy statuses kept so old persisted events still render. */
   | "todo"
   | "doing"
   | "blocked"
@@ -63,14 +66,20 @@ export type AgentPlanStepStatus =
   | "skipped";
 
 export type AgentPlanStep = {
-  id: string;
-  title: string;
+  /** Codex-compatible update_plan item text. */
+  step: string;
   status: AgentPlanStepStatus;
+  /** Legacy compatibility for older task events/UI code. New plans do not rely on this. */
+  id?: string;
+  /** Legacy compatibility for older task events/UI code. Prefer `step`. */
+  title?: string;
   notes?: string;
 };
 
 export type AgentPlan = {
   goal: string;
+  /** Codex-compatible optional update_plan explanation. */
+  explanation?: string;
   steps: AgentPlanStep[];
   risks: string[];
   verification: string[];
@@ -237,8 +246,7 @@ export type ApprovalGitMutationPreview = {
 export type ApprovalShellScript = string;
 
 export type ShellOperation =
-  | { type: "npm_script"; script: string }
-  | { type: "raw"; command: string };
+  { type: "npm_script"; script: string } | { type: "raw"; command: string };
 
 export type ApprovalShellMutationPreview = {
   command: string;
@@ -450,6 +458,11 @@ export type AgentEvent =
       estimatedTokensBefore?: number;
       estimatedTokensAfter?: number;
       round?: number;
+      contextWindow?: {
+        windowNumber: number;
+        windowId: string;
+        previousWindowId?: string;
+      };
       middleMessageCount?: number;
       summaryPreview?: string;
       memoryContent?: string;

@@ -9,7 +9,9 @@ export function getLatestPlan(events: AgentEvent[]): AgentPlan | null {
   return null;
 }
 
-export function getLatestReflection(events: AgentEvent[]): AgentReflection | null {
+export function getLatestReflection(
+  events: AgentEvent[],
+): AgentReflection | null {
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i];
     if (event.type === "reflection.updated") return event.reflection;
@@ -21,11 +23,17 @@ export type AgentCompactedMemory = {
   summaryId: string;
   method?: "deterministic" | "semantic";
   round?: number;
+  contextWindow?: {
+    windowNumber: number;
+    windowId: string;
+    previousWindowId?: string;
+  };
   summaryPreview?: string;
   pinnedApprovalCount?: number;
   changedFileCount?: number;
   estimatedTokensBefore?: number;
   estimatedTokensAfter?: number;
+  layersApplied?: string[];
 };
 
 export function getLatestCompactedMemory(
@@ -38,11 +46,13 @@ export function getLatestCompactedMemory(
       summaryId: event.summaryId,
       method: event.method,
       round: event.round,
+      contextWindow: event.contextWindow,
       summaryPreview: event.summaryPreview,
       pinnedApprovalCount: event.pinnedApprovalCount,
       changedFileCount: event.changedFileCount,
       estimatedTokensBefore: event.estimatedTokensBefore,
       estimatedTokensAfter: event.estimatedTokensAfter,
+      layersApplied: event.layersApplied,
     };
   }
   return null;
@@ -75,6 +85,7 @@ export function getLatestCompactedMemoryContent(
       summaryId: event.summaryId,
       method: event.method,
       round: event.round,
+      contextWindow: event.contextWindow,
       summaryPreview: event.summaryPreview,
       memoryContent: event.memoryContent,
       threadId: event.threadId,
@@ -82,6 +93,7 @@ export function getLatestCompactedMemoryContent(
       changedFileCount: event.changedFileCount,
       estimatedTokensBefore: event.estimatedTokensBefore,
       estimatedTokensAfter: event.estimatedTokensAfter,
+      layersApplied: event.layersApplied,
     };
   }
   return null;
@@ -112,12 +124,14 @@ export function collectTouchedFiles(events: AgentEvent[]): TouchedFileEntry[] {
       const details = event.approval.details;
       if (details?.kind === "file_mutation") {
         const preview = details.preview;
-        add(preview.path ?? preview.toPath ?? preview.fromPath ?? "?", "待审批");
+        add(
+          preview.path ?? preview.toPath ?? preview.fromPath ?? "?",
+          "待审批",
+        );
       } else if (details?.kind === "patch_apply") {
         for (const file of details.preview.files) {
           if (!file.changed) continue;
-          const path =
-            file.newPath ?? file.oldPath ?? file.filePath ?? "?";
+          const path = file.newPath ?? file.oldPath ?? file.filePath ?? "?";
           add(path, file.kind ?? "patch");
         }
       }

@@ -4,7 +4,11 @@
  * 运行：npm run validate:native-tool-loop
  */
 import assert from "node:assert/strict";
-import { isNativeToolLoopEnabled, isJsonLoopProtocolForced } from "../src/agent/core/loop-protocol";
+import {
+  isNativeToolLoopEnabled,
+  isJsonLoopProtocolForced,
+} from "../src/agent/core/loop-protocol";
+import { createAgentLoopRunState } from "../src/agent/core/agent-loop-state";
 import {
   buildLoopToolDefinitions,
   decodeOpenAiToolName,
@@ -16,7 +20,11 @@ import {
 import { repairOpenAiAssistantToolPairs } from "../src/agent/model/repair-openai-tool-messages";
 import { createLoopSystemPrompt } from "../src/agent/prompts/create-loop-system-prompt";
 
-assert.equal(isNativeToolLoopEnabled(), true, "native tool loop should be default");
+assert.equal(
+  isNativeToolLoopEnabled(),
+  true,
+  "native tool loop should be default",
+);
 
 process.env.AGENT_LOOP_JSON_PROTOCOL = "1";
 assert.equal(isNativeToolLoopEnabled(), false);
@@ -24,13 +32,41 @@ assert.equal(isJsonLoopProtocolForced(), true);
 delete process.env.AGENT_LOOP_JSON_PROTOCOL;
 
 const tools = buildLoopToolDefinitions();
-assert.ok(tools.length >= 20, "should expose full loop tool registry");
+assert.ok(
+  tools.length >= 12,
+  "should expose compact direct loop tool registry",
+);
 assert.equal(encodeOpenAiToolName("file.replace"), "file_replace");
 assert.ok(tools.some((tool) => tool.function.name === "file_replace"));
+assert.ok(tools.some((tool) => tool.function.name === "tool_search"));
+assert.ok(
+  !tools.some((tool) => tool.function.name === "devtools_get_computed_style"),
+  "deferred tools should not be visible before tool.search unlocks them",
+);
 assert.ok(tools.every((tool) => !tool.function.name.includes(".")));
 assert.equal(decodeOpenAiToolName("file_read"), "file.read");
 
-const parsedArgs = parseToolCallArguments('{"path":"src/a.ts","search":"x","replace":"y"}');
+const unlockedState = createAgentLoopRunState("inspect css");
+unlockedState.discoveredToolNames = ["devtools.get_computed_style"];
+const unlockedTools = buildLoopToolDefinitions(unlockedState);
+assert.ok(
+  unlockedTools.some(
+    (tool) => tool.function.name === "devtools_get_computed_style",
+  ),
+  "discovered deferred tools should be exposed on later model calls",
+);
+
+const strictState = createAgentLoopRunState("preview before editing");
+strictState.strictPrepare = true;
+const strictTools = buildLoopToolDefinitions(strictState);
+assert.ok(
+  strictTools.some((tool) => tool.function.name === "file_replace_prepare"),
+  "strict prepare runs should expose prepare tools immediately",
+);
+
+const parsedArgs = parseToolCallArguments(
+  '{"path":"src/a.ts","search":"x","replace":"y"}',
+);
 assert.equal(parsedArgs.path, "src/a.ts");
 
 const toolCalls = parseOpenAiToolCalls({
@@ -89,7 +125,10 @@ assert.equal(repaired[1]?.tool_call_id, "fc_test");
 assert.equal(repaired[2]?.role, "user");
 
 const nativePrompt = createLoopSystemPrompt(process.cwd());
-assert.ok(!nativePrompt.includes("action=tool_call"), "native prompt should not require JSON");
+assert.ok(
+  !nativePrompt.includes("action=tool_call"),
+  "native prompt should not require JSON",
+);
 assert.ok(nativePrompt.includes("file.replace"));
 
 process.env.AGENT_LOOP_JSON_PROTOCOL = "1";

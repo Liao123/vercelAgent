@@ -64,23 +64,20 @@ function createDevelopmentPlan(input: DevelopmentLoopInput): AgentPlan {
     goal: input.userRequest,
     steps: [
       {
-        id: "locate_files",
-        title: "Locate candidate files from the project index",
-        status: "todo",
+        step: "Locate candidate files from the project index",
+        status: "pending",
       },
       {
-        id: "patch",
-        title: input.patch
+        step: input.patch
           ? input.applyPatch
             ? "Apply approved patch"
             : "Preview patch and request approval"
           : "Wait for a patch or model-generated change",
-        status: input.patch ? "todo" : "skipped",
+        status: input.patch ? "pending" : "completed",
       },
       {
-        id: "verify",
-        title: "Run available verification commands",
-        status: input.verify || input.applyPatch ? "todo" : "skipped",
+        step: "Run available verification commands",
+        status: input.verify || input.applyPatch ? "pending" : "completed",
       },
     ],
     risks: [

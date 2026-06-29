@@ -100,6 +100,7 @@ import {
 
 export type AgentLoopToolName =
   | "agent.diagnose"
+  | "tool.search"
   | "agent.bootstrap.check"
   | "workspace.inspect"
   | "project.index"
@@ -424,6 +425,41 @@ function parseGitMutationOperation(
 }
 
 export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
+  {
+    name: "tool.search",
+    description:
+      "Search deferred agent tools by keyword and unlock matching tools for the next model call. Use when a specialized browser, devtools, design, symbol, approval, or diagnostic tool may be needed.",
+    args: {
+      query: "Keywords or task phrase for the specialized tool you need.",
+      limit: "Optional max results, 1-12.",
+    },
+    async execute(args, context) {
+      const { searchDeferredTools } = await import("@/agent/core/tool-router");
+      const query = typeof args.query === "string" ? args.query : "";
+      const rawLimit = Number(args.limit);
+      const limit = Number.isFinite(rawLimit)
+        ? Math.min(Math.max(Math.trunc(rawLimit), 1), 12)
+        : 6;
+      const matches = searchDeferredTools(query, limit);
+      const discovered = new Set(context.runState?.discoveredToolNames ?? []);
+      for (const match of matches) discovered.add(match.name);
+      if (context.runState) {
+        context.runState.discoveredToolNames = [...discovered].sort();
+      }
+      return {
+        context,
+        result: {
+          query,
+          matches,
+          unlockedTools: matches.map((match) => match.name),
+          hint:
+            matches.length > 0
+              ? "Matching deferred tools will be visible on the next model call."
+              : "No deferred tools matched. Continue with direct tools or try broader keywords.",
+        },
+      };
+    },
+  },
   {
     name: "agent.diagnose",
     description:
@@ -1074,7 +1110,7 @@ export const AGENT_LOOP_TOOLS: AgentLoopTool[] = [
       const useCaptureWindow =
         args.useCaptureWindow === true ||
         args.useCaptureWindow === "true" ||
-        (urlArg && isDesignToolUrl(urlArg));
+        Boolean(urlArg && isDesignToolUrl(urlArg));
       const shot = await cdpScreenshotJpegBase64({
         useCaptureWindow,
         url: urlArg || undefined,

@@ -22,9 +22,7 @@ import {
   DEFAULT_TOKEN_BUDGET,
   getMaxContextTokens,
 } from "@/agent/memory/token-budget";
-import {
-  LOOP_COMPACTION_CONFIG,
-} from "@/agent/memory/loop-compaction-config";
+import { LOOP_COMPACTION_CONFIG } from "@/agent/memory/loop-compaction-config";
 import {
   isBurstTailEnabled,
   resolveBurstAwareTailStart,
@@ -89,7 +87,10 @@ function mergeTaskReasoningPin(
   return {
     ...pinnedFacts,
     toolHighlights: [
-      ...new Set([`[TASK_REASONING_PIN] ${pin}`, ...pinnedFacts.toolHighlights]),
+      ...new Set([
+        `[TASK_REASONING_PIN] ${pin}`,
+        ...pinnedFacts.toolHighlights,
+      ]),
     ].slice(0, 16),
   };
 }
@@ -120,6 +121,7 @@ const SECTION_PINNED_ZH = "## 钉住事实";
 const SECTION_SUMMARY = "## Summary";
 const SECTION_SUMMARY_ZH = "## 摘要";
 const SECTION_CHANGED = "## Changed files";
+const SECTION_HANDOFF = "## Handoff";
 const SECTION_CHANGED_ZH = "## 涉及文件";
 const SECTION_USER_ANCHORS_ZH = "## 用户锚点";
 
@@ -137,6 +139,7 @@ export type LoopContextCompactResult = {
   messages: AgentMessage[];
   method: LoopContextCompactMethod;
   summaryId?: string;
+  contextWindow?: LoopContextWindow;
   estimatedTokensBefore: number;
   estimatedTokensAfter: number;
   middleMessageCount: number;
@@ -149,9 +152,17 @@ export type LoopContextCompactResult = {
   layersApplied?: string[];
 };
 
+export type LoopContextWindow = {
+  windowNumber: number;
+  windowId: string;
+  previousWindowId?: string;
+};
+
 export type ParsedCompactedMemory = {
   round: number;
   method?: string;
+  windowId?: string;
+  previousWindowId?: string;
   pinnedFacts: LoopPinnedFacts;
   summaryBody: string;
   changedFiles: string[];
@@ -168,7 +179,9 @@ function messageText(message: AgentMessage): string {
     return `Tool result (${message.tool_call_id ?? "?"}): ${body}`;
   }
   if (message.tool_calls?.length) {
-    const names = message.tool_calls.map((call) => call.function.name).join(", ");
+    const names = message.tool_calls
+      .map((call) => call.function.name)
+      .join(", ");
     const text =
       typeof message.content === "string"
         ? message.content
@@ -253,10 +266,7 @@ function finalizeObservationPayload(
     isToolResultExternalizeEnabled() &&
     bytes > OBSERVATION_JSON_MAX
   ) {
-    return externalizeObservationPayload(
-      { ...ctx, toolName },
-      payload,
-    );
+    return externalizeObservationPayload({ ...ctx, toolName }, payload);
   }
   if (bytes <= OBSERVATION_JSON_MAX) {
     return payload;
@@ -325,7 +335,11 @@ export function shapeToolResultForObservation(
     };
   }
 
-  if (toolName === "workspace.inspect" && record.git && typeof record.git === "object") {
+  if (
+    toolName === "workspace.inspect" &&
+    record.git &&
+    typeof record.git === "object"
+  ) {
     const git = record.git as Record<string, unknown>;
     return {
       rootPath: record.rootPath,
@@ -355,7 +369,10 @@ export function shapeToolResultForObservation(
     };
   }
 
-  if (toolName === "file.mutation.prepare" || toolName === "file.replace.prepare") {
+  if (
+    toolName === "file.mutation.prepare" ||
+    toolName === "file.replace.prepare"
+  ) {
     const approval = record.approval;
     if (approval && typeof approval === "object") {
       const approvalRecord = approval as Record<string, unknown>;
@@ -364,10 +381,7 @@ export function shapeToolResultForObservation(
         approvalId: approvalRecord.id,
         title: approvalRecord.title,
         status: approvalRecord.status,
-        path:
-          typeof record.path === "string"
-            ? record.path
-            : undefined,
+        path: typeof record.path === "string" ? record.path : undefined,
         note: "Full preview in approval UI; re-prepare if needed.",
       };
     }
@@ -479,10 +493,7 @@ export function resolveLoopPinnedHeadCount(
     count += 1;
   }
 
-  if (
-    count < tailStartIndex &&
-    isPrimaryTaskUserMessage(messages[count])
-  ) {
+  if (count < tailStartIndex && isPrimaryTaskUserMessage(messages[count])) {
     count += 1;
   }
 
@@ -517,12 +528,20 @@ export function splitLoopMessagesForCompaction(messages: AgentMessage[]): {
   };
 }
 
-export function parseCompactedMemory(content: string): ParsedCompactedMemory | null {
+export function parseCompactedMemory(
+  content: string,
+): ParsedCompactedMemory | null {
   if (!content.startsWith(COMPACTED_MEMORY_PREFIX)) return null;
 
   const roundMatch = /round\s+(\d+)/i.exec(content);
-  const methodMatch = /,\s*(deterministic|semantic)\]/i.exec(content);
-  const pinnedStart = findSectionStart(content, SECTION_PINNED_ZH, SECTION_PINNED);
+  const methodMatch = /,\s*(deterministic|semantic)(?:,|\])/i.exec(content);
+  const windowMatch = /window\s+([a-zA-Z0-9_-]+)/i.exec(content);
+  const previousWindowMatch = /prevWindow\s+([a-zA-Z0-9_-]+)/i.exec(content);
+  const pinnedStart = findSectionStart(
+    content,
+    SECTION_PINNED_ZH,
+    SECTION_PINNED,
+  );
   const snippetsStart = findSectionStart(
     content,
     SECTION_FILE_SNIPPETS_ZH,
@@ -533,8 +552,16 @@ export function parseCompactedMemory(content: string): ParsedCompactedMemory | n
     SECTION_PREPARE_HINT_ZH,
     SECTION_PREPARE_HINT,
   );
-  const summaryStart = findSectionStart(content, SECTION_SUMMARY_ZH, SECTION_SUMMARY);
-  const changedStart = findSectionStart(content, SECTION_CHANGED_ZH, SECTION_CHANGED);
+  const summaryStart = findSectionStart(
+    content,
+    SECTION_SUMMARY_ZH,
+    SECTION_SUMMARY,
+  );
+  const changedStart = findSectionStart(
+    content,
+    SECTION_CHANGED_ZH,
+    SECTION_CHANGED,
+  );
 
   const pinnedHeaderLen =
     pinnedStart >= 0
@@ -570,10 +597,12 @@ export function parseCompactedMemory(content: string): ParsedCompactedMemory | n
 
   const pinnedBlock =
     pinnedStart >= 0 && summaryStart > pinnedStart
-      ? content.slice(
-          pinnedStart + pinnedHeaderLen,
-          snippetsStart > pinnedStart ? snippetsStart : summaryStart,
-        ).trim()
+      ? content
+          .slice(
+            pinnedStart + pinnedHeaderLen,
+            snippetsStart > pinnedStart ? snippetsStart : summaryStart,
+          )
+          .trim()
       : "";
   const snippetsBlock =
     snippetsStart >= 0 &&
@@ -597,10 +626,12 @@ export function parseCompactedMemory(content: string): ParsedCompactedMemory | n
       : "";
   const summaryBody =
     summaryStart >= 0
-      ? content.slice(
-          summaryStart + summaryHeaderLen,
-          changedStart >= summaryStart ? changedStart : undefined,
-        ).trim()
+      ? content
+          .slice(
+            summaryStart + summaryHeaderLen,
+            changedStart >= summaryStart ? changedStart : undefined,
+          )
+          .trim()
       : content;
   const changedBlock =
     changedStart >= 0
@@ -615,6 +646,8 @@ export function parseCompactedMemory(content: string): ParsedCompactedMemory | n
   return {
     round: roundMatch ? Number.parseInt(roundMatch[1], 10) : 1,
     method: methodMatch?.[1],
+    windowId: windowMatch?.[1],
+    previousWindowId: previousWindowMatch?.[1],
     pinnedFacts: extractPinnedFactsFromText(pinnedBlock),
     summaryBody,
     changedFiles,
@@ -642,6 +675,153 @@ function buildTaskTurnSummary(userRequest: string, summary: string): string {
   ].join("\n");
 }
 
+function truncateMemoryLine(
+  value: string | null | undefined,
+  maxChars = 420,
+): string {
+  const normalized = String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return "";
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 3))}...`;
+}
+
+function extractLatestReflectionForHandoff(messages: AgentMessage[]): {
+  understanding?: string;
+  plannedNext?: string;
+  blockers?: string[];
+} {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const text = messageText(messages[index]!);
+    try {
+      const parsed = JSON.parse(text) as {
+        action?: string;
+        understanding?: unknown;
+        plannedNext?: unknown;
+        blockers?: unknown;
+      };
+      if (parsed.action === "reflect") {
+        return {
+          understanding:
+            typeof parsed.understanding === "string"
+              ? parsed.understanding
+              : undefined,
+          plannedNext:
+            typeof parsed.plannedNext === "string"
+              ? parsed.plannedNext
+              : undefined,
+          blockers: Array.isArray(parsed.blockers)
+            ? parsed.blockers.filter(
+                (item): item is string => typeof item === "string",
+              )
+            : undefined,
+        };
+      }
+    } catch {
+      // Continue with line-based runtime reflection parsing below.
+    }
+
+    const understanding = new RegExp(
+      "(?:\\u7406\\u89e3|Understanding)\\s*[:\\uFF1A]\\s*(.+)",
+      "i",
+    ).exec(text)?.[1];
+    const plannedNext = new RegExp(
+      "(?:\\u4e0b\\u4e00\\u6b65|Next step)\\s*[:\\uFF1A]\\s*(.+)",
+      "i",
+    ).exec(text)?.[1];
+    const blockerLine = new RegExp(
+      "(?:\\u963b\\u585e|Blockers?)\\s*[:\\uFF1A]\\s*(.+)",
+      "i",
+    ).exec(text)?.[1];
+    if (understanding || plannedNext || blockerLine) {
+      return {
+        understanding,
+        plannedNext,
+        blockers: blockerLine ? [blockerLine] : undefined,
+      };
+    }
+  }
+  return {};
+}
+
+function summarizeCriticalFactsForHandoff(input: {
+  pinnedFacts: LoopPinnedFacts;
+  changedFiles: string[];
+}): string {
+  const facts: string[] = [];
+  if (input.pinnedFacts.approvalIds.length > 0) {
+    facts.push(`approvals=${input.pinnedFacts.approvalIds.join(", ")}`);
+  }
+  if (input.changedFiles.length > 0) {
+    facts.push(`changed=${input.changedFiles.slice(0, 8).join(", ")}`);
+  }
+  if (input.pinnedFacts.filePaths.length > 0) {
+    facts.push(`files=${input.pinnedFacts.filePaths.slice(0, 10).join(", ")}`);
+  }
+  if (input.pinnedFacts.branches.length > 0) {
+    facts.push(`branches=${input.pinnedFacts.branches.join(", ")}`);
+  }
+  if (input.pinnedFacts.errors.length > 0) {
+    facts.push(`errors=${input.pinnedFacts.errors.slice(0, 4).join(" | ")}`);
+  }
+  if (input.pinnedFacts.blockers.length > 0) {
+    facts.push(
+      `blockers=${input.pinnedFacts.blockers.slice(0, 4).join(" | ")}`,
+    );
+  }
+  return facts.length > 0 ? facts.join("; ") : "none extracted";
+}
+
+function buildHandoffBlock(input: {
+  userRequest?: string;
+  latestUnderstanding?: string;
+  latestPlannedNext?: string;
+  latestBlockers?: string[];
+  pinnedFacts: LoopPinnedFacts;
+  changedFiles: string[];
+  contextWindow?: LoopContextWindow;
+}): string {
+  const lines = [
+    input.contextWindow
+      ? `- Context window: ${input.contextWindow.windowNumber} (${input.contextWindow.windowId})${
+          input.contextWindow.previousWindowId
+            ? ` after ${input.contextWindow.previousWindowId}`
+            : ""
+        }.`
+      : "",
+    input.userRequest
+      ? `- Current user request: ${truncateMemoryLine(input.userRequest)}`
+      : "",
+    input.latestUnderstanding
+      ? `- Current progress: ${truncateMemoryLine(input.latestUnderstanding)}`
+      : "- Current progress: see Summary and the recent tail messages after this memory.",
+    input.latestPlannedNext
+      ? `- Next step: ${truncateMemoryLine(input.latestPlannedNext)}`
+      : "- Next step: continue from the recent tail messages; re-call tools for tombstoned details.",
+    input.latestBlockers?.length
+      ? `- Blockers: ${input.latestBlockers
+          .map((item) => truncateMemoryLine(item, 180))
+          .join(" | ")}`
+      : "",
+    `- Critical facts: ${summarizeCriticalFactsForHandoff(input)}`,
+    "- Recovery rule: treat this handoff plus the recent tail as live state; omitted tool bodies must be re-read or re-called before relying on exact details.",
+  ].filter(Boolean);
+
+  return lines.join("\n");
+}
+
+function createLoopContextWindow(
+  round: number,
+  priorMemory: ParsedCompactedMemory | null,
+): LoopContextWindow {
+  return {
+    windowNumber: Math.max(1, round),
+    windowId: newId("ctxwin"),
+    previousWindowId: priorMemory?.windowId,
+  };
+}
+
 /** 任务结束时写入/更新 thread 滚动记忆（短对话未触发压缩时也能续聊）。 */
 export function buildThreadMemoryAfterTask(input: {
   messages: AgentMessage[];
@@ -660,6 +840,7 @@ export function buildThreadMemoryAfterTask(input: {
 }): {
   memoryContent: string;
   summaryId: string;
+  contextWindow: LoopContextWindow;
   round: number;
   method: "deterministic";
   summaryPreview: string;
@@ -701,10 +882,17 @@ export function buildThreadMemoryAfterTask(input: {
     ...(input.filesReadPaths ?? []),
     ...pinnedFacts.filePaths,
   ]);
+  const contextWindow = createLoopContextWindow(round, priorMemory);
+  const latestReflection = extractLatestReflectionForHandoff(input.messages);
 
   const memoryContent = buildStructuredCompactedMemory({
     round,
     method: "deterministic",
+    contextWindow,
+    userRequest: input.userRequest,
+    latestUnderstanding: latestReflection.understanding,
+    latestPlannedNext: latestReflection.plannedNext,
+    latestBlockers: latestReflection.blockers,
     pinnedFacts,
     summaryBody,
     changedFiles,
@@ -716,6 +904,7 @@ export function buildThreadMemoryAfterTask(input: {
   return {
     memoryContent,
     summaryId: newId("summary"),
+    contextWindow,
     round,
     method: "deterministic",
     summaryPreview: memoryContent.slice(0, SUMMARY_PREVIEW_CHARS),
@@ -725,6 +914,11 @@ export function buildThreadMemoryAfterTask(input: {
 export function buildStructuredCompactedMemory(input: {
   round: number;
   method: LoopContextCompactMethod;
+  contextWindow?: LoopContextWindow;
+  userRequest?: string;
+  latestUnderstanding?: string;
+  latestPlannedNext?: string;
+  latestBlockers?: string[];
   pinnedFacts: LoopPinnedFacts;
   summaryBody: string;
   changedFiles: string[];
@@ -743,11 +937,31 @@ export function buildStructuredCompactedMemory(input: {
     input.pinnedPrepareHint ?? null,
   );
   const userAnchorsBlock = formatUserAnchorsBlock(input.userAnchors ?? []);
+  const handoffBlock = buildHandoffBlock({
+    userRequest: input.userRequest,
+    latestUnderstanding: input.latestUnderstanding,
+    latestPlannedNext: input.latestPlannedNext,
+    latestBlockers: input.latestBlockers,
+    pinnedFacts: input.pinnedFacts,
+    changedFiles: input.changedFiles,
+    contextWindow: input.contextWindow,
+  });
+  const headerParts = [
+    `${COMPACTED_MEMORY_PREFIX} round ${input.round}`,
+    input.method,
+    input.contextWindow ? `window ${input.contextWindow.windowId}` : "",
+    input.contextWindow?.previousWindowId
+      ? `prevWindow ${input.contextWindow.previousWindowId}`
+      : "",
+  ].filter(Boolean);
 
   return [
-    `${COMPACTED_MEMORY_PREFIX} — round ${input.round}, ${input.method}]`,
+    `${headerParts.join(", ")}]`,
     "本轮滚动任务记忆。最近 tail 消息代表最新一步。",
     "如需核实下方未列出的细节，可再次调用工具；墓碑 stub 的 recall 行提示如何找回。",
+    "",
+    SECTION_HANDOFF,
+    handoffBlock,
     "",
     SECTION_PINNED_ZH,
     formatPinnedFactsBlock(input.pinnedFacts),
@@ -874,9 +1088,7 @@ async function runSemanticCompact(input: {
         content: [
           `Task:\n${input.userRequest}`,
           `\nPinned:\n${pinnedBlock}`,
-          input.priorSummary
-            ? `\nPrior memory:\n${input.priorSummary}`
-            : "",
+          input.priorSummary ? `\nPrior memory:\n${input.priorSummary}` : "",
           `\nNew steps:\n${JSON.stringify(sectionPayload, null, 2)}`,
         ].join("\n"),
       },
@@ -923,8 +1135,11 @@ export async function compactAgentLoopMessages(input: {
   const estimatedTokensBefore = estimateMessagesTokens(messages);
   const maxContext = getMaxContextTokens(DEFAULT_TOKEN_BUDGET);
 
-  const { head, middle: initialMiddle, tail } =
-    splitLoopMessagesForCompaction(messages);
+  const {
+    head,
+    middle: initialMiddle,
+    tail,
+  } = splitLoopMessagesForCompaction(messages);
   let middle = [...initialMiddle];
 
   const headCount = head.length;
@@ -1035,10 +1250,7 @@ export async function compactAgentLoopMessages(input: {
   const pinnedFacts = mergeTaskReasoningPin(
     mergePinnedFacts(
       priorMemory?.pinnedFacts ?? emptyPinnedFacts(),
-      mergePinnedFacts(
-        mergePinnedFacts(headPinned, evictedPinned),
-        tailPinned,
-      ),
+      mergePinnedFacts(mergePinnedFacts(headPinned, evictedPinned), tailPinned),
     ),
     input.taskReasoning,
   );
@@ -1078,14 +1290,26 @@ export async function compactAgentLoopMessages(input: {
     ...(priorMemory?.changedFiles ?? []),
     ...compressed.summary.changedFiles,
   ]);
+  const round = input.compactRound ?? (priorMemory?.round ?? 0) + 1;
+  const contextWindow = createLoopContextWindow(round, priorMemory);
+  const latestReflection = extractLatestReflectionForHandoff([
+    ...head,
+    ...middle,
+    ...tail,
+  ]);
 
   const afterDeterministic = estimateMessagesTokens([
     ...head,
     {
       role: "user",
       content: buildStructuredCompactedMemory({
-        round: input.compactRound ?? 1,
+        round,
         method: "deterministic",
+        contextWindow,
+        userRequest: input.userRequest,
+        latestUnderstanding: latestReflection.understanding,
+        latestPlannedNext: latestReflection.plannedNext,
+        latestBlockers: latestReflection.blockers,
         pinnedFacts,
         summaryBody,
         changedFiles,
@@ -1117,20 +1341,21 @@ export async function compactAgentLoopMessages(input: {
         priorMemory?.summaryBody ?? "",
         semantic.summaryBody,
       );
-      changedFiles = uniqueFiles([
-        ...changedFiles,
-        ...semantic.changedFiles,
-      ]);
+      changedFiles = uniqueFiles([...changedFiles, ...semantic.changedFiles]);
       method = "semantic";
     } catch {
       method = "deterministic";
     }
   }
 
-  const round = input.compactRound ?? (priorMemory?.round ?? 0) + 1;
   let memoryContent = buildStructuredCompactedMemory({
     round,
     method,
+    contextWindow,
+    userRequest: input.userRequest,
+    latestUnderstanding: latestReflection.understanding,
+    latestPlannedNext: latestReflection.plannedNext,
+    latestBlockers: latestReflection.blockers,
     pinnedFacts,
     summaryBody,
     changedFiles,
@@ -1164,6 +1389,11 @@ export async function compactAgentLoopMessages(input: {
     const collapseMemory = buildStructuredCompactedMemory({
       round,
       method: "deterministic",
+      contextWindow,
+      userRequest: input.userRequest,
+      latestUnderstanding: latestReflection.understanding,
+      latestPlannedNext: latestReflection.plannedNext,
+      latestBlockers: latestReflection.blockers,
       pinnedFacts,
       summaryBody: collapseSummary,
       changedFiles,
@@ -1187,6 +1417,7 @@ export async function compactAgentLoopMessages(input: {
     messages: nextMessages,
     method,
     summaryId: newId("summary"),
+    contextWindow,
     estimatedTokensBefore,
     estimatedTokensAfter,
     middleMessageCount: middle.length,
@@ -1236,6 +1467,7 @@ export function createLoopCompactEventPayload(
   middleMessageCount: number;
   summaryPreview?: string;
   memoryContent?: string;
+  contextWindow?: LoopContextWindow;
   pinnedApprovalCount?: number;
   changedFileCount?: number;
   layersApplied?: string[];
@@ -1251,6 +1483,7 @@ export function createLoopCompactEventPayload(
     middleMessageCount: result.middleMessageCount,
     summaryPreview: result.summaryPreview,
     memoryContent: result.memoryContent,
+    contextWindow: result.contextWindow,
     pinnedApprovalCount: result.pinnedFacts?.approvalIds.length,
     changedFileCount: result.changedFiles?.length,
     layersApplied: result.layersApplied,

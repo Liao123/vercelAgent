@@ -42,19 +42,16 @@ function createInitialPlan(userRequest: string): AgentPlan {
     goal: userRequest,
     steps: [
       {
-        id: "step_1",
-        title: "Read workspace metadata and project rules",
-        status: "done",
+        step: "Read workspace metadata and project rules",
+        status: "completed",
       },
       {
-        id: "step_2",
-        title: "Prepare a task event stream for future agent execution",
-        status: "done",
+        step: "Prepare a task event stream for future agent execution",
+        status: "completed",
       },
       {
-        id: "step_3",
-        title: "Wait for the next implementation phase",
-        status: "todo",
+        step: "Wait for the next implementation phase",
+        status: "pending",
       },
     ],
     risks: [

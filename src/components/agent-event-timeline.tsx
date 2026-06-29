@@ -6,9 +6,8 @@ import { AgentTurnBlock } from "@/components/agent-turn-block";
 import { groupEventsIntoTurns } from "@/lib/agent-turn-feed";
 import {
   formatPatchPreviewSummary,
-  formatPatchToolResultSummary,
 } from "@/lib/patch-summary";
-import { formatCompactionMeta } from "@/lib/compaction-labels";
+import { formatCompactionCheckpoint } from "@/lib/compaction-labels";
 import { formatReflectionBlockersLine } from "@/lib/reflection-blockers-ui";
 import { extractApprovalIdFromUnknown } from "@/lib/approval-anchor";
 import {
@@ -16,43 +15,16 @@ import {
   type GitStatusSnapshot,
 } from "@/lib/git-status";
 import { GitStatusView } from "@/components/git-status-view";
-
-function toolLabel(name: string): string {
-  const labels: Record<string, string> = {
-    "workspace.inspect": "检查工作区",
-    "project.index": "索引项目",
-    "file.locate": "定位文件",
-    "ui.trace_from_page": "追踪页面组件树",
-    "file.list": "列出目录",
-    "file.read": "读取文件",
-    "file.search": "搜索文件",
-    "jsx.find_text": "查找 JSX 文案",
-    "symbol.find_references": "查找符号引用",
-    "git.status": "Git 状态",
-    "git.diff": "Git diff",
-    "browser.open": "打开浏览器",
-    "browser.inspect": "读取浏览器快照",
-    "browser.wait_and_inspect": "等待并读取页面",
-    "browser.query": "查询页面元素",
-    "devtools.get_screenshot": "CDP 截图",
-    "devtools.get_dom_snapshot": "DOM 快照",
-    "devtools.get_accessibility_tree": "无障碍树",
-    "devtools.get_console_errors": "Console",
-    "devtools.get_network_requests": "Network",
-    "devtools.click": "页面点击",
-    "devtools.type": "页面输入",
-    "devtools.get_box_model": "盒模型",
-    "devtools.get_computed_style": "计算样式",
-    "devtools.inspect_element_at": "坐标探测",
-    "file.mutation.prepare": "准备文件变更",
-    "file.replace.prepare": "准备文本替换",
-    "git.mutation.prepare": "准备 Git 操作",
-    "shell.command.prepare": "准备 npm 脚本",
-    "shell.run.prepare": "准备终端命令",
-    "patch.prepare": "准备 Patch",
-  };
-  return labels[name] ?? name;
-}
+import {
+  extractToolUnlocks,
+  type AgentToolUnlock,
+} from "@/lib/agent-tool-unlocks";
+import {
+  agentToolIssueLabel,
+  agentToolLabel,
+  formatAgentToolIssueDetail,
+  formatAgentToolAction,
+} from "@/lib/agent-tool-display";
 
 /** 合并 tool.started 到对应的 tool.completed，减少重复行。 */
 function compressToolEvents(events: AgentEvent[]): AgentEvent[] {
@@ -89,27 +61,6 @@ function isGitStatusSnapshot(value: unknown): value is GitStatusSnapshot {
   );
 }
 
-function summarizeToolResult(result: unknown): string | null {
-  const patchHint = formatPatchToolResultSummary(result);
-  if (patchHint) return patchHint;
-
-  if (!result || typeof result !== "object") return null;
-  const record = result as Record<string, unknown>;
-  if (typeof record.summary === "string" && Array.isArray(record.files)) {
-    return record.summary;
-  }
-  if (typeof record.summary === "string") return record.summary;
-  if (record.approval && typeof record.approval === "object") {
-    const approval = record.approval as { title?: string };
-    return approval.title ? `已创建审批：${approval.title}` : "已创建审批请求";
-  }
-  if (Array.isArray(record.candidates)) {
-    return `找到 ${record.candidates.length} 个候选文件`;
-  }
-  if (typeof record.path === "string") return record.path;
-  return null;
-}
-
 function formatToolDetail(result: unknown): string | null {
   if (!result || typeof result !== "object") return null;
   const record = result as Record<string, unknown>;
@@ -127,6 +78,33 @@ function formatToolDetail(result: unknown): string | null {
     return record.stdout.slice(0, 800);
   }
   return null;
+}
+
+function ToolUnlockPanel({ unlocks }: { unlocks: AgentToolUnlock[] }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {unlocks.map((unlock) => {
+        const argNames = unlock.args
+          ? Object.keys(unlock.args).slice(0, 4)
+          : [];
+        return (
+          <div
+            key={unlock.name}
+            className="max-w-full rounded border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] text-blue-900 dark:border-blue-900/70 dark:bg-blue-950/40 dark:text-blue-100"
+          >
+            <div className="truncate font-medium">
+              {agentToolLabel(unlock.name)}
+            </div>
+            {argNames.length > 0 && (
+              <div className="mt-0.5 truncate font-mono text-[10px] text-blue-600 dark:text-blue-300">
+                {argNames.join(", ")}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function RowFocusButton({
@@ -199,14 +177,14 @@ function CollapsibleEventRow({
   return (
     <article
       className={`rounded-md border text-xs ${compact ? "px-2 py-1.5" : "rounded-lg px-3 py-2"} ${toneClass}${
-        canFocusApproval ? " cursor-pointer ring-0 transition hover:ring-1 hover:ring-blue-300/80 dark:hover:ring-blue-700/80" : ""
+        canFocusApproval
+          ? " cursor-pointer ring-0 transition hover:ring-1 hover:ring-blue-300/80 dark:hover:ring-blue-700/80"
+          : ""
       }`}
       role={canFocusApproval ? "button" : undefined}
       tabIndex={canFocusApproval ? 0 : undefined}
       onClick={
-        canFocusApproval
-          ? () => onFocusApproval!(focusApprovalId!)
-          : undefined
+        canFocusApproval ? () => onFocusApproval!(focusApprovalId!) : undefined
       }
       onKeyDown={
         canFocusApproval
@@ -221,7 +199,9 @@ function CollapsibleEventRow({
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
-          <p className="font-medium text-zinc-900 dark:text-zinc-100">{title}</p>
+          <p className="font-medium text-zinc-900 dark:text-zinc-100">
+            {title}
+          </p>
           {meta && (
             <p className="mt-0.5 font-mono text-[10px] text-zinc-500">{meta}</p>
           )}
@@ -335,13 +315,13 @@ function renderAgentEvent(
         <CollapsibleEventRow
           key={`${event.type}-${index}`}
           tone="neutral"
-          title="计划"
-          summary={event.plan.goal}
+          title="Updated Plan"
+          summary={event.plan.explanation ?? event.plan.goal}
           meta={event.plan.steps
-            .map((step) => `${step.status}: ${step.title}`)
+            .map((step) => `${step.status}: ${step.step || step.title || ""}`)
             .join(" · ")}
           detail={event.plan.steps
-            .map((step) => `- [${step.status}] ${step.title}`)
+            .map((step) => `- [${step.status}] ${step.step || step.title || ""}`)
             .join("\n")}
           showDebug={showDebug}
           debugJson={event}
@@ -349,31 +329,32 @@ function renderAgentEvent(
         />
       );
     case "context.compacted": {
-      const metaParts = formatCompactionMeta({
+      const display = formatCompactionCheckpoint({
         method: event.method,
         round: event.round,
+        contextWindow: event.contextWindow,
         pinnedApprovalCount: event.pinnedApprovalCount,
         changedFileCount: event.changedFileCount,
         estimatedTokensBefore: event.estimatedTokensBefore,
         estimatedTokensAfter: event.estimatedTokensAfter,
         layersApplied: event.layersApplied,
+        summaryPreview: event.summaryPreview,
+        memoryContent: event.memoryContent,
       });
       return (
         <CollapsibleEventRow
           key={`${event.type}-${index}`}
           tone="info"
-          title="上下文已压缩"
-          summary={event.summaryPreview ?? "滚动任务记忆已更新"}
-          meta={metaParts || undefined}
-          detail={event.memoryContent ?? event.summaryPreview}
+          title={display.title}
+          summary={display.summary}
+          meta={display.meta || undefined}
+          detail={display.detail}
           showDebug={showDebug}
           debugJson={event}
           compact={compact}
           focusApprovalId={onFocusCompactedMemory ? "__memory__" : null}
           onFocusApproval={
-            onFocusCompactedMemory
-              ? () => onFocusCompactedMemory()
-              : undefined
+            onFocusCompactedMemory ? () => onFocusCompactedMemory() : undefined
           }
           focusActionLabel="查看记忆"
         />
@@ -385,7 +366,10 @@ function renderAgentEvent(
           key={`${event.type}-${index}`}
           tone="info"
           title="反思"
-          summary={[event.reflection.understanding, event.reflection.plannedNext]
+          summary={[
+            event.reflection.understanding,
+            event.reflection.plannedNext,
+          ]
             .filter(Boolean)
             .join("\n")}
           meta={
@@ -401,37 +385,64 @@ function renderAgentEvent(
         />
       );
     case "tool.started":
-      return (
-        <EventRow
-          key={`${event.type}-${index}`}
-          tone="neutral"
-          title={`工具 · ${toolLabel(event.toolCall.toolName)}`}
-          meta="运行中…"
-          showDebug={showDebug}
-          debugJson={event}
-          compact={compact}
-        />
-      );
+      {
+        const display = formatAgentToolAction({
+          toolName: event.toolCall.toolName,
+          args: event.toolCall.args,
+          running: true,
+        });
+        return (
+          <EventRow
+            key={`${event.type}-${index}`}
+            tone="neutral"
+            title={`工具 · ${display.action}`}
+            meta={display.target ?? "运行中…"}
+            showDebug={showDebug}
+            debugJson={event}
+            compact={compact}
+          />
+        );
+      }
     case "tool.completed": {
-      const hint = summarizeToolResult(event.result);
-      const gitSnapshot = isGitStatusSnapshot(event.result) ? event.result : null;
-      const detail = gitSnapshot ? null : formatToolDetail(event.result);
+      const gitSnapshot = isGitStatusSnapshot(event.result)
+        ? event.result
+        : null;
+      const unlocks = extractToolUnlocks(event.result);
+      const detail = event.toolCall.error
+        ? formatAgentToolIssueDetail(event.toolCall.error)
+        : gitSnapshot
+          ? null
+          : formatToolDetail(event.result);
       const linkedApprovalId = extractApprovalIdFromUnknown(event.result);
+      const display = formatAgentToolAction({
+        toolName: event.toolCall.toolName,
+        args: event.toolCall.args,
+        result: event.result,
+        error: event.toolCall.error,
+      });
       return (
         <CollapsibleEventRow
           key={`${event.type}-${index}`}
-          tone={event.toolCall.error ? "error" : "success"}
-          title={`工具 · ${toolLabel(event.toolCall.toolName)}`}
-          summary={event.toolCall.error ?? hint ?? "完成"}
+          tone={event.toolCall.error ? "warn" : "success"}
+          title={`工具 · ${display.action}`}
+          summary={
+            event.toolCall.error
+              ? agentToolIssueLabel({ taskStillRunning })
+              : display.target ?? "完成"
+          }
           detail={detail ?? undefined}
           detailNode={
             gitSnapshot ? (
               <GitStatusView snapshot={gitSnapshot} compact maxFiles={16} />
+            ) : unlocks.length > 0 ? (
+              <ToolUnlockPanel unlocks={unlocks} />
             ) : undefined
           }
           showDebug={showDebug}
           debugJson={event}
-          defaultOpen={Boolean(event.toolCall.error || gitSnapshot?.dirty)}
+          defaultOpen={Boolean(
+            gitSnapshot?.dirty || unlocks.length > 0,
+          )}
           compact={compact}
           focusApprovalId={linkedApprovalId}
           onFocusApproval={onFocusApproval}
@@ -452,7 +463,11 @@ function renderAgentEvent(
           key={`${event.type}-${index}`}
           tone="warn"
           title={`待审批 · ${event.approval.title}`}
-          body={[event.approval.reason, shellLine ? `命令：${shellLine}` : null, patchLine]
+          body={[
+            event.approval.reason,
+            shellLine ? `命令：${shellLine}` : null,
+            patchLine,
+          ]
             .filter(Boolean)
             .join("\n")}
           showDebug={showDebug}
@@ -473,7 +488,9 @@ function renderAgentEvent(
               ? `命令已执行 · ${event.command}`
               : `命令失败 · ${event.command}`
           }
-          summary={event.summary ?? (event.status === "succeeded" ? "完成" : "失败")}
+          summary={
+            event.summary ?? (event.status === "succeeded" ? "完成" : "失败")
+          }
           detail={event.output?.slice(0, 2000)}
           showDebug={showDebug}
           debugJson={event}
@@ -487,9 +504,7 @@ function renderAgentEvent(
           key={`${event.type}-${index}`}
           tone={event.result.success ? "success" : "error"}
           title={`验证 · ${event.result.command}`}
-          summary={
-            event.result.success ? "通过" : "失败"
-          }
+          summary={event.result.success ? "通过" : "失败"}
           detail={event.result.output.slice(0, 2000)}
           showDebug={showDebug}
           debugJson={event}
@@ -612,7 +627,7 @@ type AgentEventTimelineProps = {
   onFixLintAfterWrite?: (
     verification: import("@/agent/verification").PostExecuteVerification,
   ) => void;
-  /** 点击「上下文已压缩」时仅提示（详情在活动流 Worked 内） */
+  /** 点击「上下文已接续」时仅提示（详情在活动流 Worked 内） */
   onFocusCompactedMemory?: () => void;
 };
 
@@ -643,10 +658,7 @@ export function AgentEventTimeline({
 
   const compressed = useMemo(() => compressToolEvents(events), [events]);
 
-  const turns = useMemo(
-    () => groupEventsIntoTurns(compressed),
-    [compressed],
-  );
+  const turns = useMemo(() => groupEventsIntoTurns(compressed), [compressed]);
 
   const shouldSkipEvent = (event: AgentEvent) => {
     if (excludeSet.has(event.type)) return true;
@@ -674,7 +686,9 @@ export function AgentEventTimeline({
             </h3>
           )}
           {compact && (
-            <span className="text-[10px] font-medium text-zinc-500">活动流</span>
+            <span className="text-[10px] font-medium text-zinc-500">
+              活动流
+            </span>
           )}
           {running && (
             <span className="text-[11px] text-blue-600 dark:text-blue-400">
@@ -694,21 +708,24 @@ export function AgentEventTimeline({
                 : "rounded-lg border border-dashed border-zinc-300 px-3 py-8 dark:border-zinc-700"
             }`}
           >
-              {showRestoreHint ? (
-                <>
-                  活动流为空。在左侧「项目 → 会话」中点击某条会话，可恢复该任务的活动流与审批。
-                  <span className="mt-2 block text-xs text-zinc-400">
-                    或在下方输入新任务并点击「运行」。
-                  </span>
-                </>
-              ) : (
-                "描述你的编程任务，Agent 会在这里展示计划、工具调用与审批。"
-              )}
-            </p>
-          ) : turns.length === 0 && running ? (
+            {showRestoreHint ? (
+              <>
+                活动流为空。在左侧「项目 →
+                会话」中点击某条会话，可恢复该任务的活动流与审批。
+                <span className="mt-2 block text-xs text-zinc-400">
+                  或在下方输入新任务并点击「运行」。
+                </span>
+              </>
+            ) : (
+              "描述你的编程任务，Agent 会在这里展示计划、工具调用与审批。"
+            )}
+          </p>
+        ) : turns.length === 0 && running ? (
           <p
             className={`text-center text-sm text-zinc-500 ${
-              chatMode ? "py-12" : "rounded-lg bg-zinc-50 px-3 py-6 dark:bg-zinc-900"
+              chatMode
+                ? "py-12"
+                : "rounded-lg bg-zinc-50 px-3 py-6 dark:bg-zinc-900"
             }`}
           >
             正在启动 Agent…

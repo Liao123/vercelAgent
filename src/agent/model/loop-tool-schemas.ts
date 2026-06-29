@@ -1,14 +1,18 @@
 /**
  * Agent Loop 工具 → OpenAI Chat Completions `tools` schema（A114）。
  */
-import { AGENT_LOOP_TOOLS } from "@/agent/core/agent-loop-tools";
+import {
+  getAllLoopTools,
+  getModelVisibleLoopTools,
+} from "@/agent/core/tool-router";
 import { getMcpToolDefinitions } from "@/agent/mcp/registry";
 import { decodeMcpApiToolName } from "@/agent/mcp/registry";
 import type { ModelToolDefinition, ModelToolCall } from "@/agent/model/types";
 import { repairOpenAiAssistantToolPairs } from "@/agent/model/repair-openai-tool-messages";
 import type { AgentMessage } from "@/agent/types";
+import type { AgentLoopRunState } from "@/agent/core/agent-loop-state";
 
-let cachedDefinitions: ModelToolDefinition[] | null = null;
+let cachedDefinitions: Map<string, ModelToolDefinition[]> = new Map();
 let cachedApiToInternal: Map<string, string> | null = null;
 
 /** OpenAI tools API：`name` 仅允许 `[a-zA-Z0-9_-]`，内部 `file.read` → `file_read`。 */
@@ -19,7 +23,10 @@ export function encodeOpenAiToolName(internalName: string): string {
 function getApiToInternalMap(): Map<string, string> {
   if (!cachedApiToInternal) {
     cachedApiToInternal = new Map(
-      AGENT_LOOP_TOOLS.map((tool) => [encodeOpenAiToolName(tool.name), tool.name]),
+      getAllLoopTools().map((tool) => [
+        encodeOpenAiToolName(tool.name),
+        tool.name,
+      ]),
     );
   }
   return cachedApiToInternal;
@@ -35,7 +42,8 @@ export function decodeOpenAiToolName(apiName: string): string {
 
 /** MCP 工具加载后需调用以刷新合并 schema */
 export function invalidateLoopToolDefinitionCache(): void {
-  cachedDefinitions = null;
+  cachedDefinitions = new Map();
+  cachedApiToInternal = null;
 }
 
 export function serializeAgentMessagesForOpenAiApi(
@@ -74,10 +82,19 @@ function argPropertySchema(description: string): Record<string, unknown> {
   return { type: "string", description };
 }
 
-export function buildLoopToolDefinitions(): ModelToolDefinition[] {
-  if (cachedDefinitions) return cachedDefinitions;
+export function buildLoopToolDefinitions(
+  runState?: AgentLoopRunState,
+): ModelToolDefinition[] {
+  const discovered = [...(runState?.discoveredToolNames ?? [])].sort();
+  const strictPrepare = runState?.strictPrepare === true;
+  const cacheKey = `${strictPrepare ? "strict" : "normal"}:${discovered.join("\u0000")}`;
+  const cached = cachedDefinitions.get(cacheKey);
+  if (cached) return cached;
 
-  const builtin = AGENT_LOOP_TOOLS.map((tool) => {
+  const builtin = getModelVisibleLoopTools({
+    discoveredToolNames: discovered,
+    strictPrepare,
+  }).map((tool) => {
     const properties = Object.fromEntries(
       Object.entries(tool.args).map(([key, description]) => [
         key,
@@ -104,8 +121,9 @@ export function buildLoopToolDefinitions(): ModelToolDefinition[] {
     };
   });
 
-  cachedDefinitions = [...builtin, ...getMcpToolDefinitions()];
-  return cachedDefinitions;
+  const definitions = [...builtin, ...getMcpToolDefinitions()];
+  cachedDefinitions.set(cacheKey, definitions);
+  return definitions;
 }
 
 export function parseToolCallArguments(raw: string): Record<string, unknown> {
@@ -119,7 +137,9 @@ export function parseToolCallArguments(raw: string): Record<string, unknown> {
   } catch {
     // fall through
   }
-  throw new Error(`Tool arguments are not valid JSON: ${trimmed.slice(0, 200)}`);
+  throw new Error(
+    `Tool arguments are not valid JSON: ${trimmed.slice(0, 200)}`,
+  );
 }
 
 export function parseOpenAiToolCalls(
@@ -136,9 +156,9 @@ export function parseOpenAiToolCalls(
     const fn = record.function;
     if (!id || !fn || typeof fn !== "object") continue;
     const func = fn as Record<string, unknown>;
-    const name = typeof func.name === "string" ? decodeOpenAiToolName(func.name) : "";
-    const args =
-      typeof func.arguments === "string" ? func.arguments : "{}";
+    const name =
+      typeof func.name === "string" ? decodeOpenAiToolName(func.name) : "";
+    const args = typeof func.arguments === "string" ? func.arguments : "{}";
     if (!name) continue;
     calls.push({ id, name, arguments: args });
   }

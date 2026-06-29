@@ -12,6 +12,11 @@ export type ThreadMemoryRecord = {
   summaryId: string;
   memoryContent: string;
   round: number;
+  contextWindow?: {
+    windowNumber: number;
+    windowId: string;
+    previousWindowId?: string;
+  };
   method: "deterministic" | "semantic";
   updatedAt: string;
   lastTaskId: string;
@@ -102,16 +107,21 @@ export function updateThreadMemoryTitle(
 ): ThreadMemoryRecord | undefined {
   const record = memoryByThread.get(threadId);
   if (!record) return undefined;
-  const next = { ...record, title: title.trim(), updatedAt: new Date().toISOString() };
+  const next = {
+    ...record,
+    title: title.trim(),
+    updatedAt: new Date().toISOString(),
+  };
   memoryByThread.set(threadId, next);
   persistToDisk();
   return next;
 }
 
 /** 注入 Loop messages：上一轮 Thread 滚动记忆 */
-export function buildThreadMemoryInjectionMessage(
-  memoryContent: string,
-): { role: "user"; content: string } {
+export function buildThreadMemoryInjectionMessage(memoryContent: string): {
+  role: "user";
+  content: string;
+} {
   return {
     role: "user",
     content: [

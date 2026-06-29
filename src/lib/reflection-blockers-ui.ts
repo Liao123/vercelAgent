@@ -24,6 +24,11 @@ export function formatReflectionBlockersLine(
   },
 ): string {
   if (blockers.length === 0) return "";
+  if (input.taskStillRunning) {
+    return input.isLatestStep === false
+      ? "上轮问题：已记录上轮问题，正在换策略继续。"
+      : "待处理：遇到问题，正在换策略。";
+  }
   const label = reflectionBlockersLabel(input);
   const body = blockers.map((item) => formatModelErrorMessage(item)).join("；");
   return `${label}${body}`;

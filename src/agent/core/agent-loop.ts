@@ -3,16 +3,12 @@
  *
  * 通用编程能力：不依赖中文句式硬编码；通过工具观察 + 显式反思检查点推进任务。
  */
-import {
-  type AgentLoopToolContext,
-} from "@/agent/core/agent-loop-tools";
+import { type AgentLoopToolContext } from "@/agent/core/agent-loop-tools";
 import {
   attemptGracefulLoopFinal,
   GRACEFUL_FINAL_DEFAULT_SUMMARY,
 } from "@/agent/core/loop-graceful-final";
-import {
-  buildReasoningFailureDeliverableHint,
-} from "@/agent/core/loop-deliverable";
+import { buildReasoningFailureDeliverableHint } from "@/agent/core/loop-deliverable";
 import {
   buildModelFailureContinueNudge,
   isRuntimeReflectionEnabled,
@@ -54,6 +50,7 @@ import {
   completedAgentLoopPlan,
   createAgentLoopPlan,
   failedAgentLoopPlan,
+  specializeAgentLoopPlan,
   syncAgentLoopPlanProgress,
   type PlanProgressHint,
 } from "@/agent/core/agent-loop-plan";
@@ -164,9 +161,7 @@ import {
   type ShellLoopResumeInput,
 } from "@/agent/core/shell-loop-resume";
 import { buildApprovalLoopContinuationRequest } from "@/lib/approval-loop-continuation";
-import {
-  LOOP_USER_CANCEL_MESSAGE,
-} from "@/agent/core/loop-cancel";
+import { LOOP_USER_CANCEL_MESSAGE } from "@/agent/core/loop-cancel";
 
 export type AgentLoopInput = {
   userRequest: string;
@@ -205,6 +200,15 @@ type AgentLoopDecision =
       action: "tool_call";
       tool: string;
       args?: Record<string, unknown>;
+      thought?: string;
+    }
+  | {
+      action: "update_plan";
+      explanation?: string;
+      plan: Array<{
+        step: string;
+        status: "pending" | "in_progress" | "completed";
+      }>;
       thought?: string;
     }
   | {
@@ -284,11 +288,15 @@ function toDecision(value: unknown): AgentLoopDecision | null {
     understanding?: unknown;
     blockers?: unknown;
     plannedNext?: unknown;
+    explanation?: unknown;
+    plan?: unknown;
   };
 
   if (parsed.action === "tool_call" && typeof parsed.tool === "string") {
     const args =
-      parsed.args && typeof parsed.args === "object" && !Array.isArray(parsed.args)
+      parsed.args &&
+      typeof parsed.args === "object" &&
+      !Array.isArray(parsed.args)
         ? (parsed.args as Record<string, unknown>)
         : {};
     return {
@@ -305,13 +313,43 @@ function toDecision(value: unknown): AgentLoopDecision | null {
     typeof parsed.plannedNext === "string"
   ) {
     const blockers = Array.isArray(parsed.blockers)
-      ? parsed.blockers.filter((item): item is string => typeof item === "string")
+      ? parsed.blockers.filter(
+          (item): item is string => typeof item === "string",
+        )
       : undefined;
     return {
       action: "reflect",
       understanding: parsed.understanding,
       blockers,
       plannedNext: parsed.plannedNext,
+      thought: typeof parsed.thought === "string" ? parsed.thought : undefined,
+    };
+  }
+
+  if (parsed.action === "update_plan" && Array.isArray(parsed.plan)) {
+    const plan = parsed.plan
+      .map((item) => {
+        if (!item || typeof item !== "object") return null;
+        const record = item as { step?: unknown; status?: unknown };
+        if (typeof record.step !== "string") return null;
+        if (
+          record.status !== "pending" &&
+          record.status !== "in_progress" &&
+          record.status !== "completed"
+        ) {
+          return null;
+        }
+        return { step: record.step, status: record.status };
+      })
+      .filter((item): item is {
+        step: string;
+        status: "pending" | "in_progress" | "completed";
+      } => Boolean(item));
+    return {
+      action: "update_plan",
+      explanation:
+        typeof parsed.explanation === "string" ? parsed.explanation : undefined,
+      plan,
       thought: typeof parsed.thought === "string" ? parsed.thought : undefined,
     };
   }
@@ -361,7 +399,9 @@ function parseDecision(content: string): AgentLoopDecision {
     }
   }
 
-  throw new Error("Model returned an unsupported or invalid agent loop decision.");
+  throw new Error(
+    "Model returned an unsupported or invalid agent loop decision.",
+  );
 }
 
 function createToolCall(
@@ -380,7 +420,10 @@ function createToolCall(
   };
 }
 
-function completeToolCall(call: ToolCallRecord, error?: string): ToolCallRecord {
+function completeToolCall(
+  call: ToolCallRecord,
+  error?: string,
+): ToolCallRecord {
   return {
     ...call,
     completedAt: nowIso(),
@@ -468,7 +511,10 @@ function shouldInjectRuntimeReflection(state: AgentLoopRunState): boolean {
   if (state.reflectionRounds >= MAX_REFLECTION_ROUNDS) return false;
   if (isExplicitReadOnlyRequest(state.userRequest)) return false;
   if (state.lastToolError || state.lastPrepareError) return true;
-  if (state.postExecuteFeedback && !isEditTaskSatisfied(state, state.playbookId)) {
+  if (
+    state.postExecuteFeedback &&
+    !isEditTaskSatisfied(state, state.playbookId)
+  ) {
     return true;
   }
   return false;
@@ -566,11 +612,16 @@ export async function runAgentLoop(
   invalidateLoopToolDefinitionCache();
   const mcpSnapshot = getMcpRegistrySnapshot();
   const workspaceSnapshot = workspaceToSnapshotInput(workspace);
-  const workspaceStructureFacts = await collectWorkspaceStructureFacts(workspace);
-  const workspaceStructureBlock =
-    formatWorkspaceStructureFactsForPrompt(workspaceStructureFacts);
-  const { cleanRequest, attachedPaths: parsedAttachedPaths, attachedSelections: parsedSelections } =
-    parseAtPathsFromRequest(input.userRequest);
+  const workspaceStructureFacts =
+    await collectWorkspaceStructureFacts(workspace);
+  const workspaceStructureBlock = formatWorkspaceStructureFactsForPrompt(
+    workspaceStructureFacts,
+  );
+  const {
+    cleanRequest,
+    attachedPaths: parsedAttachedPaths,
+    attachedSelections: parsedSelections,
+  } = parseAtPathsFromRequest(input.userRequest);
   let effectiveUserRequest = cleanRequest || input.userRequest;
   const attachedPaths = mergeAttachedPaths(
     input.attachedPaths,
@@ -585,9 +636,7 @@ export async function runAgentLoop(
     : undefined;
 
   const shellCheckpoint =
-    input.shellResume &&
-    input.threadId &&
-    isShellLoopResumeEnabled()
+    input.shellResume && input.threadId && isShellLoopResumeEnabled()
       ? consumeLoopShellCheckpoint(input.threadId, input.shellResume.approvalId)
       : null;
 
@@ -637,8 +686,7 @@ export async function runAgentLoop(
     threadId: thread.id,
     workspaceId: workspace.id,
     userRequest: effectiveUserRequest,
-    referenceImages:
-      referenceImages.length > 0 ? referenceImages : undefined,
+    referenceImages: referenceImages.length > 0 ? referenceImages : undefined,
     status: "running",
     createdAt: now,
     updatedAt: now,
@@ -680,7 +728,10 @@ export async function runAgentLoop(
   let postExecuteFeedback = storedPostExecute
     ? postExecuteFeedbackFromStored(storedPostExecute)
     : null;
-  if (postExecuteFeedback && !isPostExecuteFixContinuation(effectiveUserRequest)) {
+  if (
+    postExecuteFeedback &&
+    !isPostExecuteFixContinuation(effectiveUserRequest)
+  ) {
     await clearStoredPostExecuteVerification(workspace.rootPath);
     postExecuteFeedback = null;
   }
@@ -697,6 +748,7 @@ export async function runAgentLoop(
     const nextPlan = syncAgentLoopPlanProgress(plan, runState, hint);
     plan.steps = nextPlan.steps;
     plan.updatedAt = nextPlan.updatedAt;
+    if (plan.steps.length === 0) return;
     emit({ type: "plan.updated", taskId: task.id, plan: { ...plan } });
   };
   if (!input.threadId) {
@@ -801,239 +853,282 @@ export async function runAgentLoop(
     });
     emitPlan({ lastAction: "tool" });
   } else {
-  const reasoningMode = evaluateReasoningTurn({
-    userRequest: effectiveUserRequest,
-    likelyEditRequest: runState.likelyEditRequest,
-    metaExplain: runState.metaExplainMode === true,
-    hasReferenceImages: referenceImages.length > 0,
-    hasPreloadedAttachments: attachedPaths.length > 0,
-    hasPostExecuteFeedback: Boolean(postExecuteFeedback),
-    isFixContinuation: isPostExecuteFixContinuation(effectiveUserRequest),
-    hasThreadMemory: Boolean(priorThreadMemory?.memoryContent),
-  });
+    const reasoningMode = evaluateReasoningTurn({
+      userRequest: effectiveUserRequest,
+      likelyEditRequest: runState.likelyEditRequest,
+      metaExplain: runState.metaExplainMode === true,
+      hasReferenceImages: referenceImages.length > 0,
+      hasPreloadedAttachments: attachedPaths.length > 0,
+      hasPostExecuteFeedback: Boolean(postExecuteFeedback),
+      isFixContinuation: isPostExecuteFixContinuation(effectiveUserRequest),
+      hasThreadMemory: Boolean(priorThreadMemory?.memoryContent),
+    });
 
-  messages = [
-    {
-      role: "system",
-      content: createLoopSystemPrompt(
-        workspace.rootPath,
-        input.uiContext,
-        workspaceSnapshot,
-        mcpSnapshot,
-        workspaceStructureBlock,
-      ),
-    },
-  ];
-  if (priorThreadMemory?.memoryContent) {
-    messages.push(
-      buildThreadMemoryInjectionMessage(priorThreadMemory.memoryContent),
-    );
-    const priorMemory = parseCompactedMemory(priorThreadMemory.memoryContent);
-    if (
-      priorMemory?.pinnedPrepareHint &&
-      runState.likelyEditRequest &&
-      !runState.approvalPrepared &&
-      isUiLocationQuery(effectiveUserRequest)
-    ) {
-      runState.prepareHint = priorMemory.pinnedPrepareHint;
-    }
-  }
-  const userMessageText = [
-    effectiveUserRequest,
-    attachedPaths.length > 0
-      ? formatAttachedFilesUserNote(attachedPaths, attachedSelections)
-      : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-  messages.push({
-    role: "user",
-    content: buildAgentUserContent(
-      userMessageText,
-      referenceImages.length > 0 ? referenceImages : undefined,
-    ),
-  });
-  if (!shellCheckpoint) {
-    const inspectResult = {
-      rootPath: workspace.rootPath,
-      gitRootPath: workspace.gitRootPath,
-      packageManager: workspace.packageManager,
-      framework: workspace.framework,
-      packageName: workspace.packageName,
-      structure: workspaceStructureFacts,
-    };
-    const inspectToolCall = createToolCall(
-      task.id,
-      "workspace.inspect",
-      {},
-      "启动时预载工作区结构事实。",
-    );
-    emit({ type: "tool.started", taskId: task.id, toolCall: inspectToolCall });
-    emit({
-      type: "tool.completed",
-      taskId: task.id,
-      toolCall: completeToolCall(inspectToolCall),
-      result: inspectResult,
-    });
-    recordToolCall(runState, "workspace.inspect", inspectResult);
-    if (isNativeToolLoopEnabled()) {
-      messages.push({
-        role: "assistant",
-        content: null,
-        tool_calls: [
-          {
-            id: inspectToolCall.id,
-            type: "function",
-            function: {
-              name: "workspace.inspect",
-              arguments: "{}",
-            },
-          },
-        ],
-      });
-      messages.push({
-        role: "tool",
-        tool_call_id: inspectToolCall.id,
-        content: JSON.stringify(inspectResult),
-      });
-    } else {
-      messages.push({
-        role: "assistant",
-        content: JSON.stringify({
-          action: "tool_call",
-          tool: "workspace.inspect",
-          args: {},
-          thought: "启动时预载工作区结构事实。",
-        }),
-      });
-      messages.push(
-        observationMessage(
-          "workspace.inspect",
-          inspectResult,
+    messages = [
+      {
+        role: "system",
+        content: createLoopSystemPrompt(
           workspace.rootPath,
-          inspectToolCall.id,
+          input.uiContext,
+          workspaceSnapshot,
+          mcpSnapshot,
+          workspaceStructureBlock,
+          runState,
         ),
+      },
+    ];
+    if (priorThreadMemory?.memoryContent) {
+      messages.push(
+        buildThreadMemoryInjectionMessage(priorThreadMemory.memoryContent),
       );
+      const priorMemory = parseCompactedMemory(priorThreadMemory.memoryContent);
+      if (
+        priorMemory?.pinnedPrepareHint &&
+        runState.likelyEditRequest &&
+        !runState.approvalPrepared &&
+        isUiLocationQuery(effectiveUserRequest)
+      ) {
+        runState.prepareHint = priorMemory.pinnedPrepareHint;
+      }
     }
-  }
-  if (attachedPaths.length > 0) {
-    const preloaded = await preloadAttachedFiles({
-      rootPath: workspace.rootPath,
-      paths: attachedPaths,
-      selections: attachedSelections,
+    const userMessageText = [
+      effectiveUserRequest,
+      attachedPaths.length > 0
+        ? formatAttachedFilesUserNote(attachedPaths, attachedSelections)
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    messages.push({
+      role: "user",
+      content: buildAgentUserContent(
+        userMessageText,
+        referenceImages.length > 0 ? referenceImages : undefined,
+      ),
     });
-    for (const file of preloaded) {
-      const result = file.error
-        ? { path: file.path, error: file.error }
-        : {
-            path: file.path,
-            content: file.content ?? "",
-            truncated: file.truncated ?? false,
-          };
-      const toolCall = createToolCall(
+    if (!shellCheckpoint) {
+      const inspectResult = {
+        rootPath: workspace.rootPath,
+        gitRootPath: workspace.gitRootPath,
+        packageManager: workspace.packageManager,
+        framework: workspace.framework,
+        packageName: workspace.packageName,
+        structure: workspaceStructureFacts,
+      };
+      const inspectToolCall = createToolCall(
         task.id,
-        "file.read",
-        { path: file.path },
-        "用户附加文件，启动时预读。",
+        "workspace.inspect",
+        {},
+        "启动时预载工作区结构事实。",
       );
-      emit({ type: "tool.started", taskId: task.id, toolCall });
+      emit({
+        type: "tool.started",
+        taskId: task.id,
+        toolCall: inspectToolCall,
+      });
       emit({
         type: "tool.completed",
         taskId: task.id,
-        toolCall: completeToolCall(toolCall),
-        result,
+        toolCall: completeToolCall(inspectToolCall),
+        result: inspectResult,
       });
-      if (!file.error) {
-        recordToolCall(runState, "file.read", result);
+      recordToolCall(runState, "workspace.inspect", inspectResult);
+      if (isNativeToolLoopEnabled()) {
+        messages.push({
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: inspectToolCall.id,
+              type: "function",
+              function: {
+                name: "workspace.inspect",
+                arguments: "{}",
+              },
+            },
+          ],
+        });
+        messages.push({
+          role: "tool",
+          tool_call_id: inspectToolCall.id,
+          content: JSON.stringify(inspectResult),
+        });
+      } else {
+        messages.push({
+          role: "assistant",
+          content: JSON.stringify({
+            action: "tool_call",
+            tool: "workspace.inspect",
+            args: {},
+            thought: "启动时预载工作区结构事实。",
+          }),
+        });
+        messages.push(
+          observationMessage(
+            "workspace.inspect",
+            inspectResult,
+            workspace.rootPath,
+            inspectToolCall.id,
+          ),
+        );
       }
+    }
+    if (attachedPaths.length > 0) {
+      const preloaded = await preloadAttachedFiles({
+        rootPath: workspace.rootPath,
+        paths: attachedPaths,
+        selections: attachedSelections,
+      });
+      for (const file of preloaded) {
+        const result = file.error
+          ? { path: file.path, error: file.error }
+          : {
+              path: file.path,
+              content: file.content ?? "",
+              truncated: file.truncated ?? false,
+            };
+        const toolCall = createToolCall(
+          task.id,
+          "file.read",
+          { path: file.path },
+          "用户附加文件，启动时预读。",
+        );
+        emit({ type: "tool.started", taskId: task.id, toolCall });
+        emit({
+          type: "tool.completed",
+          taskId: task.id,
+          toolCall: completeToolCall(toolCall),
+          result,
+        });
+        if (!file.error) {
+          recordToolCall(runState, "file.read", result);
+        }
+        messages.push({
+          role: "assistant",
+          content: JSON.stringify({
+            action: "tool_call",
+            tool: "file.read",
+            args: { path: file.path },
+            thought: "用户附加文件，启动时预读。",
+          }),
+        });
+        messages.push(
+          observationMessage(
+            "file.read",
+            result,
+            workspace.rootPath,
+            toolCall.id,
+          ),
+        );
+      }
+    }
+
+    if (reasoningMode === "full") {
       messages.push({
-        role: "assistant",
-        content: JSON.stringify({
-          action: "tool_call",
-          tool: "file.read",
-          args: { path: file.path },
-          thought: "用户附加文件，启动时预读。",
+        role: "user",
+        content: buildReasoningTurnUserMessage({
+          userRequest: effectiveUserRequest,
+          playbookHints,
+          uiContext: input.uiContext,
+          hasThreadMemory: Boolean(priorThreadMemory?.memoryContent),
+          metaExplain: runState.metaExplainMode === true,
+          workspaceSnapshot,
+          workspaceStructureBlock,
         }),
       });
-      messages.push(observationMessage("file.read", result, workspace.rootPath, toolCall.id));
-    }
-  }
-
-  if (reasoningMode === "full") {
-    messages.push({
-      role: "user",
-      content: buildReasoningTurnUserMessage({
-        userRequest: effectiveUserRequest,
-        playbookHints,
-        uiContext: input.uiContext,
-        hasThreadMemory: Boolean(priorThreadMemory?.memoryContent),
-        metaExplain: runState.metaExplainMode === true,
-        workspaceSnapshot,
-        workspaceStructureBlock,
-      }),
-    });
-    try {
-      const loopModel =
-        input.model ??
-        (agentMessagesHaveImages(messages)
-          ? getApiConfig()?.visionModel
-          : undefined);
-      const reasoningOutput = await generateLoopModelWithProgress(
-        provider,
-        {
-          messages,
-          model: loopModel,
-          temperature: 0,
-          maxTokens: 900,
-          toolChoice: "none",
-          metadata: { taskId: task.id, reasoningTurn: true },
-        },
-        emit,
-        task.id,
-      );
-      const parsed = parseTaskReasoning(reasoningOutput.content);
-      if (parsed) {
-        const normalized = normalizeTaskReasoning(parsed, {
-          userRequest: effectiveUserRequest,
-          metaExplain: runState.metaExplainMode === true,
-          hasThreadMemory: Boolean(priorThreadMemory?.memoryContent),
-          filesReadCount: runState.filesRead.length,
-          toolsCalledCount: runState.toolsCalled.length,
-          workspaceFramework: runState.workspaceFramework,
-        });
-        attachReasoningToRunState(runState, normalized);
-        runState.likelyEditRequest = isLikelyCodeEditRequest(
-          effectiveUserRequest,
-          normalized,
+      try {
+        const loopModel =
+          input.model ??
+          (agentMessagesHaveImages(messages)
+            ? getApiConfig()?.visionModel
+            : undefined);
+        const reasoningOutput = await generateLoopModelWithProgress(
+          provider,
+          {
+            messages,
+            model: loopModel,
+            temperature: 0,
+            maxTokens: 900,
+            toolChoice: "none",
+            metadata: { taskId: task.id, reasoningTurn: true },
+          },
+          emit,
+          task.id,
         );
-        rebindPlaybookFromState();
-        runState.reasoningCompleted = true;
-        const reflection = reasoningToReflection(normalized);
-        emitReflection(emit, task.id, reflection);
-        pushReflectionToMessages(
-          messages,
-          reflection,
-          buildRuntimeCheckpoint(runState),
-        );
-        messages.push({
-          role: "assistant",
-          content: formatReasoningForMessages(normalized),
-        });
-        const postHint = buildPostReasoningHint(
-          normalized,
-          runState.metaExplainMode === true,
-        );
-        if (postHint) {
-          messages.push({ role: "user", content: postHint });
+        const parsed = parseTaskReasoning(reasoningOutput.content);
+        if (parsed) {
+          const normalized = normalizeTaskReasoning(parsed, {
+            userRequest: effectiveUserRequest,
+            metaExplain: runState.metaExplainMode === true,
+            hasThreadMemory: Boolean(priorThreadMemory?.memoryContent),
+            filesReadCount: runState.filesRead.length,
+            toolsCalledCount: runState.toolsCalled.length,
+            workspaceFramework: runState.workspaceFramework,
+          });
+          attachReasoningToRunState(runState, normalized);
+          runState.likelyEditRequest = isLikelyCodeEditRequest(
+            effectiveUserRequest,
+            normalized,
+          );
+          rebindPlaybookFromState();
+          const specificPlan = specializeAgentLoopPlan(plan, {
+            reasoning: normalized,
+            playbook: taskPlaybook,
+          });
+          plan.steps = specificPlan.steps;
+          plan.risks = specificPlan.risks;
+          plan.verification = specificPlan.verification;
+          plan.updatedAt = specificPlan.updatedAt;
+          runState.reasoningCompleted = true;
+          const reflection = reasoningToReflection(normalized);
+          emitReflection(emit, task.id, reflection);
+          pushReflectionToMessages(
+            messages,
+            reflection,
+            buildRuntimeCheckpoint(runState),
+          );
+          messages.push({
+            role: "assistant",
+            content: formatReasoningForMessages(normalized),
+          });
+          const postHint = buildPostReasoningHint(
+            normalized,
+            runState.metaExplainMode === true,
+          );
+          if (postHint) {
+            messages.push({ role: "user", content: postHint });
+          }
+          emitPlan({ lastAction: "reflect" });
+        } else if (reasoningOutput.content?.trim()) {
+          messages.push({
+            role: "assistant",
+            content: reasoningOutput.content.trim(),
+          });
         }
-        emitPlan({ lastAction: "reflect" });
-      } else if (reasoningOutput.content?.trim()) {
-        messages.push({
-          role: "assistant",
-          content: reasoningOutput.content.trim(),
+      } catch {
+        const deliverableHint = buildReasoningFailureDeliverableHint({
+          userRequest: effectiveUserRequest,
+          playbookId: taskPlaybook.id,
+          playbookTitle: taskPlaybook.title,
+          openingPlannedNext: taskPlaybook.openingPlannedNext,
         });
+        messages.push({ role: "user", content: deliverableHint });
+        emitPlan({ lastAction: "reflect" });
       }
-    } catch {
+    } else if (reasoningMode === "skip") {
+      messages.push({
+        role: "user",
+        content: buildAdaptiveReasoningSkipHint({
+          userRequest: effectiveUserRequest,
+          playbookHints,
+          uiContext: input.uiContext,
+          hasThreadMemory: Boolean(priorThreadMemory?.memoryContent),
+          workspaceSnapshot,
+          workspaceStructureBlock,
+        }),
+      });
+      emitPlan();
+    } else {
       const deliverableHint = buildReasoningFailureDeliverableHint({
         userRequest: effectiveUserRequest,
         playbookId: taskPlaybook.id,
@@ -1041,31 +1136,8 @@ export async function runAgentLoop(
         openingPlannedNext: taskPlaybook.openingPlannedNext,
       });
       messages.push({ role: "user", content: deliverableHint });
-      emitPlan({ lastAction: "reflect" });
+      emitPlan();
     }
-  } else if (reasoningMode === "skip") {
-    messages.push({
-      role: "user",
-      content: buildAdaptiveReasoningSkipHint({
-        userRequest: effectiveUserRequest,
-        playbookHints,
-        uiContext: input.uiContext,
-        hasThreadMemory: Boolean(priorThreadMemory?.memoryContent),
-        workspaceSnapshot,
-        workspaceStructureBlock,
-      }),
-    });
-    emitPlan();
-  } else {
-    const deliverableHint = buildReasoningFailureDeliverableHint({
-      userRequest: effectiveUserRequest,
-      playbookId: taskPlaybook.id,
-      playbookTitle: taskPlaybook.title,
-      openingPlannedNext: taskPlaybook.openingPlannedNext,
-    });
-    messages.push({ role: "user", content: deliverableHint });
-    emitPlan();
-  }
   }
 
   let toolContext: AgentLoopToolContext = {
@@ -1105,7 +1177,9 @@ export async function runAgentLoop(
   let summary = GRACEFUL_FINAL_DEFAULT_SUMMARY;
   const maxIterations = Math.min(
     Math.max(
-      shellCheckpoint?.maxIterations ?? input.maxIterations ?? DEFAULT_MAX_ITERATIONS,
+      shellCheckpoint?.maxIterations ??
+        input.maxIterations ??
+        DEFAULT_MAX_ITERATIONS,
       1,
     ),
     MAX_LOOP_ITERATION_CAP,
@@ -1124,7 +1198,11 @@ export async function runAgentLoop(
     MAX_LOOP_ITERATION_CAP,
   );
 
-  for (let iteration = resumedIteration + 1; iteration <= loopIterationCap; iteration += 1) {
+  for (
+    let iteration = resumedIteration + 1;
+    iteration <= loopIterationCap;
+    iteration += 1
+  ) {
     if (input.signal?.aborted) {
       return finishLoopCancelled({
         trace,
@@ -1195,6 +1273,7 @@ export async function runAgentLoop(
           estimatedTokensBefore: payload.estimatedTokensBefore,
           estimatedTokensAfter: payload.estimatedTokensAfter,
           round: payload.round,
+          contextWindow: payload.contextWindow,
           middleMessageCount: payload.middleMessageCount,
           summaryPreview: payload.summaryPreview,
           memoryContent,
@@ -1204,13 +1283,15 @@ export async function runAgentLoop(
           layersApplied: payload.layersApplied ?? compactResult.layersApplied,
         });
         if (memoryContent) {
-          const summaryPreview = payload.summaryPreview ?? memoryContent.slice(0, 420);
+          const summaryPreview =
+            payload.summaryPreview ?? memoryContent.slice(0, 420);
           saveThreadMemory({
             threadId: thread.id,
             workspaceId: workspace.id,
             summaryId: payload.summaryId,
             memoryContent,
             round: payload.round,
+            contextWindow: payload.contextWindow,
             method: payload.method,
             updatedAt: nowIso(),
             lastTaskId: task.id,
@@ -1271,7 +1352,7 @@ export async function runAgentLoop(
             },
             ...(nativeTools
               ? {
-                  tools: buildLoopToolDefinitions(),
+                  tools: buildLoopToolDefinitions(runState),
                   toolChoice: "auto" as const,
                 }
               : forceFinalIteration
@@ -1318,13 +1399,15 @@ export async function runAgentLoop(
                 estimatedTokensBefore: payload.estimatedTokensBefore,
                 estimatedTokensAfter: payload.estimatedTokensAfter,
                 round: payload.round,
+                contextWindow: payload.contextWindow,
                 middleMessageCount: payload.middleMessageCount,
                 summaryPreview: payload.summaryPreview,
                 memoryContent: payload.memoryContent,
                 threadId: thread.id,
                 pinnedApprovalCount: payload.pinnedApprovalCount,
                 changedFileCount: payload.changedFileCount,
-                layersApplied: payload.layersApplied ?? reactiveCompact.layersApplied,
+                layersApplied:
+                  payload.layersApplied ?? reactiveCompact.layersApplied,
               });
             }
             modelRetryAfterCompact = true;
@@ -1421,7 +1504,11 @@ export async function runAgentLoop(
 
     consecutiveModelFailures = 0;
 
-    if (isNativeToolLoopEnabled() && output.toolCalls && output.toolCalls.length > 0) {
+    if (
+      isNativeToolLoopEnabled() &&
+      output.toolCalls &&
+      output.toolCalls.length > 0
+    ) {
       if (shouldForceFinalIteration(iteration, maxIterations, runState)) {
         const forcedText = output.content?.trim();
         if (forcedText) {
@@ -1521,7 +1608,10 @@ export async function runAgentLoop(
           pausedShellApprovalId = pendingShell.approvalId;
           break;
         }
-        flushDeferredPostToolTurnMessages(messages, deferredPostToolTurnMessages);
+        flushDeferredPostToolTurnMessages(
+          messages,
+          deferredPostToolTurnMessages,
+        );
       } else {
         let pendingShell: PendingShellApproval | null = null;
         for (const item of preparedCalls) {
@@ -1560,7 +1650,10 @@ export async function runAgentLoop(
           pausedShellApprovalId = pendingShell.approvalId;
           break;
         }
-        flushDeferredPostToolTurnMessages(messages, deferredPostToolTurnMessages);
+        flushDeferredPostToolTurnMessages(
+          messages,
+          deferredPostToolTurnMessages,
+        );
       }
       continue;
     }
@@ -1572,7 +1665,9 @@ export async function runAgentLoop(
         messages.push({
           role: "user",
           content: buildModelFailureContinueNudge({
-            error: new Error("Model returned empty response without tool calls."),
+            error: new Error(
+              "Model returned empty response without tool calls.",
+            ),
             playbookTitle: taskPlaybook.title,
             openingPlannedNext: taskPlaybook.openingPlannedNext,
             userRequest: effectiveUserRequest,
@@ -1596,7 +1691,11 @@ export async function runAgentLoop(
           source: "runtime",
         };
         emitReflection(emit, task.id, reflection);
-        pushReflectionToMessages(messages, reflection, buildRuntimeCheckpoint(runState));
+        pushReflectionToMessages(
+          messages,
+          reflection,
+          buildRuntimeCheckpoint(runState),
+        );
         const pressure =
           buildEditWritePressureNudge(runState, iteration, maxIterations) ??
           buildEditWriteTailNudge(iteration, maxIterations);
@@ -1642,6 +1741,24 @@ export async function runAgentLoop(
       continue;
     }
 
+    if (decision.action === "update_plan") {
+      plan.explanation = decision.explanation;
+      plan.steps = decision.plan.map((item) => ({
+        step: item.step,
+        title: item.step,
+        status: item.status,
+      }));
+      plan.updatedAt = nowIso();
+      if (plan.steps.length > 0) {
+        emit({ type: "plan.updated", taskId: task.id, plan: { ...plan } });
+      }
+      messages.push({
+        role: "user",
+        content: "Plan updated. Continue with the next concrete action.",
+      });
+      continue;
+    }
+
     if (decision.action === "final") {
       if (shouldRejectTextOnlyFinal(runState, iteration, maxIterations)) {
         runState.reflectionRounds += 1;
@@ -1653,7 +1770,11 @@ export async function runAgentLoop(
           source: "runtime",
         };
         emitReflection(emit, task.id, reflection);
-        pushReflectionToMessages(messages, reflection, buildRuntimeCheckpoint(runState));
+        pushReflectionToMessages(
+          messages,
+          reflection,
+          buildRuntimeCheckpoint(runState),
+        );
         const pressure =
           buildEditWritePressureNudge(runState, iteration, maxIterations) ??
           buildEditWriteTailNudge(iteration, maxIterations);
@@ -1671,7 +1792,9 @@ export async function runAgentLoop(
       args: decision.args ?? {},
       rationale: decision.thought,
       patchTextFallback:
-        typeof decision.args?.patch === "string" ? decision.args.patch : undefined,
+        typeof decision.args?.patch === "string"
+          ? decision.args.patch
+          : undefined,
       deps: toolRunnerDeps,
     });
     toolContext = runResult.toolContext;
@@ -1770,7 +1893,10 @@ export async function runAgentLoop(
     }
   }
 
-  const delivered = isTaskDelivered(runState, isEditTaskSatisfied(runState, runState.playbookId));
+  const delivered = isTaskDelivered(
+    runState,
+    isEditTaskSatisfied(runState, runState.playbookId),
+  );
   const taskSucceeded = !modelUnavailable && delivered;
 
   if (
@@ -1780,7 +1906,10 @@ export async function runAgentLoop(
     !isEditTaskSatisfied(runState)
   ) {
     summary = `${summary}\n未能完成写盘。请查看事件流、用运行中引导补充要求，或重开任务。`;
-  } else if (modelUnavailable && !isEditTaskSatisfied(runState, runState.playbookId)) {
+  } else if (
+    modelUnavailable &&
+    !isEditTaskSatisfied(runState, runState.playbookId)
+  ) {
     summary = `${summary}\n模型连续调用失败，未完成写盘。请检查 .env.local 模型配置后重开任务。`;
   }
 
@@ -1826,6 +1955,7 @@ export async function runAgentLoop(
     summaryId: taskMemory.summaryId,
     memoryContent: taskMemory.memoryContent,
     round: taskMemory.round,
+    contextWindow: taskMemory.contextWindow,
     method: taskMemory.method,
     updatedAt: nowIso(),
     lastTaskId: task.id,

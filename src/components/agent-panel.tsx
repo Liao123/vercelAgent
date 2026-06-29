@@ -9,9 +9,10 @@ import {
   useState,
 } from "react";
 import { readImageFile } from "@/lib/read-image-file";
-import { formatCompactMethod, formatCompactionLayers } from "@/lib/compaction-labels";
+import { formatCompactionCheckpoint } from "@/lib/compaction-labels";
 import { AgentEventTimeline } from "@/components/agent-event-timeline";
 import { AgentReviewPanel } from "@/components/agent-review-panel";
+import { AgentRunStatusStrip } from "@/components/agent-run-status-strip";
 import { AgentComposer } from "@/components/agent-composer";
 import { AgentTerminalPanel } from "@/components/agent-terminal-panel";
 import {
@@ -1579,10 +1580,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
             }
           }
           if (parsed.type === "context.compacted") {
-            const layers = formatCompactionLayers(parsed.layersApplied);
-            setApprovalStatus(
-              `上下文已压缩（第 ${parsed.round ?? "?"} 轮 · ${formatCompactMethod(parsed.method)}${layers ? ` · ${layers}` : ""}）`,
-            );
+            setApprovalStatus(formatCompactionCheckpoint(parsed).status);
           }
           if (parsed.type === "tool.completed") {
             const toolName = parsed.toolCall?.toolName;
@@ -2696,6 +2694,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
             className="hidden"
             onChange={(e) => void onPickReferenceImages(e)}
           />
+          <AgentRunStatusStrip events={events} running={running} />
           <AgentComposer
             request={request}
             onRequestChange={setRequest}

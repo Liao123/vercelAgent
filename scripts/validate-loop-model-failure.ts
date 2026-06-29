@@ -49,8 +49,12 @@ async function main(): Promise<void> {
   assert.equal(pb.id, "design-replicate");
 
   const plan = createAgentLoopPlan("test");
+  plan.steps = [
+    { step: "read context", status: "completed" },
+    { step: "write page", status: "pending" },
+  ];
   const failed = failedAgentLoopPlan(plan);
-  assert.equal(failed.steps.find((s) => s.id === "finish")?.status, "blocked");
+  assert.equal(failed.steps[1]?.status, "in_progress");
 
   const loop = await fs.readFile("src/agent/model/chat-completions-provider.ts", "utf8");
   assert.ok(

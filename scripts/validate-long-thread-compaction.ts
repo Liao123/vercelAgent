@@ -28,14 +28,19 @@ const WORKSPACE_ID = "ws_validate_long";
 const TASK1_APPROVAL = "approval_task1-long-aaaa";
 const TASK2_APPROVAL = "approval_task2-long-bbbb";
 const TASK1_REQUEST = "修改首页标题并准备 file.replace 审批";
-const TASK2_REQUEST = "延续上次：告诉我待执行的 approval id，并继续只读扫描 src/components";
+const TASK2_REQUEST =
+  "延续上次：告诉我待执行的 approval id，并继续只读扫描 src/components";
 
 function messageText(message: AgentMessage): string {
   if (typeof message.content === "string") return message.content;
   return JSON.stringify(message.content);
 }
 
-function appendReadBurst(messages: AgentMessage[], prefix: string, count: number) {
+function appendReadBurst(
+  messages: AgentMessage[],
+  prefix: string,
+  count: number,
+) {
   for (let i = 0; i < count; i += 1) {
     messages.push({
       role: "assistant",
@@ -131,6 +136,10 @@ async function main() {
     2,
   );
   assert.equal(task1Round2.round, 2);
+  assert.equal(
+    task1Round2.contextWindow?.previousWindowId,
+    task1Round1.contextWindow?.windowId,
+  );
   assert.ok(task1Round2.memoryContent!.includes(TASK1_APPROVAL));
   assert.equal(messageText(task1Round1.messages[1]), TASK1_REQUEST);
 
@@ -164,7 +173,11 @@ async function main() {
   assert.equal(messageText(task2Messages[2]), TASK2_REQUEST);
 
   appendReadBurst(task2Messages, "src/components/task2", 16);
-  appendPrepare(task2Messages, TASK2_APPROVAL, "src/components/agent-panel.tsx");
+  appendPrepare(
+    task2Messages,
+    TASK2_APPROVAL,
+    "src/components/agent-panel.tsx",
+  );
 
   const task2Round3 = await compactRound(task2Messages, TASK2_REQUEST, 3);
   assert.equal(task2Round3.round, 3);
@@ -185,6 +198,10 @@ async function main() {
     4,
   );
   assert.equal(task2Round4.round, 4);
+  assert.equal(
+    task2Round4.contextWindow?.previousWindowId,
+    task2Round3.contextWindow?.windowId,
+  );
   assert.ok(task2Round4.memoryContent!.includes(TASK1_APPROVAL));
   assert.ok(task2Round4.memoryContent!.includes(TASK2_APPROVAL));
   assert.equal(messageText(task2Round4.messages[2]), TASK2_REQUEST);
@@ -194,7 +211,10 @@ async function main() {
   );
 
   const parsedR4 = parseCompactedMemory(task2Round4.memoryContent!);
-  assert.ok(parsedR4?.summaryBody.includes("Prior") || parsedR4?.summaryBody.length > 20);
+  assert.ok(
+    parsedR4?.summaryBody.includes("Prior") ||
+      parsedR4?.summaryBody.length > 20,
+  );
 
   console.log("validate-long-thread-compaction: all assertions passed");
   console.log(

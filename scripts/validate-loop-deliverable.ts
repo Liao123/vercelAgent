@@ -11,7 +11,11 @@ import {
   recordFilesWritten,
 } from "../src/agent/core/loop-deliverable";
 import { computePlaybookProgress, getPlaybookById, resolveTaskPlaybook } from "../src/agent/core/task-playbooks";
-import { syncAgentLoopPlanProgress, createAgentLoopPlan } from "../src/agent/core/agent-loop-plan";
+import {
+  createAgentLoopPlan,
+  specializeAgentLoopPlan,
+  syncAgentLoopPlanProgress,
+} from "../src/agent/core/agent-loop-plan";
 
 assert.equal(isPageEntryPath("index.html"), true);
 assert.equal(isPageEntryPath("src/app/page.tsx"), true);
@@ -90,12 +94,25 @@ const planEarly = syncAgentLoopPlanProgress(plan, {
   reasoningCompleted: false,
 });
 assert.equal(
-  planEarly.steps.find((s) => s.id === "understand")?.status,
-  "doing",
-  "understand not auto-done without reasoning",
+  planEarly.steps.length,
+  0,
+  "Codex-style checklist should not emit a fixed template before reasoning",
 );
 
-const planUnderstood = syncAgentLoopPlanProgress(plan, {
+const dynamicPlan = specializeAgentLoopPlan(plan, {
+  reasoning: {
+    understanding: "复刻首页",
+    intent: "code_edit",
+    risk: "write",
+    evidenceNeeded: [],
+    planSteps: ["确认复刻首页目标", "提取设计规格", "写入首页文件"],
+    ambiguity: null,
+    canAnswerNow: false,
+    plannedNext: "write page",
+    source: "model",
+  },
+});
+const planUnderstood = syncAgentLoopPlanProgress(dynamicPlan, {
   ...state,
   editApplied: false,
   taskReasoning: {
@@ -113,8 +130,12 @@ const planUnderstood = syncAgentLoopPlanProgress(plan, {
   filesRead: [],
 });
 assert.equal(
-  planUnderstood.steps.find((s) => s.id === "understand")?.status,
-  "done",
+  planUnderstood.steps[0]?.status,
+  "completed",
+);
+assert.ok(
+  planUnderstood.steps.some((step) => step.status === "in_progress"),
+  "dynamic checklist should keep one active step",
 );
 
 console.log("validate-loop-deliverable: passed");

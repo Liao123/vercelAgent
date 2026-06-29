@@ -474,12 +474,8 @@ export function reasoningToReflection(reasoning: TaskReasoning): AgentReflection
       ? [`尚需: ${reasoning.evidenceNeeded.slice(0, 3).join("；")}`]
       : []),
   ];
-  const planLine =
-    reasoning.planSteps.length > 0
-      ? `计划: ${reasoning.planSteps.join(" → ")}`
-      : "";
   return {
-    understanding: [reasoning.understanding, planLine].filter(Boolean).join("\n"),
+    understanding: reasoning.understanding,
     blockers,
     plannedNext: reasoning.plannedNext,
     source: "model",

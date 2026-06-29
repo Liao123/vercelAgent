@@ -41,6 +41,7 @@ assert(!basePrompt.includes("{{WORKSPACE_ROOT}}"), "placeholders must be rendere
 process.env.AGENT_LOOP_JSON_PROTOCOL = "1";
 const jsonPrompt = createLoopSystemPrompt(process.cwd());
 assert(jsonPrompt.includes("action=reflect"), "json protocol prompt must mention reflect");
+assert(jsonPrompt.includes("action\":\"update_plan"), "json protocol prompt must mention update_plan");
 delete process.env.AGENT_LOOP_JSON_PROTOCOL;
 
 const formatted = formatCompactModelOutput(

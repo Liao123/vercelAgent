@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import type { AgentEvent } from "@/agent/types";
 import { getLatestCompactedMemoryContent } from "@/lib/agent-feed";
-import { formatCompactMethod } from "@/lib/compaction-labels";
+import { formatCompactionCheckpoint } from "@/lib/compaction-labels";
 import {
   buildThreadMemoryMarkdown,
   copyTextToClipboard,
@@ -33,6 +33,18 @@ export function AgentCompactedMemoryPanel({
   );
   const memoryContent = memoryContentProp ?? fromEvents?.memoryContent ?? null;
   const meta = fromEvents;
+  const display = formatCompactionCheckpoint({
+    method: meta?.method,
+    round: meta?.round,
+    contextWindow: meta?.contextWindow,
+    pinnedApprovalCount: meta?.pinnedApprovalCount,
+    changedFileCount: meta?.changedFileCount,
+    estimatedTokensBefore: meta?.estimatedTokensBefore,
+    estimatedTokensAfter: meta?.estimatedTokensAfter,
+    layersApplied: meta?.layersApplied,
+    summaryPreview: meta?.summaryPreview,
+    memoryContent,
+  });
 
   if (!memoryContent) return null;
 
@@ -50,23 +62,23 @@ export function AgentCompactedMemoryPanel({
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="text-[11px] font-semibold text-blue-900 dark:text-blue-200">
-            滚动任务记忆
-            {meta?.round != null ? ` · 第 ${meta.round} 轮` : ""}
-            {meta?.method ? ` · ${formatCompactMethod(meta.method)}` : ""}
+            {display.label}
           </p>
-          {!expanded && meta?.summaryPreview && (
+          {!expanded && display.summary && (
             <p className="mt-0.5 line-clamp-2 whitespace-pre-wrap text-[10px] text-blue-900/80 dark:text-blue-200/70">
-              {meta.summaryPreview}
+              {display.summary}
             </p>
           )}
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-1.5">
           <button
             type="button"
-            onClick={() => void copyTextToClipboard(memoryContent).then(() => {
-              setExportHint("已复制");
-              setTimeout(() => setExportHint(null), 2000);
-            })}
+            onClick={() =>
+              void copyTextToClipboard(memoryContent).then(() => {
+                setExportHint("已复制");
+                setTimeout(() => setExportHint(null), 2000);
+              })
+            }
             className="text-[10px] font-medium text-blue-700 hover:underline dark:text-blue-300"
           >
             复制
@@ -74,11 +86,15 @@ export function AgentCompactedMemoryPanel({
           <button
             type="button"
             onClick={() => {
-              const md = buildThreadMemoryMarkdown("task-memory", memoryContent, {
-                threadId: meta?.threadId,
-                round: meta?.round ?? undefined,
-                method: meta?.method,
-              });
+              const md = buildThreadMemoryMarkdown(
+                "task-memory",
+                memoryContent,
+                {
+                  threadId: meta?.threadId,
+                  round: meta?.round ?? undefined,
+                  method: meta?.method,
+                },
+              );
               downloadTextFile(
                 `agent-memory-${meta?.threadId?.slice(0, 8) ?? "export"}.md`,
                 md,
@@ -100,7 +116,9 @@ export function AgentCompactedMemoryPanel({
         </div>
       </div>
       {exportHint && (
-        <p className="text-[10px] text-blue-700 dark:text-blue-300">{exportHint}</p>
+        <p className="text-[10px] text-blue-700 dark:text-blue-300">
+          {exportHint}
+        </p>
       )}
       {expanded && (
         <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border border-blue-100/80 bg-white/80 p-2 font-mono text-[10px] leading-relaxed text-zinc-800 dark:border-blue-900/40 dark:bg-zinc-950/60 dark:text-zinc-200">

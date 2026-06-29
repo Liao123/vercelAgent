@@ -99,7 +99,11 @@ async function main() {
   assert.ok(isThreadMemoryInjectionMessage(messages[1]));
   assert.ok(isPrimaryTaskUserMessage(messages[2]));
   assert.equal(messageText(messages[2]), USER_TASK);
-  assert.equal(headCount, 3, "head must be system + thread memory + current user task");
+  assert.equal(
+    headCount,
+    3,
+    "head must be system + thread memory + current user task",
+  );
 
   const split = splitLoopMessagesForCompaction(messages);
   assert.equal(split.head.length, 3);
@@ -127,17 +131,27 @@ async function main() {
     first.memoryContent?.includes("approval_prior-old-id"),
     "thread memory approval rolls into compacted pinned facts",
   );
-  assert.ok(!first.memoryContent?.includes(USER_TASK));
+  assert.ok(first.memoryContent?.includes("## Handoff"));
+  assert.ok(first.memoryContent?.includes(USER_TASK));
+  assert.ok(first.contextWindow?.windowId.startsWith("ctxwin_"));
+  assert.ok(first.memoryContent?.includes(first.contextWindow!.windowId));
 
   const allText = first.messages.map((m) => messageText(m)).join("\n");
-  assert.ok(allText.includes(APPROVAL_A), "approval A survives in head/memory/tail");
-  assert.ok(allText.includes(APPROVAL_B), "approval B survives in head/memory/tail");
+  assert.ok(
+    allText.includes(APPROVAL_A),
+    "approval A survives in head/memory/tail",
+  );
+  assert.ok(
+    allText.includes(APPROVAL_B),
+    "approval B survives in head/memory/tail",
+  );
 
   const headAfter = first.messages.slice(0, 3);
   assert.equal(messageText(headAfter[2]), USER_TASK);
 
   const parsed = parseCompactedMemory(first.memoryContent ?? "");
   assert.ok(parsed);
+  assert.equal(parsed.windowId, first.contextWindow?.windowId);
   assert.ok(
     parsed.pinnedFacts.approvalIds.includes(APPROVAL_A),
     "evicted middle pins earlier approval id",

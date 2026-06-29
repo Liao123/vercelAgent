@@ -23,6 +23,7 @@ export type FileChangeEntry = {
     before?: ApprovalPatchFilePreview["oldContent"];
     after?: ApprovalPatchFilePreview["newContent"];
   };
+  directDiff?: string;
 };
 
 export type TurnFileChangeSummary = {
@@ -155,6 +156,23 @@ export function summarizeFileChanges(
   );
 }
 
+export function countUnifiedDiffStats(
+  diff?: string,
+): { additions: number; deletions: number } {
+  if (!diff) return { additions: 0, deletions: 0 };
+
+  let additions = 0;
+  let deletions = 0;
+
+  for (const line of diff.split(/\r\n|\n|\r/)) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("+")) additions += 1;
+    if (line.startsWith("-")) deletions += 1;
+  }
+
+  return { additions, deletions };
+}
+
 export function collectTurnFileChanges(
   events: AgentEvent[],
 ): TurnFileChangeSummary | null {
@@ -174,23 +192,54 @@ export function collectTurnFileChanges(
     }
     if (event.type === "file.changed") {
       const path = event.filePath.replace(/\\/g, "/");
-      const existing = pending?.files.find((f) => f.path === path);
+      const directStats = countUnifiedDiffStats(event.diff);
+      const existing = pending?.files.find(
+        (f) => f.path.replace(/\\/g, "/") === path,
+      );
       if (existing) {
+        const files: FileChangeEntry[] = (pending?.files ?? []).map((file) => {
+          if (file.path.replace(/\\/g, "/") !== path) return file;
+          const shouldUseDirectStats =
+            file.additions === 0 &&
+            file.deletions === 0 &&
+            (directStats.additions > 0 || directStats.deletions > 0);
+          return {
+            ...file,
+            additions: shouldUseDirectStats
+              ? directStats.additions
+              : file.additions,
+            deletions: shouldUseDirectStats
+              ? directStats.deletions
+              : file.deletions,
+            directDiff: event.diff || file.directDiff,
+          };
+        });
+        const totals = summarizeFileChanges(files);
         pending = {
           ...pending!,
           status: "applied",
+          files: sortByChangeSize(files),
+          ...totals,
         };
         continue;
       }
+      const files: FileChangeEntry[] = sortByChangeSize([
+        ...(pending?.files ?? []),
+        {
+          path,
+          additions: directStats.additions,
+          deletions: directStats.deletions,
+          fileKey: path,
+          isKernel: isKernelBootstrapPath(path),
+          directDiff: event.diff,
+        },
+      ]);
+      const totals = summarizeFileChanges(files);
       pending = {
         approvalId: pending?.approvalId,
         status: "applied",
-        files: sortByChangeSize([
-          ...(pending?.files ?? []),
-          { path, additions: 0, deletions: 0, fileKey: path, isKernel: isKernelBootstrapPath(path) },
-        ]),
-        totalAdditions: pending?.totalAdditions ?? 0,
-        totalDeletions: pending?.totalDeletions ?? 0,
+        files,
+        ...totals,
       };
     }
   }

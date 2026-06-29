@@ -2,50 +2,17 @@
 
 import { useState } from "react";
 import type { AgentEvent } from "@/agent/types";
-import { formatCompactionMeta } from "@/lib/compaction-labels";
+import { formatCompactionCheckpoint } from "@/lib/compaction-labels";
 import { GitStatusView } from "@/components/git-status-view";
 import { type GitStatusSnapshot } from "@/lib/git-status";
-import { formatPatchToolResultSummary } from "@/lib/patch-summary";
 import { ChevronIcon } from "@/components/chevron-icon";
 import { formatReflectionBlockersLine } from "@/lib/reflection-blockers-ui";
-
-const TOOL_LABELS: Record<string, string> = {
-  "workspace.inspect": "检查工作区",
-  "project.index": "索引项目",
-  "file.locate": "定位文件",
-  "ui.trace_from_page": "追踪页面组件树",
-  "file.list": "列出目录",
-  "file.read": "读取文件",
-  "file.search": "搜索文件",
-  "jsx.find_text": "查找 JSX 文案",
-  "symbol.find_references": "查找符号引用",
-  "git.status": "Git 状态",
-  "git.diff": "Git diff",
-  "browser.open": "打开浏览器",
-  "browser.inspect": "读取浏览器快照",
-  "browser.wait_and_inspect": "等待并读取页面",
-  "browser.query": "查询页面元素",
-  "devtools.get_screenshot": "CDP 截图",
-  "devtools.get_dom_snapshot": "DOM 快照",
-  "devtools.get_accessibility_tree": "无障碍树",
-  "devtools.get_console_errors": "Console 日志",
-  "devtools.get_network_requests": "Network 请求",
-  "devtools.click": "页面点击",
-  "devtools.type": "页面输入",
-  "devtools.get_box_model": "元素盒模型",
-  "devtools.get_computed_style": "计算样式",
-  "devtools.inspect_element_at": "坐标探测元素",
-  "file.mutation.prepare": "准备文件变更",
-  "file.replace.prepare": "准备文本替换",
-  "git.mutation.prepare": "准备 Git 操作",
-  "shell.command.prepare": "准备 npm 脚本",
-  "shell.run.prepare": "准备终端命令",
-  "patch.prepare": "准备 Patch",
-};
-
-function toolLabel(name: string): string {
-  return TOOL_LABELS[name] ?? name;
-}
+import { agentToolIcon } from "@/lib/agent-tool-icons";
+import {
+  agentToolIssueLabel,
+  formatAgentToolIssueDetail,
+  formatAgentToolAction,
+} from "@/lib/agent-tool-display";
 
 function isGitStatusSnapshot(value: unknown): value is GitStatusSnapshot {
   if (!value || typeof value !== "object") return false;
@@ -57,27 +24,8 @@ function isGitStatusSnapshot(value: unknown): value is GitStatusSnapshot {
   );
 }
 
-function summarizeToolResult(result: unknown): string | null {
-  const patchHint = formatPatchToolResultSummary(result);
-  if (patchHint) return patchHint;
-  if (!result || typeof result !== "object") return null;
-  const record = result as Record<string, unknown>;
-  if (typeof record.summary === "string") return record.summary;
-  if (record.preview && typeof record.preview === "object") {
-    const preview = record.preview as { command?: string };
-    if (typeof preview.command === "string") return preview.command;
-  }
-  if (typeof record.path === "string") return record.path;
-  if (Array.isArray(record.candidates)) {
-    return `${record.candidates.length} 个候选`;
-  }
-  return null;
-}
-
 function Chevron({ open }: { open: boolean }) {
-  return (
-    <ChevronIcon expanded={open} className="h-4 w-4 text-zinc-400" />
-  );
+  return <ChevronIcon expanded={open} className="h-4 w-4 text-zinc-400" />;
 }
 
 function toolIcon(toolName?: string): React.ReactNode {
@@ -95,7 +43,7 @@ function WorkedLine({
   label: string;
   detail?: string;
   detailNode?: React.ReactNode;
-  tone?: "neutral" | "error";
+  tone?: "neutral" | "warn" | "error";
   defaultOpen?: boolean;
   icon?: React.ReactNode;
 }) {
@@ -111,10 +59,16 @@ function WorkedLine({
         className={`flex w-full items-start gap-1.5 text-left text-[12px] leading-snug ${
           tone === "error"
             ? "text-red-700 dark:text-red-300"
+            : tone === "warn"
+              ? "text-amber-700 dark:text-amber-400"
             : "text-zinc-600 dark:text-zinc-400"
         } ${expandable ? "cursor-pointer hover:text-zinc-800 dark:hover:text-zinc-200" : "cursor-default"}`}
       >
-        {expandable ? <Chevron open={open} /> : icon ?? <span className="w-3.5 shrink-0" />}
+        {expandable ? (
+          <Chevron open={open} />
+        ) : (
+          (icon ?? <span className="w-3.5 shrink-0" />)
+        )}
         <span className="min-w-0 flex-1">{label}</span>
       </button>
       {open && detailNode && (
@@ -140,19 +94,32 @@ export function TurnWorkedLine({
 }) {
   switch (event.type) {
     case "tool.completed": {
-      const hint = summarizeToolResult(event.result);
-      const gitSnapshot = isGitStatusSnapshot(event.result) ? event.result : null;
-      const label = event.toolCall.error
-        ? `${toolLabel(event.toolCall.toolName)} · 失败`
-        : `${toolLabel(event.toolCall.toolName)}${hint ? ` · ${hint}` : ""}`;
-      const detail =
-        gitSnapshot ? null : (
-          event.result &&
-          typeof event.result === "object" &&
-          typeof (event.result as Record<string, unknown>).content === "string"
-            ? String((event.result as Record<string, unknown>).content).slice(0, 800)
-            : undefined
-        );
+      const gitSnapshot = isGitStatusSnapshot(event.result)
+        ? event.result
+        : null;
+      const display = formatAgentToolAction({
+        toolName: event.toolCall.toolName,
+        args: event.toolCall.args,
+        result: event.result,
+        error: event.toolCall.error,
+      });
+      const issue = event.toolCall.error
+        ? agentToolIssueLabel({ taskStillRunning })
+        : null;
+      const label = `${display.action}${display.target ? ` · ${display.target}` : ""}${issue ? ` · ${issue}` : ""}`;
+      const detail = gitSnapshot
+        ? null
+        : event.toolCall.error
+          ? formatAgentToolIssueDetail(event.toolCall.error)
+        : event.result &&
+            typeof event.result === "object" &&
+            typeof (event.result as Record<string, unknown>).content ===
+              "string"
+          ? String((event.result as Record<string, unknown>).content).slice(
+              0,
+              800,
+            )
+          : undefined;
       return (
         <WorkedLine
           label={label}
@@ -162,33 +129,43 @@ export function TurnWorkedLine({
               <GitStatusView snapshot={gitSnapshot} compact maxFiles={12} />
             ) : undefined
           }
-          tone={event.toolCall.error ? "error" : "neutral"}
-          defaultOpen={Boolean(event.toolCall.error || gitSnapshot?.dirty)}
+          tone={event.toolCall.error ? "warn" : "neutral"}
+          defaultOpen={Boolean(gitSnapshot?.dirty)}
           icon={toolIcon(event.toolCall.toolName)}
         />
       );
     }
     case "tool.started":
-      return (
-        <WorkedLine
-          label={`${toolLabel(event.toolCall.toolName)} · 运行中…`}
-          icon={toolIcon(event.toolCall.toolName)}
-        />
-      );
+      {
+        const display = formatAgentToolAction({
+          toolName: event.toolCall.toolName,
+          args: event.toolCall.args,
+          running: true,
+        });
+        return (
+          <WorkedLine
+            label={`${display.action}${display.target ? ` · ${display.target}` : ""}…`}
+            icon={toolIcon(event.toolCall.toolName)}
+          />
+        );
+      }
     case "context.compacted": {
-      const meta = formatCompactionMeta({
+      const display = formatCompactionCheckpoint({
         method: event.method,
         round: event.round,
+        contextWindow: event.contextWindow,
         pinnedApprovalCount: event.pinnedApprovalCount,
         changedFileCount: event.changedFileCount,
         estimatedTokensBefore: event.estimatedTokensBefore,
         estimatedTokensAfter: event.estimatedTokensAfter,
         layersApplied: event.layersApplied,
+        summaryPreview: event.summaryPreview,
+        memoryContent: event.memoryContent,
       });
       return (
         <WorkedLine
-          label={`压缩上下文${event.round != null ? ` · 第 ${event.round} 轮` : ""}`}
-          detail={meta ? `${meta}\n\n${event.summaryPreview ?? ""}` : event.summaryPreview}
+          label={display.label}
+          detail={display.detail}
           icon={toolIcon()}
         />
       );

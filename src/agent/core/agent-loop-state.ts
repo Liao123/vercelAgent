@@ -65,9 +65,13 @@ export type AgentLoopRunState = {
   /** 复刻任务：workspace.inspect 结构事实 */
   workspaceHasPackageJson?: boolean;
   workspaceLooksEmpty?: boolean;
+  /** Deferred tools unlocked by tool.search. */
+  discoveredToolNames?: string[];
 };
 
-export function createAgentLoopRunState(userRequest: string): AgentLoopRunState {
+export function createAgentLoopRunState(
+  userRequest: string,
+): AgentLoopRunState {
   return {
     userRequest,
     likelyEditRequest: isLikelyCodeEditRequest(userRequest),
@@ -107,10 +111,7 @@ export function isLikelyCodeEditRequest(
     ) {
       return true;
     }
-    if (
-      reasoning.risk === "write" ||
-      reasoning.risk === "approval_required"
-    ) {
+    if (reasoning.risk === "write" || reasoning.risk === "approval_required") {
       return true;
     }
     return false;
@@ -137,7 +138,11 @@ export function recordToolCall(
 ): void {
   state.toolsCalled.push(toolName);
 
-  if (toolName === "workspace.inspect" && result && typeof result === "object") {
+  if (
+    toolName === "workspace.inspect" &&
+    result &&
+    typeof result === "object"
+  ) {
     const structure = (result as { structure?: WorkspaceStructureFacts })
       .structure;
     if (structure) {
@@ -157,23 +162,27 @@ export function recordToolCall(
     result &&
     typeof result === "object"
   ) {
-    const raw = (result as {
-      disambiguation?: {
-        label?: string;
-        primaryLabel?: string;
-        mustReadPaths?: string[];
-        recommendedPath?: string;
-        selectionRationale?: string;
-        summary?: string;
-      };
-    }).disambiguation;
+    const raw = (
+      result as {
+        disambiguation?: {
+          label?: string;
+          primaryLabel?: string;
+          mustReadPaths?: string[];
+          recommendedPath?: string;
+          selectionRationale?: string;
+          summary?: string;
+        };
+      }
+    ).disambiguation;
     if (raw && typeof raw.recommendedPath === "string") {
       state.disambiguation = {
         label:
           (typeof raw.label === "string" && raw.label) ||
           (typeof raw.primaryLabel === "string" && raw.primaryLabel) ||
           "",
-        mustReadPaths: Array.isArray(raw.mustReadPaths) ? raw.mustReadPaths : [],
+        mustReadPaths: Array.isArray(raw.mustReadPaths)
+          ? raw.mustReadPaths
+          : [],
         recommendedPath: raw.recommendedPath,
         selectionRationale:
           (typeof raw.selectionRationale === "string" &&
@@ -249,9 +258,7 @@ export function recordToolCall(
 
 export function buildRuntimeCheckpoint(state: AgentLoopRunState): string {
   const hasIssue = Boolean(
-    state.lastToolError ||
-      state.lastPrepareError ||
-      state.postExecuteFeedback,
+    state.lastToolError || state.lastPrepareError || state.postExecuteFeedback,
   );
 
   const lines = [
@@ -261,8 +268,14 @@ export function buildRuntimeCheckpoint(state: AgentLoopRunState): string {
     `Files written: ${state.filesWritten?.length ? state.filesWritten.join(", ") : "(none yet)"}`,
     `Files read: ${state.filesRead.length > 0 ? state.filesRead.join(", ") : "(none yet)"}`,
   ];
+  if (state.discoveredToolNames?.length) {
+    lines.push(`Unlocked tools: ${state.discoveredToolNames.join(", ")}`);
+  }
   if (state.metaExplainMode) {
     lines.push("Meta explain mode: expand visible reasoning for the user.");
+  }
+  if (state.strictPrepare) {
+    lines.push("Strict prepare mode: use prepare tools for write approval.");
   }
   if (state.taskEvidenceComplete) {
     lines.push(
@@ -313,7 +326,10 @@ export function buildRuntimeCheckpoint(state: AgentLoopRunState): string {
     !isEditTaskSatisfied(state, state.playbookId) &&
     (hasIssue || state.strictPrepare)
   ) {
-    const deliverableBlock = buildDeliverableCheckpointBlock(state, state.playbookId);
+    const deliverableBlock = buildDeliverableCheckpointBlock(
+      state,
+      state.playbookId,
+    );
     if (deliverableBlock) {
       lines.push(deliverableBlock);
     }

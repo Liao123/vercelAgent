@@ -53,7 +53,7 @@ function formatPlan(task: Task): string {
   if (steps.length === 0) return "No plan yet.";
 
   return steps
-    .map((step: AgentPlanStep) => `- [${step.status}] ${step.title}`)
+    .map((step: AgentPlanStep) => `- [${step.status}] ${step.step || step.title || ""}`)
     .join("\n");
 }
 

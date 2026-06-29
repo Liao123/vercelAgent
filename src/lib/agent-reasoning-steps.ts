@@ -1,4 +1,5 @@
 import type { AgentEvent, AgentReflection } from "@/agent/types";
+import { compactReflectionText } from "@/lib/agent-reflection-display";
 
 export type ReasoningAction = {
   event: AgentEvent;
@@ -10,6 +11,7 @@ export type ReasoningStep = {
   reflection: AgentReflection;
   reflectionAt: string;
   actions: ReasoningAction[];
+  synthetic?: boolean;
   /** 本步结束时间（下一步反思或任务完成） */
   endedAt?: string;
 };
@@ -99,8 +101,9 @@ export function groupNarrativeIntoSteps(
       const at: string =
         event.at ??
         (current?.actions.length
-          ? eventTimestamp(current.actions[current.actions.length - 1]!.event) ??
-            undefined
+          ? (eventTimestamp(
+              current.actions[current.actions.length - 1]!.event,
+            ) ?? undefined)
           : undefined) ??
         turnStartedAt ??
         new Date(0).toISOString();
@@ -119,14 +122,14 @@ export function groupNarrativeIntoSteps(
         current = {
           id: `step-${steps.length}-orphan`,
           reflection: {
-            understanding: "开始执行工具。",
+            understanding: "",
             blockers: [],
-            plannedNext: "继续按任务推进。",
+            plannedNext: "",
             source: "runtime",
           },
-          reflectionAt:
-            event.toolCall.startedAt ?? new Date(0).toISOString(),
+          reflectionAt: event.toolCall.startedAt ?? new Date(0).toISOString(),
           actions: [],
+          synthetic: true,
         };
       } else {
         continue;
@@ -150,9 +153,7 @@ export function groupNarrativeIntoSteps(
 
   if (current) {
     const lastAction = current.actions[current.actions.length - 1];
-    const endFromAction = lastAction
-      ? eventTimestamp(lastAction.event)
-      : null;
+    const endFromAction = lastAction ? eventTimestamp(lastAction.event) : null;
     flush(endFromAction ?? turnEndedAt);
   }
 
@@ -171,8 +172,22 @@ export function stepDurationLabel(
 }
 
 export function stepPreviewText(step: ReasoningStep): string {
-  const next = step.reflection.plannedNext.trim();
-  const understanding = step.reflection.understanding.trim();
+  if (step.synthetic) {
+    const lastAction = step.actions[step.actions.length - 1];
+    if (
+      lastAction?.event.type === "tool.started" ||
+      lastAction?.event.type === "tool.completed"
+    ) {
+      return (
+        lastAction.event.toolCall.rationale ||
+        lastAction.event.toolCall.toolName ||
+        "工具调用"
+      );
+    }
+    return "工具调用";
+  }
+  const next = compactReflectionText(step.reflection.plannedNext, 110);
+  const understanding = compactReflectionText(step.reflection.understanding, 140);
   return next || understanding;
 }
 
@@ -205,13 +220,15 @@ export function summarizeReasoningTimeline(
 
   const lastStep = steps[steps.length - 1];
   const preview =
-    options.liveThinking?.trim() ||
+    compactReflectionText(options.liveThinking ?? "", 120) ||
     (lastStep ? stepPreviewText(lastStep) : "") ||
     "分析任务并收集证据";
 
   let durationLabel: string | null = null;
   if (options.turnStartedAt) {
-    const endAt = options.turnEndedAt ?? (options.isActive ? new Date().toISOString() : undefined);
+    const endAt =
+      options.turnEndedAt ??
+      (options.isActive ? new Date().toISOString() : undefined);
     if (endAt) {
       const ms = formatStepDurationMs(options.turnStartedAt, endAt);
       if (ms != null) durationLabel = formatReasoningDuration(ms);
@@ -219,7 +236,7 @@ export function summarizeReasoningTimeline(
   }
 
   return {
-    stepCount: steps.length,
+    stepCount: steps.filter((step) => !step.synthetic).length,
     toolCount,
     hasRunningTool,
     preview,
