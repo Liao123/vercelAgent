@@ -72,12 +72,27 @@ async function main(): Promise<void> {
     isDesignReplicateRequest(GOLDEN_DESIGN_REPLICATE_QUERY),
     "design replicate detect",
   );
+  assert.ok(
+    isDesignReplicateRequest("这个项目帮我复刻一下百度网站进来 只需要首页"),
+    "named homepage replicate detect without URL",
+  );
   const replicateState = withReasoning(GOLDEN_DESIGN_REPLICATE_QUERY, {
     intent: "code_edit",
     risk: "write",
   });
   assert.equal(
     resolveTaskPlaybook(GOLDEN_DESIGN_REPLICATE_QUERY, replicateState).id,
+    "design-replicate",
+  );
+  const namedReplicateState = withReasoning(
+    "这个项目帮我复刻一下百度网站进来 只需要首页",
+    {
+      intent: "code_edit",
+      risk: "write",
+    },
+  );
+  assert.equal(
+    resolveTaskPlaybook(namedReplicateState.userRequest, namedReplicateState).id,
     "design-replicate",
   );
 

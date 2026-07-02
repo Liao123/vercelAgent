@@ -13,8 +13,12 @@ import {
   prepareFileMutation,
 } from "../src/agent/tools/file-mutations";
 import { applyUnifiedPatchDirect } from "../src/agent/tools/patch-tools";
-import { isDirectMutationToolName } from "../src/agent/core/loop-direct-apply";
+import {
+  isDirectMutationToolName,
+  unifiedDiffFromContents,
+} from "../src/agent/core/loop-direct-apply";
 import { getAgentLoopTool } from "../src/agent/core/agent-loop-tools";
+import { countUnifiedDiffStats } from "../src/lib/approval-file-changes";
 
 async function main(): Promise<void> {
   assert(isDirectMutationToolName("file.replace"));
@@ -38,6 +42,15 @@ async function main(): Promise<void> {
   assert.equal(applied.applied, true);
   const onDisk = await fs.readFile(absPath, "utf8");
   assert.equal(onDisk, "hello vec-next\n");
+  const directDiff = unifiedDiffFromContents({
+    filePath: relPath,
+    oldContent: applied.preview.oldContent,
+    newContent: applied.preview.newContent,
+  });
+  assert.deepEqual(countUnifiedDiffStats(directDiff), {
+    additions: 1,
+    deletions: 1,
+  });
 
   const patch = `--- a/${relPath}
 +++ b/${relPath}

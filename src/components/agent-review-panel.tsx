@@ -5,8 +5,10 @@ import type { ApprovalDetails } from "@/agent/types";
 import {
   collectReviewDisplay,
   fileBasename,
+  reviewDisplayFromTurnFileChanges,
   type FileChangeEntry,
   type ReviewDisplay,
+  type TurnFileChangeSummary,
 } from "@/lib/approval-file-changes";
 import type { GitStatusFileEntry } from "@/lib/git-status";
 import type { ReviewEditorSelection } from "@/lib/review-editor-selection";
@@ -40,6 +42,7 @@ type AgentReviewPanelProps = {
   currentTaskId?: string | null;
   focusedApprovalId?: string | null;
   gitFiles?: GitStatusFileEntry[];
+  directFileChanges?: TurnFileChangeSummary | null;
   selectedFileKey: string | null;
   onSelectFile: (fileKey: string | null) => void;
   onRevealInTree?: (path: string) => void;
@@ -311,10 +314,10 @@ function ReviewPanelHeader({
   defaultAcceptMode?: boolean;
 }) {
   return (
-    <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-200/90 bg-gradient-to-b from-zinc-50 to-zinc-50/40 px-3 py-2.5 dark:border-zinc-800 dark:from-zinc-900/80 dark:to-zinc-950/40">
+    <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-1.5">
-          <h3 className="text-[12px] font-semibold tracking-tight text-zinc-800 dark:text-zinc-100">
+          <h3 className="text-[12px] font-semibold text-zinc-800 dark:text-zinc-100">
             代码审查
           </h3>
           {!defaultAcceptMode && pendingApprovalCount > 0 && (
@@ -328,10 +331,12 @@ function ReviewPanelHeader({
             </span>
           )}
         </div>
-        <p className="mt-0.5 truncate text-[10px] text-zinc-500">
+        <p className="mt-0.5 truncate text-[10px] text-zinc-500 dark:text-zinc-400">
           {defaultAcceptMode
             ? review.source === "git"
               ? "工作区变更（已自动应用）"
+              : review.source === "direct"
+                ? "本次写入（已自动应用）"
               : "Agent 变更（已自动应用）"
             : review.source === "git"
               ? "Git 工作区（只读）"
@@ -356,6 +361,99 @@ function ReviewPanelHeader({
       </div>
       {fileNav}
     </div>
+  );
+}
+
+function ReviewRailToolbar({
+  review,
+  pendingApprovalCount,
+  hasActions,
+  fileNav,
+  defaultAcceptMode,
+}: {
+  review: ReviewDisplay;
+  pendingApprovalCount: number;
+  hasActions: boolean;
+  fileNav?: ReactNode;
+  defaultAcceptMode?: boolean;
+}) {
+  const label =
+    review.source === "git"
+      ? "未暂存"
+      : review.source === "direct" && defaultAcceptMode
+        ? "已编辑"
+        : "待审查";
+  const hasDiff = review.totalAdditions > 0 || review.totalDeletions > 0;
+
+  return (
+    <div className="flex shrink-0 items-center gap-2 border-b border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <span className="truncate text-[16px] font-medium text-zinc-900 dark:text-zinc-100">
+          {label}
+        </span>
+        <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[12px] text-zinc-600 dark:bg-zinc-900 dark:text-zinc-400">
+          {review.files.length}
+        </span>
+        <span className="text-zinc-500 dark:text-zinc-500">⌄</span>
+        <span className="font-mono text-[14px] tabular-nums">
+          <span
+            className={
+              hasDiff
+                ? "text-emerald-600 dark:text-emerald-400"
+                : "text-zinc-400 dark:text-zinc-600"
+            }
+          >
+            +{review.totalAdditions}
+          </span>
+          <span className="mx-1 text-zinc-300 dark:text-zinc-700"> </span>
+          <span
+            className={
+              hasDiff
+                ? "text-red-600 dark:text-red-400"
+                : "text-zinc-400 dark:text-zinc-600"
+            }
+          >
+            -{review.totalDeletions}
+          </span>
+        </span>
+        {!defaultAcceptMode && pendingApprovalCount > 0 ? (
+          <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+            {pendingApprovalCount}
+          </span>
+        ) : null}
+        {!defaultAcceptMode && hasActions ? (
+          <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
+            可应用
+          </span>
+        ) : null}
+      </div>
+
+      <div className="flex shrink-0 items-center gap-1 text-zinc-400 dark:text-zinc-500">
+        <ReviewToolbarGlyph title="更多">…</ReviewToolbarGlyph>
+        <ReviewToolbarGlyph title="筛选">↕</ReviewToolbarGlyph>
+        <ReviewToolbarGlyph title="搜索">⌕</ReviewToolbarGlyph>
+        <ReviewToolbarGlyph title="文件">□</ReviewToolbarGlyph>
+        {fileNav}
+      </div>
+    </div>
+  );
+}
+
+function ReviewToolbarGlyph({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <span
+      title={title}
+      className="flex h-7 w-7 items-center justify-center rounded-md text-[15px]"
+      aria-hidden
+    >
+      {children}
+    </span>
   );
 }
 
@@ -543,6 +641,13 @@ function ReviewDiffPane({
       />
     );
   }
+  if (file.directDiff) {
+    return (
+      <pre className="m-0 flex-1 overflow-auto bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed text-zinc-100">
+        {file.directDiff}
+      </pre>
+    );
+  }
   return (
     <p className="flex flex-1 items-center justify-center px-4 text-center text-[11px] text-zinc-500">
       此文件暂无 diff 预览
@@ -593,6 +698,7 @@ export function AgentReviewPanel({
   currentTaskId,
   focusedApprovalId,
   gitFiles,
+  directFileChanges = null,
   selectedFileKey,
   onSelectFile,
   onRevealInTree,
@@ -607,15 +713,27 @@ export function AgentReviewPanel({
   kernelBootstrapHint = null,
 }: AgentReviewPanelProps) {
   const review = useMemo(
-    () =>
-      collectReviewDisplay(
+    () => {
+      if (defaultAcceptMode) {
+        const directReview = reviewDisplayFromTurnFileChanges(directFileChanges);
+        if (directReview) return directReview;
+      }
+      return collectReviewDisplay(
         approvals,
         currentTaskId,
         focusedApprovalId,
         gitFiles,
         defaultAcceptMode ? { gitOnly: true } : undefined,
-      ),
-    [approvals, currentTaskId, focusedApprovalId, gitFiles, defaultAcceptMode],
+      );
+    },
+    [
+      approvals,
+      currentTaskId,
+      focusedApprovalId,
+      gitFiles,
+      defaultAcceptMode,
+      directFileChanges,
+    ],
   );
 
   const kernelBanner = useMemo((): KernelBootstrapReviewHint | null => {
@@ -690,15 +808,24 @@ export function AgentReviewPanel({
         highlighted ? "ring-2 ring-inset ring-blue-500/40" : ""
       }`}
     >
-      {(embedded || review.files.length > 0) && (
-        <ReviewPanelHeader
-          review={review}
-          pendingApprovalCount={pendingApprovalCount}
-          hasActions={hasReviewActions}
-          fileNav={fileNav}
-          defaultAcceptMode={defaultAcceptMode}
-        />
-      )}
+      {(embedded || review.files.length > 0) &&
+        (embedded ? (
+          <ReviewRailToolbar
+            review={review}
+            pendingApprovalCount={pendingApprovalCount}
+            hasActions={hasReviewActions}
+            fileNav={fileNav}
+            defaultAcceptMode={defaultAcceptMode}
+          />
+        ) : (
+          <ReviewPanelHeader
+            review={review}
+            pendingApprovalCount={pendingApprovalCount}
+            hasActions={hasReviewActions}
+            fileNav={fileNav}
+            defaultAcceptMode={defaultAcceptMode}
+          />
+        ))}
 
       {kernelBanner ? <KernelBootstrapBanner hint={kernelBanner} /> : null}
 

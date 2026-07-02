@@ -1,13 +1,12 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AgentEvent,
   AgentPlan,
   AgentPlanStep,
   AgentPlanStepStatus,
 } from "@/agent/types";
-import { DiffView } from "@/components/diff-view";
 import { getLatestPlan } from "@/lib/agent-feed";
 import {
   collectTurnFileChanges,
@@ -18,6 +17,7 @@ import {
 type AgentRunStatusStripProps = {
   events: AgentEvent[];
   running: boolean;
+  onReviewFileChange?: (filePath: string) => void;
 };
 
 export type PlanProgress = {
@@ -214,9 +214,35 @@ function formatSigned(value: number, prefix: "+" | "-"): string {
   return `${prefix}${value}`;
 }
 
-function FileStats({ file }: { file: Pick<FileChangeEntry, "additions" | "deletions"> }) {
+function FileStats({
+  file,
+  active = false,
+}: {
+  file: Pick<FileChangeEntry, "additions" | "deletions">;
+  active?: boolean;
+}) {
+  const signature = `${file.additions}:${file.deletions}`;
+  const previous = useRef(signature);
+  const [flash, setFlash] = useState(false);
+
+  useEffect(() => {
+    if (previous.current === signature) return;
+    previous.current = signature;
+    setFlash(true);
+    const id = window.setTimeout(() => setFlash(false), 420);
+    return () => window.clearTimeout(id);
+  }, [signature]);
+
   return (
-    <span className="shrink-0 font-mono text-[12px]">
+    <span
+      className={`inline-flex shrink-0 items-center rounded-full px-1 font-mono text-[12px] tabular-nums transition-all duration-200 ${
+        flash
+          ? "scale-110 bg-emerald-50 shadow-sm dark:bg-emerald-950/30"
+          : active
+            ? "animate-pulse bg-blue-50/80 dark:bg-blue-950/30"
+            : ""
+      }`}
+    >
       <span className="text-emerald-600 dark:text-emerald-400">
         {formatSigned(file.additions, "+")}
       </span>
@@ -228,78 +254,48 @@ function FileStats({ file }: { file: Pick<FileChangeEntry, "additions" | "deleti
   );
 }
 
-function FileDiffPreview({ file }: { file: FileChangeEntry }) {
-  if (file.patchFile) {
-    return (
-      <DiffView
-        before={file.patchFile.oldContent}
-        after={file.patchFile.newContent}
-        changesOnly
-        maxRows={120}
-        showLayoutToggle={false}
-        className="p-2"
-      />
-    );
-  }
-
-  if (file.singleFileDiff) {
-    return (
-      <DiffView
-        before={file.singleFileDiff.before}
-        after={file.singleFileDiff.after}
-        changesOnly
-        maxRows={120}
-        showLayoutToggle={false}
-        className="p-2"
-      />
-    );
-  }
-
-  if (file.directDiff) {
-    return (
-      <pre className="max-h-64 overflow-auto bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed text-zinc-200">
-        {file.directDiff}
-      </pre>
-    );
-  }
-
-  return (
-    <p className="px-3 py-2 text-[12px] text-zinc-500 dark:text-zinc-400">
-      暂无可预览 diff。
-    </p>
-  );
-}
-
-function FileChangeRow({ file }: { file: FileChangeEntry }) {
+function FileChangeRow({
+  file,
+  onReviewFileChange,
+}: {
+  file: FileChangeEntry;
+  onReviewFileChange?: (filePath: string) => void;
+}) {
   return (
     <div className="group/file border-t border-zinc-100 first:border-t-0 dark:border-zinc-800">
       <button
         type="button"
+        onClick={() => onReviewFileChange?.(file.path)}
         className="flex h-10 w-full min-w-0 items-center gap-3 px-3 text-left transition hover:bg-zinc-50 focus:bg-zinc-50 focus:outline-none dark:hover:bg-zinc-900 dark:focus:bg-zinc-900"
       >
         <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-zinc-700 dark:text-zinc-300">
           {file.path}
         </span>
-        <FileStats file={file} />
+        <FileStats file={file} active={file.isWriting} />
       </button>
-      <div className="hidden border-t border-zinc-100 bg-white group-hover/file:block group-focus-within/file:block dark:border-zinc-800 dark:bg-zinc-950">
-        <FileDiffPreview file={file} />
-      </div>
     </div>
   );
 }
 
-function FilesPopover({ changes }: { changes: TurnFileChangeSummary }) {
+function FilesPopover({
+  changes,
+  onReviewFileChange,
+}: {
+  changes: TurnFileChangeSummary;
+  onReviewFileChange?: (filePath: string) => void;
+}) {
+  const writing = changes.status === "writing";
   const hiddenCount = Math.max(0, changes.files.length - 12);
   const files = changes.files.slice(0, 12);
 
   return (
-    <div className="pointer-events-auto invisible absolute bottom-full right-0 z-40 mb-2 w-[calc(100vw-2rem)] max-w-2xl translate-y-1 overflow-hidden rounded-xl border border-zinc-200 bg-white text-left opacity-0 shadow-xl transition group-hover/files:visible group-hover/files:translate-y-0 group-hover/files:opacity-100 group-focus-within/files:visible group-focus-within/files:translate-y-0 group-focus-within/files:opacity-100 dark:border-zinc-800 dark:bg-zinc-950">
+    <div className="pointer-events-auto invisible absolute bottom-full right-0 z-40 mb-2 w-[calc(100vw-2rem)] max-w-lg translate-y-1 overflow-hidden rounded-xl border border-zinc-200 bg-white text-left opacity-0 shadow-xl transition group-hover/files:visible group-hover/files:translate-y-0 group-hover/files:opacity-100 group-focus-within/files:visible group-focus-within/files:translate-y-0 group-focus-within/files:opacity-100 dark:border-zinc-800 dark:bg-zinc-950">
       <div className="flex items-center gap-3 border-b border-zinc-100 px-3 py-2 dark:border-zinc-800">
         <p className="min-w-0 flex-1 text-[13px] font-medium text-zinc-900 dark:text-zinc-100">
-          已编辑 {changes.files.length} 个文件
+          {writing ? "正在写入" : "已编辑"} {changes.files.length} 个文件
         </p>
         <FileStats
+          active={writing}
           file={{
             additions: changes.totalAdditions,
             deletions: changes.totalDeletions,
@@ -308,7 +304,11 @@ function FilesPopover({ changes }: { changes: TurnFileChangeSummary }) {
       </div>
       <div className="max-h-[28rem] overflow-auto">
         {files.map((file) => (
-          <FileChangeRow key={file.fileKey} file={file} />
+          <FileChangeRow
+            key={file.fileKey}
+            file={file}
+            onReviewFileChange={onReviewFileChange}
+          />
         ))}
         {hiddenCount > 0 && (
           <p className="border-t border-zinc-100 px-3 py-2 text-[12px] text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
@@ -320,22 +320,39 @@ function FilesPopover({ changes }: { changes: TurnFileChangeSummary }) {
   );
 }
 
-function FilesChip({ changes }: { changes: TurnFileChangeSummary }) {
+function FilesChip({
+  changes,
+  onReviewFileChange,
+}: {
+  changes: TurnFileChangeSummary;
+  onReviewFileChange?: (filePath: string) => void;
+}) {
+  const firstFilePath = changes.files[0]?.path;
+  const writing = changes.status === "writing";
   return (
     <div className="group/files relative">
       <button
         type="button"
+        onClick={() => {
+          if (firstFilePath) onReviewFileChange?.(firstFilePath);
+        }}
         className="inline-flex h-9 items-center gap-2 rounded-full border border-zinc-200 bg-white px-3 text-[13px] text-zinc-700 shadow-sm transition hover:border-zinc-300 hover:bg-zinc-50 focus:outline-none focus:ring-2 focus:ring-blue-500/40 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:border-zinc-700 dark:hover:bg-zinc-900"
       >
-        <span className="shrink-0">{changes.files.length} 个文件已更改</span>
+        <span className="shrink-0">
+          {changes.files.length} 个文件{writing ? "正在写入" : "已更改"}
+        </span>
         <FileStats
+          active={writing}
           file={{
             additions: changes.totalAdditions,
             deletions: changes.totalDeletions,
           }}
         />
       </button>
-      <FilesPopover changes={changes} />
+      <FilesPopover
+        changes={changes}
+        onReviewFileChange={onReviewFileChange}
+      />
     </div>
   );
 }
@@ -343,6 +360,7 @@ function FilesChip({ changes }: { changes: TurnFileChangeSummary }) {
 export function AgentRunStatusStrip({
   events,
   running,
+  onReviewFileChange,
 }: AgentRunStatusStripProps) {
   const plan = useMemo(() => getLatestPlan(events), [events]);
   const progress = useMemo(() => resolvePlanProgress(plan), [plan]);
@@ -357,7 +375,12 @@ export function AgentRunStatusStrip({
         {plan && progress.total > 0 && (
           <PlanChip plan={plan} progress={progress} running={running} />
         )}
-        {changes && changes.files.length > 0 && <FilesChip changes={changes} />}
+        {changes && changes.files.length > 0 && (
+          <FilesChip
+            changes={changes}
+            onReviewFileChange={onReviewFileChange}
+          />
+        )}
       </div>
     </div>
   );

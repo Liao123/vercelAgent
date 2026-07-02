@@ -18,6 +18,9 @@ import {
 import {
   applyPendingUserGuidance,
   beginAgentLoopSession,
+  beginGuidanceModelInterrupt,
+  endGuidanceModelInterrupt,
+  isGuidanceModelInterrupt,
 } from "@/agent/core/loop-user-guidance";
 import {
   buildEditIncompleteGracefulHint,
@@ -227,6 +230,37 @@ type AgentLoopDecision =
 const DEFAULT_MAX_ITERATIONS = 14;
 const MAX_LOOP_ITERATION_CAP = 20;
 const MAX_REFLECTION_ROUNDS = 4;
+
+function combineAbortSignals(
+  signals: Array<AbortSignal | undefined>,
+): AbortSignal | undefined {
+  const active = signals.filter((signal): signal is AbortSignal => Boolean(signal));
+  if (active.length === 0) return undefined;
+  if (active.length === 1) return active[0];
+  const any = (AbortSignal as typeof AbortSignal & {
+    any?: (signals: AbortSignal[]) => AbortSignal;
+  }).any;
+  if (typeof any === "function") {
+    return any(active);
+  }
+  const controller = new AbortController();
+  for (const signal of active) {
+    if (signal.aborted) {
+      controller.abort(signal.reason);
+      break;
+    }
+    signal.addEventListener(
+      "abort",
+      () => {
+        if (!controller.signal.aborted) {
+          controller.abort(signal.reason);
+        }
+      },
+      { once: true },
+    );
+  }
+  return controller.signal;
+}
 
 function extractJsonObjectCandidates(text: string): string[] {
   const candidates: string[] = [];
@@ -921,17 +955,6 @@ export async function runAgentLoop(
         {},
         "启动时预载工作区结构事实。",
       );
-      emit({
-        type: "tool.started",
-        taskId: task.id,
-        toolCall: inspectToolCall,
-      });
-      emit({
-        type: "tool.completed",
-        taskId: task.id,
-        toolCall: completeToolCall(inspectToolCall),
-        result: inspectResult,
-      });
       recordToolCall(runState, "workspace.inspect", inspectResult);
       if (isNativeToolLoopEnabled()) {
         messages.push({
@@ -1036,6 +1059,7 @@ export async function runAgentLoop(
           workspaceStructureBlock,
         }),
       });
+      const guidanceInterrupt = beginGuidanceModelInterrupt(thread.id);
       try {
         const loopModel =
           input.model ??
@@ -1051,6 +1075,10 @@ export async function runAgentLoop(
             maxTokens: 900,
             toolChoice: "none",
             metadata: { taskId: task.id, reasoningTurn: true },
+            signal: combineAbortSignals([
+              input.signal,
+              guidanceInterrupt.signal,
+            ]),
           },
           emit,
           task.id,
@@ -1106,14 +1134,37 @@ export async function runAgentLoop(
           });
         }
       } catch {
-        const deliverableHint = buildReasoningFailureDeliverableHint({
-          userRequest: effectiveUserRequest,
-          playbookId: taskPlaybook.id,
-          playbookTitle: taskPlaybook.title,
-          openingPlannedNext: taskPlaybook.openingPlannedNext,
-        });
-        messages.push({ role: "user", content: deliverableHint });
-        emitPlan({ lastAction: "reflect" });
+        if (input.signal?.aborted) {
+          return finishLoopCancelled({
+            trace,
+            thread,
+            task,
+            turn,
+            events,
+            emit,
+            endLoopSession,
+          });
+        }
+        if (isGuidanceModelInterrupt(guidanceInterrupt.signal)) {
+          emitReflection(emit, task.id, {
+            understanding: "收到运行中引导，已打断当前推理。",
+            blockers: [],
+            plannedNext: "合并用户新引导后重新规划当前任务。",
+            source: "runtime",
+          });
+          emitPlan({ lastAction: "reflect" });
+        } else {
+          const deliverableHint = buildReasoningFailureDeliverableHint({
+            userRequest: effectiveUserRequest,
+            playbookId: taskPlaybook.id,
+            playbookTitle: taskPlaybook.title,
+            openingPlannedNext: taskPlaybook.openingPlannedNext,
+          });
+          messages.push({ role: "user", content: deliverableHint });
+          emitPlan({ lastAction: "reflect" });
+        }
+      } finally {
+        endGuidanceModelInterrupt(thread.id, guidanceInterrupt);
       }
     } else if (reasoningMode === "skip") {
       messages.push({
@@ -1322,8 +1373,10 @@ export async function runAgentLoop(
 
     let output: ModelOutput | undefined;
     let modelRetryAfterCompact = false;
+    let modelInterruptedForGuidance = false;
     do {
       modelRetryAfterCompact = false;
+      const guidanceInterrupt = beginGuidanceModelInterrupt(thread.id);
       try {
         const loopModel =
           input.model ??
@@ -1350,6 +1403,10 @@ export async function runAgentLoop(
               iteration,
               forceFinal: forceFinalIteration,
             },
+            signal: combineAbortSignals([
+              input.signal,
+              guidanceInterrupt.signal,
+            ]),
             ...(nativeTools
               ? {
                   tools: buildLoopToolDefinitions(runState),
@@ -1363,6 +1420,13 @@ export async function runAgentLoop(
           task.id,
         );
       } catch (error) {
+        if (input.signal?.aborted) {
+          break;
+        }
+        if (isGuidanceModelInterrupt(guidanceInterrupt.signal)) {
+          modelInterruptedForGuidance = true;
+          break;
+        }
         if (
           !reactiveCompactUsed &&
           isContextOverflowError(error) &&
@@ -1445,6 +1509,8 @@ export async function runAgentLoop(
           break;
         }
         continue;
+      } finally {
+        endGuidanceModelInterrupt(thread.id, guidanceInterrupt);
       }
     } while (modelRetryAfterCompact);
 
@@ -1458,6 +1524,17 @@ export async function runAgentLoop(
         emit,
         endLoopSession,
       });
+    }
+
+    if (modelInterruptedForGuidance) {
+      emitReflection(emit, task.id, {
+        understanding: "收到运行中引导，已打断当前模型等待。",
+        blockers: [],
+        plannedNext: "合并用户新引导后继续执行当前任务。",
+        source: "runtime",
+      });
+      emitPlan({ lastAction: "reflect" });
+      continue;
     }
 
     if (modelUnavailable) {
@@ -1880,6 +1957,7 @@ export async function runAgentLoop(
         userRequest: effectiveUserRequest,
         playbookId: taskPlaybook.id,
         taskReasoning: runState.taskReasoning,
+        signal: input.signal,
       });
       if (graceful) {
         summary = graceful;

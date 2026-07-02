@@ -79,12 +79,32 @@ function tabLabelFromTab(tab: BrowserTabView, pageTitle?: string | null): string
   }
 }
 
+function BrowserEmptyState({
+  description = "输入 URL 以打开页面",
+}: {
+  description?: string;
+}) {
+  return (
+    <div className="flex h-full min-h-[120px] flex-col items-center justify-center px-6 text-center">
+      <BrowserGlobeIcon className="h-20 w-20 text-zinc-400 dark:text-zinc-600" />
+      <p className="mt-5 text-[16px] font-medium text-zinc-900 dark:text-zinc-100">
+        开始浏览
+      </p>
+      <p className="mt-2 text-[13px] text-zinc-400 dark:text-zinc-500">
+        {description}
+      </p>
+    </div>
+  );
+}
+
 export function BrowserPanel({
   embedded = false,
   chromeVisible = true,
+  showTabStrip = true,
 }: {
   embedded?: boolean;
   chromeVisible?: boolean;
+  showTabStrip?: boolean;
 }) {
   const [urlInput, setUrlInput] = useState("");
   const [tabs, setTabs] = useState<BrowserTabView[]>([]);
@@ -430,72 +450,74 @@ export function BrowserPanel({
       {/* Tab 条 + 导航（Agent 后台加载时可隐藏 Chrome） */}
       {chromeVisible && (
         <>
-      <div
-        className="flex shrink-0 items-center border-b border-zinc-200 px-1 dark:border-zinc-800"
-        style={{ minHeight: "2rem" }}
-      >
-        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-1 py-0.5">
-          {tabs.map((tab) => {
-            const selected = tab.id === activeTabId;
-            const label = tabLabelFromTab(
-              tab,
-              selected ? pageTitle : tab.title,
-            );
-            return (
-              <div
-                key={tab.id}
-                className={`group/tab inline-flex max-w-[11rem] shrink-0 items-center rounded-md transition ${
-                  selected
-                    ? "bg-zinc-200/90 dark:bg-zinc-700/90"
-                    : "hover:bg-zinc-100 dark:hover:bg-zinc-800/80"
-                }`}
-              >
-                <button
-                  type="button"
-                  title={tab.url || label}
-                  onClick={() => void switchTab(tab.id)}
-                  className={`inline-flex min-w-0 items-center gap-1 rounded-l-md py-0.5 pl-2 pr-1 text-[11px] ${
+      {showTabStrip && (
+        <div
+          className="flex shrink-0 items-center border-b border-zinc-200 px-1 dark:border-zinc-800"
+          style={{ minHeight: "2rem" }}
+        >
+          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-1 py-0.5">
+            {tabs.map((tab) => {
+              const selected = tab.id === activeTabId;
+              const label = tabLabelFromTab(
+                tab,
+                selected ? pageTitle : tab.title,
+              );
+              return (
+                <div
+                  key={tab.id}
+                  className={`group/tab inline-flex max-w-[11rem] shrink-0 items-center rounded-md transition ${
                     selected
-                      ? "text-zinc-900 dark:text-zinc-100"
-                      : "text-zinc-600 dark:text-zinc-400"
+                      ? "bg-zinc-200/90 dark:bg-zinc-700/90"
+                      : "hover:bg-zinc-100 dark:hover:bg-zinc-800/80"
                   }`}
                 >
-                  <BrowserGlobeIcon className="h-3 w-3 shrink-0 opacity-70" />
-                  <span className="truncate">{label}</span>
-                </button>
-                <button
-                  type="button"
-                  title="关闭标签"
-                  aria-label={`关闭 ${label}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void closeTab(tab.id);
-                  }}
-                  className={`rounded-r-md px-1.5 py-0.5 text-[13px] leading-none opacity-0 transition hover:bg-zinc-300/80 group-hover/tab:opacity-100 dark:hover:bg-zinc-600/80 ${
-                    selected ? "opacity-70" : ""
-                  } text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100`}
-                >
-                  ×
-                </button>
-              </div>
-            );
-          })}
-          {tabs.length === 0 && (
-            <span className="px-1.5 text-[12px] text-zinc-500">新标签页</span>
-          )}
+                  <button
+                    type="button"
+                    title={tab.url || label}
+                    onClick={() => void switchTab(tab.id)}
+                    className={`inline-flex min-w-0 items-center gap-1 rounded-l-md py-0.5 pl-2 pr-1 text-[11px] ${
+                      selected
+                        ? "text-zinc-900 dark:text-zinc-100"
+                        : "text-zinc-600 dark:text-zinc-400"
+                    }`}
+                  >
+                    <BrowserGlobeIcon className="h-3 w-3 shrink-0 opacity-70" />
+                    <span className="truncate">{label}</span>
+                  </button>
+                  <button
+                    type="button"
+                    title="关闭标签"
+                    aria-label={`关闭 ${label}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void closeTab(tab.id);
+                    }}
+                    className={`rounded-r-md px-1.5 py-0.5 text-[13px] leading-none opacity-0 transition hover:bg-zinc-300/80 group-hover/tab:opacity-100 dark:hover:bg-zinc-600/80 ${
+                      selected ? "opacity-70" : ""
+                    } text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100`}
+                  >
+                    ×
+                  </button>
+                </div>
+              );
+            })}
+            {tabs.length === 0 && (
+              <span className="px-1.5 text-[12px] text-zinc-500">新标签页</span>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5 pr-0.5">
+            <BrowserChromeIconButton title="新标签页" onClick={handleNewTab}>
+              <BrowserPlusIcon className="h-4 w-4" />
+            </BrowserChromeIconButton>
+            <BrowserChromeIconButton
+              title={target ? "在新窗口打开" : "全屏"}
+              onClick={handleExpand}
+            >
+              <BrowserExpandIcon className="h-4 w-4" />
+            </BrowserChromeIconButton>
+          </div>
         </div>
-        <div className="flex shrink-0 items-center gap-0.5 pr-0.5">
-          <BrowserChromeIconButton title="新标签页" onClick={handleNewTab}>
-            <BrowserPlusIcon className="h-4 w-4" />
-          </BrowserChromeIconButton>
-          <BrowserChromeIconButton
-            title={target ? "在新窗口打开" : "全屏"}
-            onClick={handleExpand}
-          >
-            <BrowserExpandIcon className="h-4 w-4" />
-          </BrowserChromeIconButton>
-        </div>
-      </div>
+      )}
 
       {/* 导航 + 地址栏 */}
       <div className="relative flex shrink-0 items-center gap-0.5 border-b border-zinc-200 px-1 py-1 dark:border-zinc-800">
@@ -684,9 +706,7 @@ export function BrowserPanel({
               onOpenUrl={handleWebviewOpenUrl}
             />
           ) : (
-            <div className="flex h-full min-h-[120px] items-center justify-center px-6 text-center text-[11px] text-zinc-500">
-              在地址栏输入 URL 后按 Enter，或点击 + 新建标签页。
-            </div>
+            <BrowserEmptyState />
           )
         ) : target && iframeFallback ? (
           <iframe
@@ -699,11 +719,13 @@ export function BrowserPanel({
             onError={() => setFrameFailed(true)}
           />
         ) : (
-          <div className="flex h-full min-h-[120px] items-center justify-center px-6 text-center text-[11px] text-zinc-500">
-            {browserEnabled
-              ? "在地址栏输入 URL 后按 Enter。"
-              : "请启动桌面版，或在菜单中开启 iframe 降级。"}
-          </div>
+          <BrowserEmptyState
+            description={
+              browserEnabled
+                ? "输入 URL 以打开页面"
+                : "请启动桌面版，或在菜单中开启 iframe 降级。"
+            }
+          />
         )}
       </div>
 

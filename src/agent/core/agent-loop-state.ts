@@ -21,6 +21,8 @@ export type AgentLoopRunState = {
   editApplied?: boolean;
   /** 已落盘路径（用于交付物判定，非 tool 计数） */
   filesWritten?: string[];
+  /** Codex-like turn diff stream: aggregated direct-write diff for the current turn. */
+  turnDiff?: string;
   /** 当前任务匹配的 playbook（交付标准） */
   playbookId?: TaskPlaybookId;
   toolsCalled: string[];

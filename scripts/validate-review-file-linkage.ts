@@ -2,7 +2,12 @@
  * A107：审查区与文件树/中栏变更卡联动。
  */
 import assert from "node:assert/strict";
-import { collectReviewFileChanges } from "../src/lib/approval-file-changes";
+import {
+  collectReviewFileChanges,
+  collectTurnFileChanges,
+  reviewDisplayFromTurnFileChanges,
+} from "../src/lib/approval-file-changes";
+import type { AgentEvent } from "../src/agent/types";
 
 const fileDetails = {
   kind: "file_mutation" as const,
@@ -61,5 +66,28 @@ const focused = collectReviewFileChanges(
 );
 assert.equal(focused.approvalId, "approval_exec");
 assert.equal(focused.files[0]?.path, "src/a.tsx");
+
+const directChanges = collectTurnFileChanges([
+  {
+    type: "file.changed",
+    taskId: "task_current",
+    filePath: "src/direct.tsx",
+    diff: [
+      "--- a/src/direct.tsx",
+      "+++ b/src/direct.tsx",
+      "@@ -1,1 +1,2 @@",
+      "-old",
+      "+new",
+      "+extra",
+    ].join("\n"),
+    oldContent: "old\n",
+    newContent: "new\nextra\n",
+  } satisfies AgentEvent,
+]);
+const directReview = reviewDisplayFromTurnFileChanges(directChanges);
+assert.equal(directReview?.source, "direct");
+assert.equal(directReview?.files[0]?.path, "src/direct.tsx");
+assert.equal(directReview?.totalAdditions, 2);
+assert.equal(directReview?.totalDeletions, 1);
 
 console.log("validate-review-file-linkage: passed");

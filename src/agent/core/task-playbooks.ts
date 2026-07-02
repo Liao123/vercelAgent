@@ -57,15 +57,19 @@ export function isDesignReplicateRequest(input: string): boolean {
   if (isBrowserDocAnalysisRequest(text)) return false;
   if (isExplicitReadOnlyRequest(text)) return false;
   const hasUrl = /https?:\/\//i.test(text);
+  const hasPageTarget =
+    /网站|网页|首页|主页|官网|站点|页面|home\s*page|homepage|site|website/i.test(
+      text,
+    );
   const replicateIntent =
-    /复刻|照着|模仿|还原|仿照|clone|replicat|照着.*做|生成.*页|做一?个.*页|landing|设计稿|design\s*spec|页面复刻|网页复刻/i.test(
+    /复刻|复制|拷贝|照着|模仿|还原|仿照|clone|replicat|照着.*做|生成.*页|做一?个.*页|landing|设计稿|design\s*spec|页面复刻|网页复刻/i.test(
       text,
     );
   const buildIntent =
     isLikelyCodeEditRequest(text) ||
     /生成|创建|实现|写到/i.test(text) ||
     /src\/[^\s]+\.(tsx?|jsx?|vue)/i.test(text);
-  return hasUrl && replicateIntent && buildIntent;
+  return (hasUrl || hasPageTarget) && replicateIntent && buildIntent;
 }
 
 /** 截图并保存到桌面/指定路径（环境任务，优先 CDP / MCP）。 */
@@ -572,4 +576,3 @@ export function computePlaybookProgress(
     progressLabel,
   };
 }
-

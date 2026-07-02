@@ -25,9 +25,9 @@ async function main(): Promise<void> {
   assert.ok(panel.includes("AgentRightRail"), "triple layout uses right rail tabs");
   assert.ok(!sidebar.includes("hiddenWorkspaceIds"), "no hidden project list");
   assert.ok(!sidebar.includes("removeProject"), "no remove project action");
-  assert.ok(rightRail.includes('label: "审查"'), "review tab present");
-  assert.ok(rightRail.includes("aria-label={item.label}"), "icon tabs keep aria labels");
-  assert.ok(rightRail.includes("h-7 w-7"), "icon-only tab buttons");
+  assert.ok(rightRail.includes('fallbackLabel: "审查"'), "review tab present");
+  assert.ok(rightRail.includes("aria-label={label}"), "rail tabs keep aria labels");
+  assert.ok(rightRail.includes("group/tab"), "Codex-like closeable labeled tab buttons");
   assert.ok(
     tree.includes("buildGitStatusPathMap"),
     "file tree loads git status highlights",
@@ -53,9 +53,9 @@ async function main(): Promise<void> {
     sidebar.includes("AgentWorkspaceBridge.useAgentWorkspaceBridge"),
     "sidebar imports bridge module namespace",
   );
-  assert.ok(rightRail.includes('label: "文件"'), "files tab present");
-  assert.ok(rightRail.includes('label: "浏览器"'), "browser tab present");
-  assert.ok(rightRail.includes('label: "终端"'), "terminal tab present");
+  assert.ok(rightRail.includes('fallbackLabel: "文件"'), "files tab present");
+  assert.ok(rightRail.includes('fallbackLabel: "新选项卡"'), "browser tab present");
+  assert.ok(rightRail.includes('fallbackLabel: "终端"'), "terminal tab present");
   assert.ok(changeCard.includes("应用更改"), "turn card apply button");
   assert.ok(
     changeCard.includes("showInlineActions"),

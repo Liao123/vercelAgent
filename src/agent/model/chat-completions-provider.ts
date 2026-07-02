@@ -33,6 +33,62 @@ type ChatCompletionResponse = {
   error?: { message?: string };
 };
 
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function modelGenerateTimeoutMs(): number {
+  return parsePositiveIntEnv("AGENT_MODEL_GENERATE_TIMEOUT_MS", 90_000);
+}
+
+function modelStreamTimeoutMs(): number {
+  return parsePositiveIntEnv("AGENT_MODEL_STREAM_TIMEOUT_MS", 120_000);
+}
+
+function combineAbortSignals(
+  signals: Array<AbortSignal | undefined>,
+): AbortSignal | undefined {
+  const active = signals.filter((signal): signal is AbortSignal => Boolean(signal));
+  if (active.length === 0) return undefined;
+  if (active.length === 1) return active[0];
+  const any = (AbortSignal as typeof AbortSignal & {
+    any?: (signals: AbortSignal[]) => AbortSignal;
+  }).any;
+  if (typeof any === "function") {
+    return any(active);
+  }
+  const controller = new AbortController();
+  for (const signal of active) {
+    if (signal.aborted) {
+      controller.abort(signal.reason);
+      break;
+    }
+    signal.addEventListener(
+      "abort",
+      () => {
+        if (!controller.signal.aborted) {
+          controller.abort(signal.reason);
+        }
+      },
+      { once: true },
+    );
+  }
+  return controller.signal;
+}
+
+function modelRequestSignal(
+  inputSignal: AbortSignal | undefined,
+  timeoutMs: number,
+): AbortSignal {
+  return combineAbortSignals([
+    inputSignal,
+    AbortSignal.timeout(timeoutMs),
+  ])!;
+}
+
 export class ChatCompletionsProvider implements ModelProvider {
   name: string;
 
@@ -44,6 +100,7 @@ export class ChatCompletionsProvider implements ModelProvider {
     const model = input.model ?? this.config.chatModel;
     const response = await fetch(this.config.chatUrl, {
       method: "POST",
+      signal: modelRequestSignal(input.signal, modelGenerateTimeoutMs()),
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${this.config.apiKey}`,
@@ -108,6 +165,7 @@ export class ChatCompletionsProvider implements ModelProvider {
     const model = input.model ?? this.config.chatModel;
     const response = await fetch(this.config.chatUrl, {
       method: "POST",
+      signal: modelRequestSignal(input.signal, modelStreamTimeoutMs()),
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${this.config.apiKey}`,

@@ -32,11 +32,21 @@ async function main(): Promise<void> {
     "utf8",
   );
   const loopGen = await fs.readFile("src/agent/core/loop-model-generate.ts", "utf8");
+  const modelTypes = await fs.readFile("src/agent/model/types.ts", "utf8");
+  const resilience = await fs.readFile("src/lib/model-call-resilience.ts", "utf8");
 
   assert.ok(policy.includes("framework-metadata-catalog"), "policy uses catalog");
   assert.ok(!gate.includes("evaluateToolEvidenceGate"), "gate no longer blocks tools");
   assert.ok(!gate.includes("LAYOUT_METADATA_PATH"), "no hardcoded layout regex in gate");
   assert.ok(provider.includes("extractAssistantText"), "provider imports extractAssistantText");
+  assert.ok(provider.includes("modelRequestSignal"), "provider creates request signals");
+  assert.ok(
+    provider.includes("AGENT_MODEL_GENERATE_TIMEOUT_MS"),
+    "provider has generate timeout knob",
+  );
+  assert.ok(provider.includes("signal: modelRequestSignal"), "provider passes fetch signal");
+  assert.ok(modelTypes.includes("signal?: AbortSignal"), "model input accepts abort signal");
+  assert.ok(resilience.includes('errorName === "timeouterror"'), "timeout errors retry");
   assert.ok(loopGen.includes("withModelCallRetry"), "loop model uses retry");
 
   assert.ok(resolveMetadataProfile("Next.js")?.id === "next");
@@ -75,6 +85,8 @@ async function main(): Promise<void> {
   assert.ok(
     isRetriableModelError(new Error("模型服务返回 HTML 错误页")),
   );
+  assert.ok(isRetriableModelError({ name: "TimeoutError", message: "expired" }));
+
   let attempts = 0;
   const result = await withModelCallRetry(
     async () => {

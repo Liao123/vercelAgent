@@ -12,6 +12,7 @@ type AgentTerminalPanelProps = {
   workspaceLabel?: string | null;
   /** 有 workspace 时启用交互 PTY */
   interactiveEnabled?: boolean;
+  showHeader?: boolean;
   onClear?: () => void;
 };
 
@@ -33,6 +34,7 @@ export function AgentTerminalPanel({
   visible,
   workspaceLabel,
   interactiveEnabled = false,
+  showHeader = true,
   onClear,
 }: AgentTerminalPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -265,32 +267,36 @@ export function AgentTerminalPanel({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-zinc-950">
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-800 px-3 py-2">
-        <div className="min-w-0">
-          <p className="truncate text-[12px] font-medium text-zinc-200">终端</p>
-          <p className="truncate text-[10px] text-zinc-500">{subtitle}</p>
+      {showHeader ? (
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-950 px-3 py-2">
+          <div className="min-w-0">
+            <p className="truncate text-[12px] font-semibold text-zinc-100">
+              终端
+            </p>
+            <p className="truncate text-[10px] text-zinc-500">{subtitle}</p>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            {interactiveEnabled && ptySession ? (
+              <button
+                type="button"
+                onClick={handleRestartShell}
+                className="rounded-md px-2 py-1 text-[11px] text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-200"
+              >
+                新 shell
+              </button>
+            ) : null}
+            {onClear ? (
+              <button
+                type="button"
+                onClick={handleClear}
+                className="rounded-md px-2 py-1 text-[11px] text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-200"
+              >
+                清空
+              </button>
+            ) : null}
+          </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1">
-          {interactiveEnabled && ptySession ? (
-            <button
-              type="button"
-              onClick={handleRestartShell}
-              className="rounded-md px-2 py-1 text-[11px] text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-200"
-            >
-              新 shell
-            </button>
-          ) : null}
-          {onClear ? (
-            <button
-              type="button"
-              onClick={handleClear}
-              className="rounded-md px-2 py-1 text-[11px] text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-200"
-            >
-              清空
-            </button>
-          ) : null}
-        </div>
-      </div>
+      ) : null}
       <div
         ref={containerRef}
         className="min-h-0 flex-1 p-1"

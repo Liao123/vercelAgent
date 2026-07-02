@@ -296,12 +296,6 @@ function ReasoningStepContent({
           )}
         </div>
       )}
-      {thinking && step.synthetic && (
-        <p className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">
-          {"\u5de5\u5177\u8fd0\u884c\u4e2d"}
-          <span className="ml-1.5 inline-block h-1 w-1 animate-pulse rounded-full bg-blue-500 align-middle" />
-        </p>
-      )}
       {hasActions && (
         <div className="space-y-0.5 pt-0.5">
           {step.actions.length > 1 ? (
@@ -328,15 +322,6 @@ function ReasoningStepContent({
       )}
     </div>
   );
-}
-
-function stepLabel(steps: ReasoningStep[], index: number): string {
-  const step = steps[index];
-  if (step?.synthetic) return "\u5de5\u5177\u8c03\u7528";
-  const count = steps
-    .slice(0, index + 1)
-    .filter((item) => !item.synthetic).length;
-  return `\u7b2c ${Math.max(1, count)} \u8f6e`;
 }
 
 type TurnReasoningTimelineProps = {
@@ -407,6 +392,8 @@ export function TurnReasoningTimeline({
   const hasContent = steps.length > 0 || Boolean(liveThinking);
   if (!hasContent) return null;
 
+  const visiblePlaybook = playbook?.id === "default" ? undefined : playbook;
+
   const headerLabel = formatTimelineHeaderLabel(
     summary,
     isActiveTurn,
@@ -414,8 +401,8 @@ export function TurnReasoningTimeline({
   );
   const headerMeta = formatTimelineHeaderMeta(
     summary,
-    playbook?.title && playbook.totalSteps > 0
-      ? `${playbook.completedCount}/${playbook.totalSteps} 路径`
+    visiblePlaybook?.title && visiblePlaybook.totalSteps > 0
+      ? `${visiblePlaybook.completedCount}/${visiblePlaybook.totalSteps} 路径`
       : null,
   );
   const working = isActiveTurn && !turnCompleted;
@@ -458,9 +445,9 @@ export function TurnReasoningTimeline({
 
       {open && (
         <div className="ml-5 mt-2 space-y-4 border-l border-zinc-200/90 pl-3 dark:border-zinc-700/80">
-          {playbook && (
+          {visiblePlaybook && (
             <TurnPlaybookStrip
-              playbook={playbook}
+              playbook={visiblePlaybook}
               active={isActiveTurn && !turnCompleted}
             />
           )}
@@ -477,11 +464,6 @@ export function TurnReasoningTimeline({
             const index = hiddenStepCount + visibleIndex;
             return (
               <div key={step.id}>
-                {steps.length > 1 && (
-                  <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
-                    {stepLabel(steps, index)}
-                  </p>
-                )}
                 <ReasoningStepContent
                   step={step}
                   isLatestStep={index === steps.length - 1 && !liveThinking}

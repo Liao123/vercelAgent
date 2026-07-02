@@ -428,7 +428,21 @@ export type AgentEvent =
       message: string;
       tone: "success" | "error" | "neutral";
     }
-  | { type: "file.changed"; taskId: string; filePath: string; diff: string }
+  | {
+      type: "file.changed";
+      taskId: string;
+      filePath: string;
+      diff: string;
+      oldContent?: string;
+      newContent?: string;
+    }
+  | {
+      type: "turn.diff.updated";
+      taskId: string;
+      diff: string;
+      filePath?: string;
+      at?: string;
+    }
   | {
       type: "kernel.bootstrap.validate";
       taskId: string;

@@ -9,6 +9,8 @@ export type UserGuidanceItem = {
 
 const guidanceQueues = new Map<string, UserGuidanceItem[]>();
 const activeLoopThreads = new Set<string>();
+const activeGuidanceInterrupts = new Map<string, AbortController>();
+const GUIDANCE_INTERRUPT_REASON = "agent_guidance_interrupt";
 
 export class GuidanceNotAcceptedError extends Error {
   constructor(message: string) {
@@ -23,6 +25,11 @@ export function beginAgentLoopSession(threadId: string): () => void {
   return () => {
     activeLoopThreads.delete(threadId);
     guidanceQueues.delete(threadId);
+    const controller = activeGuidanceInterrupts.get(threadId);
+    if (controller && !controller.signal.aborted) {
+      controller.abort(GUIDANCE_INTERRUPT_REASON);
+    }
+    activeGuidanceInterrupts.delete(threadId);
   };
 }
 
@@ -59,6 +66,32 @@ export function submitUserGuidance(
     );
   }
   return enqueueUserGuidance(threadId, text);
+}
+
+export function beginGuidanceModelInterrupt(threadId: string): AbortController {
+  const controller = new AbortController();
+  activeGuidanceInterrupts.set(threadId, controller);
+  return controller;
+}
+
+export function endGuidanceModelInterrupt(
+  threadId: string,
+  controller: AbortController,
+): void {
+  if (activeGuidanceInterrupts.get(threadId) === controller) {
+    activeGuidanceInterrupts.delete(threadId);
+  }
+}
+
+export function interruptActiveModelForGuidance(threadId: string): boolean {
+  const controller = activeGuidanceInterrupts.get(threadId);
+  if (!controller || controller.signal.aborted) return false;
+  controller.abort(GUIDANCE_INTERRUPT_REASON);
+  return true;
+}
+
+export function isGuidanceModelInterrupt(signal: AbortSignal): boolean {
+  return signal.aborted && signal.reason === GUIDANCE_INTERRUPT_REASON;
 }
 
 function drainUserGuidance(threadId: string): UserGuidanceItem[] {

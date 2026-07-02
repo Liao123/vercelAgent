@@ -9,8 +9,12 @@ import {
   GuidanceNotAcceptedError,
   applyPendingUserGuidance,
   beginAgentLoopSession,
+  beginGuidanceModelInterrupt,
   buildUserGuidanceMessage,
   enqueueUserGuidance,
+  endGuidanceModelInterrupt,
+  interruptActiveModelForGuidance,
+  isGuidanceModelInterrupt,
   submitUserGuidance,
 } from "../src/agent/core/loop-user-guidance";
 import type { AgentEvent, AgentMessage } from "../src/agent/types";
@@ -41,14 +45,29 @@ async function main(): Promise<void> {
 
   assert.ok(types.includes('"guidance.received"'), "types define guidance.received");
   assert.ok(guidanceModule.includes("beginAgentLoopSession"), "session registry");
+  assert.ok(
+    guidanceModule.includes("interruptActiveModelForGuidance"),
+    "guidance can interrupt active model",
+  );
+  assert.ok(
+    guidanceModule.includes("beginGuidanceModelInterrupt"),
+    "model interrupt controller registry",
+  );
   assert.ok(guidanceModule.includes("applyPendingUserGuidance"), "drain helper");
   assert.ok(loop.includes("applyPendingUserGuidance"), "loop drains guidance");
   assert.ok(loop.includes("beginAgentLoopSession"), "loop registers session");
+  assert.ok(loop.includes("beginGuidanceModelInterrupt"), "loop arms guidance interrupt");
+  assert.ok(loop.includes("isGuidanceModelInterrupt"), "loop recognizes guidance abort");
+  assert.ok(loop.includes("modelInterruptedForGuidance"), "loop restarts after steer");
   assert.ok(route.includes("submitUserGuidance"), "guidance API");
+  assert.ok(route.includes("interruptActiveModelForGuidance"), "guidance API interrupts");
+  assert.ok(route.includes("interrupted"), "guidance API returns interrupt state");
   assert.ok(httpServer.includes('"/guidance"'), "agent-server guidance route");
   assert.ok(remote.includes("proxyAgentGuidanceToServer"), "remote guidance proxy");
   assert.ok(panel.includes("sendGuidance"), "panel sends guidance");
   assert.ok(panel.includes("/api/agent/guidance"), "panel guidance fetch");
+  assert.ok(panel.includes("data.interrupted"), "panel reports interrupt status");
+  assert.ok(panel.includes("setApprovalStatus"), "panel updates guidance status");
   assert.ok(composer.includes("onSendGuidance"), "composer guidance prop");
   assert.ok(composer.includes("运行中可追加引导"), "composer running placeholder");
   assert.ok(feed.includes('"guidance.received"'), "narrative includes guidance");
@@ -60,8 +79,13 @@ async function main(): Promise<void> {
   );
 
   const endSession = beginAgentLoopSession("thread_test");
+  const guidanceController = beginGuidanceModelInterrupt("thread_test");
   const item = submitUserGuidance("thread_test", "  优先写页面  ");
   assert.equal(item.text, "优先写页面");
+
+  assert.equal(interruptActiveModelForGuidance("thread_test"), true);
+  assert.ok(isGuidanceModelInterrupt(guidanceController.signal));
+  endGuidanceModelInterrupt("thread_test", guidanceController);
 
   const messages: AgentMessage[] = [];
   const events: AgentEvent[] = [];

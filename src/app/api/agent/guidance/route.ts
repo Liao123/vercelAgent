@@ -4,6 +4,7 @@
  */
 import {
   GuidanceNotAcceptedError,
+  interruptActiveModelForGuidance,
   submitUserGuidance,
 } from "@/agent/core/loop-user-guidance";
 import {
@@ -36,11 +37,13 @@ export async function POST(request: Request) {
 
   try {
     const item = submitUserGuidance(parsed.threadId, parsed.text);
+    const interrupted = interruptActiveModelForGuidance(parsed.threadId);
     return Response.json({
       ok: true,
       id: item.id,
       at: item.at,
       text: item.text,
+      interrupted,
     });
   } catch (error) {
     if (error instanceof GuidanceNotAcceptedError) {

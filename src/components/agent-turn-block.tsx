@@ -13,6 +13,7 @@ type AgentTurnBlockProps = {
   isLatest: boolean;
   running: boolean;
   onReviewApproval?: (approvalId: string, filePath?: string) => void;
+  onReviewFileChange?: (filePath: string) => void;
   onApplyApproval?: (approvalId: string) => void;
   onRejectApproval?: (approvalId: string) => void;
   applyApprovalBusy?: boolean;
@@ -118,6 +119,7 @@ export function AgentTurnBlock({
   isLatest,
   running,
   onReviewApproval,
+  onReviewFileChange,
   onApplyApproval,
   onRejectApproval,
   applyApprovalBusy = false,
@@ -150,6 +152,10 @@ export function AgentTurnBlock({
 
   const summaryTone = turn.status === "failed" ? "error" : "neutral";
   const showStreaming = Boolean(streamingAnswer);
+  const shouldShowFileChangeCard =
+    Boolean(turn.fileChanges) &&
+    (!isActive ||
+      (showInlineFileChangeActions && turn.fileChanges?.status === "pending"));
 
   const approvalChatHighlights = turn.highlights.filter((event) => {
     if (event.type === "assistant.notice") return true;
@@ -242,10 +248,11 @@ export function AgentTurnBlock({
           />
         ))}
 
-        {turn.fileChanges && (
+        {shouldShowFileChangeCard && turn.fileChanges && (
           <AgentTurnChangeCard
             summary={turn.fileChanges}
             onReview={onReviewApproval}
+            onReviewFileChange={onReviewFileChange}
             onApply={onApplyApproval}
             onReject={onRejectApproval}
             applyBusy={applyApprovalBusy}

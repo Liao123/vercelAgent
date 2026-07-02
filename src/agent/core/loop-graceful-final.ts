@@ -26,6 +26,7 @@ export async function attemptGracefulLoopFinal(input: {
   userRequest: string;
   playbookId?: TaskPlaybookId;
   taskReasoning?: TaskReasoning;
+  signal?: AbortSignal;
 }): Promise<string | null> {
   const tail: AgentMessage = {
     role: "user",
@@ -44,6 +45,7 @@ export async function attemptGracefulLoopFinal(input: {
       temperature: 0,
       maxTokens: 2400,
       metadata: { taskId: input.taskId, gracefulFinal: true },
+      signal: input.signal,
     });
     const text = output.content?.trim();
     if (text) return text;

@@ -25,6 +25,7 @@ import { snapshotDiffHint } from "@/lib/snapshot-diff-text";
 import { GitStatusView } from "@/components/git-status-view";
 import {
   AgentRightRail,
+  type AgentRightRailContextSummary,
   type AgentRightRailTab,
 } from "@/components/agent-right-rail";
 import {
@@ -45,8 +46,10 @@ import { PatchFilesDiffView } from "@/components/patch-files-diff";
 import { resolveThreadIdFromEvents } from "@/lib/agent-feed";
 import { approvalAnchorId } from "@/lib/approval-anchor";
 import {
+  collectTurnFileChanges,
   collectReviewDisplay,
   extractFileChangesFromApproval,
+  reviewDisplayFromTurnFileChanges,
 } from "@/lib/approval-file-changes";
 import type { KernelBootstrapReviewHint } from "@/lib/kernel-file-hint";
 import { normalizeRepoPath } from "@/lib/git-tree-decoration";
@@ -764,7 +767,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     { workspaceId: string; name: string }[]
   >([]);
   const desktopShell = useDesktopApp();
-  const [rightRailTab, setRightRailTab] = useState<AgentRightRailTab>("files");
+  const [rightRailTab, setRightRailTab] = useState<AgentRightRailTab>("launcher");
   const [terminalLogs, setTerminalLogs] = useState<TerminalLogEntry[]>([]);
   useEffect(() => {
     runningRef.current = running;
@@ -1360,6 +1363,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
         error?: string;
         id?: string;
         at?: string;
+        interrupted?: boolean;
       };
       if (!res.ok) {
         setApprovalStatus(data.error ?? "引导发送失败");
@@ -1378,7 +1382,11 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
       };
       setEvents((prev) => [...prev, guidanceEvent]);
       setRequest("");
-      setApprovalStatus("引导已发送，将在下一轮迭代生效");
+      setApprovalStatus(
+        data.interrupted
+          ? "引导已发送，正在打断当前思考并重新规划…"
+          : "引导已发送，将在下一轮迭代生效",
+      );
       setApprovalStatusTone("neutral");
     } catch {
       setApprovalStatus("引导发送失败");
@@ -1396,9 +1404,9 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
       /** A151：shell 批准后同 Loop 上下文续跑 */
       shellResume?: { approvalId: string; result: VerificationResult };
     },
-  ) {
+  ): Promise<boolean> {
     const trimmed = loopUserRequest.trim();
-    if ((!trimmed && !options?.shellResume) || running) return;
+    if ((!trimmed && !options?.shellResume) || running) return false;
 
     const imagesForLoop = options?.referenceImages;
     const fromRequest = extractAtMentionPaths(trimmed);
@@ -1442,6 +1450,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
       attachedPaths: pathsForLoop,
       activeEditorPath: reviewEditorSelection?.path ?? null,
     });
+    let requestStarted = false;
     try {
       const tabRes = await fetch("/api/agent/browser/tabs");
       if (tabRes.ok) {
@@ -1488,6 +1497,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
         throw new Error(data?.error ?? "Agent request failed.");
       }
 
+      requestStarted = true;
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -1636,6 +1646,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
           }
         }
       }
+      return true;
     } catch (err) {
       const aborted =
         loopAbortController.signal.aborted ||
@@ -1645,6 +1656,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
       } else {
         setError(err instanceof Error ? err.message : "Unknown agent error.");
       }
+      return requestStarted;
     } finally {
       const userCancelled = loopAbortController.signal.aborted;
       loopAbortRef.current = null;
@@ -2110,13 +2122,32 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     )
       return;
 
+    const submittedRequest = request;
+    const submittedAttachedFiles = attachedFiles;
+    const submittedReferenceImages = referenceImages;
     const loopText =
       userRequest ||
-      (referenceImages.length > 0 ? "请根据附图完成开发任务。" : "");
-    await runLoopWithRequest(loopText, {
+      (referenceImages.length > 0
+        ? "请根据附图完成开发任务。"
+        : attachedFiles.length > 0
+          ? "请根据附加文件完成任务。"
+          : "");
+
+    setRequest("");
+    setAttachedFiles([]);
+    setReferenceImages([]);
+
+    const started = await runLoopWithRequest(loopText, {
       referenceImages:
-        referenceImages.length > 0 ? referenceImages : undefined,
+        submittedReferenceImages.length > 0 ? submittedReferenceImages : undefined,
+      attachedPaths:
+        submittedAttachedFiles.length > 0 ? submittedAttachedFiles : undefined,
     });
+    if (!started) {
+      setRequest(submittedRequest);
+      setAttachedFiles(submittedAttachedFiles);
+      setReferenceImages(submittedReferenceImages);
+    }
   }
 
   const canRunTask =
@@ -2154,21 +2185,67 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     );
   }, [approvals, layout]);
 
+  const currentTurnFileChanges = useMemo(() => {
+    if (!currentTaskId) return null;
+    return collectTurnFileChanges(
+      events.filter(
+        (event) =>
+          "taskId" in event &&
+          typeof event.taskId === "string" &&
+          event.taskId === currentTaskId,
+      ),
+    );
+  }, [events, currentTaskId]);
+
   const reviewDisplay = useMemo(
-    () =>
-      collectReviewDisplay(
+    () => {
+      if (layout === "triple") {
+        const directReview =
+          reviewDisplayFromTurnFileChanges(currentTurnFileChanges);
+        if (directReview) return directReview;
+      }
+      return collectReviewDisplay(
         reviewApprovals,
         currentTaskId,
         focusedApprovalId,
         workspace?.git?.files,
         layout === "triple" ? { gitOnly: true } : undefined,
-      ),
+      );
+    },
     [
       reviewApprovals,
       currentTaskId,
       focusedApprovalId,
       workspace?.git?.files,
       layout,
+      currentTurnFileChanges,
+    ],
+  );
+
+  const rightRailContextSummary = useMemo<AgentRightRailContextSummary | null>(
+    () => {
+      if (layout !== "triple") return null;
+      return {
+        workspaceLabel: workspaceDisplayName,
+        workspacePath: workspace?.rootPath ?? null,
+        git: workspace?.git ?? null,
+        reviewSource: reviewDisplay.source,
+        changedFileCount: reviewDisplay.files.length,
+        totalAdditions: reviewDisplay.totalAdditions,
+        totalDeletions: reviewDisplay.totalDeletions,
+        running,
+      };
+    },
+    [
+      layout,
+      workspaceDisplayName,
+      workspace?.rootPath,
+      workspace?.git,
+      reviewDisplay.source,
+      reviewDisplay.files.length,
+      reviewDisplay.totalAdditions,
+      reviewDisplay.totalDeletions,
+      running,
     ],
   );
 
@@ -2226,22 +2303,42 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
     return workspaceRelativePath(path, workspace?.rootPath);
   }, [layout, reviewFileKey, reviewDisplay.files, workspace?.rootPath]);
 
+  const openReviewPanel = useCallback(() => {
+    if (layout !== "triple") return false;
+    setRightRailTab("review");
+    if (reviewDisplay.approvalId) {
+      setFocusedApprovalId(reviewDisplay.approvalId);
+    }
+    const selectedStillExists =
+      reviewFileKey != null &&
+      reviewDisplay.files.some((file) => file.fileKey === reviewFileKey);
+    if (!selectedStillExists) {
+      setReviewFileKey(reviewDisplay.files[0]?.fileKey ?? null);
+    }
+    return reviewDisplay.files.length > 0;
+  }, [layout, reviewDisplay, reviewFileKey]);
+
   const openReviewForPath = useCallback(
     (path: string) => {
       if (layout !== "triple") return false;
-      const norm = normalizeRepoPath(path);
-      const match = reviewDisplay.files.find(
-        (file) => normalizeRepoPath(file.path) === norm,
-      );
-      if (!match) return false;
-      setReviewFileKey(match.fileKey);
       setRightRailTab("review");
       if (reviewDisplay.approvalId) {
         setFocusedApprovalId(reviewDisplay.approvalId);
       }
+      const norm = normalizeRepoPath(path);
+      const match = reviewDisplay.files.find(
+        (file) => normalizeRepoPath(file.path) === norm,
+      );
+      if (!match) {
+        if (!reviewFileKey && reviewDisplay.files[0]) {
+          setReviewFileKey(reviewDisplay.files[0].fileKey);
+        }
+        return false;
+      }
+      setReviewFileKey(match.fileKey);
       return true;
     },
-    [layout, reviewDisplay],
+    [layout, reviewDisplay, reviewFileKey],
   );
 
   const handleTreeSelectPath = useCallback(
@@ -2255,8 +2352,8 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
 
   useEffect(() => {
     if (layout !== "triple" || pendingReviewCount === 0) return;
-    setRightRailTab("review");
-  }, [layout, pendingReviewCount]);
+    openReviewPanel();
+  }, [layout, openReviewPanel, pendingReviewCount]);
 
   useEffect(() => {
     if (layout !== "triple" || rightRailTab !== "review") return;
@@ -2573,6 +2670,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
       currentTaskId={currentTaskId}
       focusedApprovalId={focusedApprovalId}
       gitFiles={workspace?.git?.files}
+      directFileChanges={currentTurnFileChanges}
       selectedFileKey={reviewFileKey}
       onSelectFile={setReviewFileKey}
       autoApplyEnabled={
@@ -2669,6 +2767,7 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
                 showRestoreHint
                 excludeEventTypes={["plan.updated"]}
                 onFocusApproval={focusApproval}
+                onFocusFileChange={openReviewForPath}
                 onApplyApproval={applyApprovalFromTurn}
                 onRejectApproval={(id) => void resolveApproval(id, "rejected")}
                 applyApprovalBusy={loadingApprovals}
@@ -2694,7 +2793,11 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
             className="hidden"
             onChange={(e) => void onPickReferenceImages(e)}
           />
-          <AgentRunStatusStrip events={events} running={running} />
+          <AgentRunStatusStrip
+            events={events}
+            running={running}
+            onReviewFileChange={openReviewForPath}
+          />
           <AgentComposer
             request={request}
             onRequestChange={setRequest}
@@ -2769,12 +2872,15 @@ export function AgentPanel({ layout = "workspace" }: AgentPanelProps) {
                     visible={rightRailTab === "terminal"}
                     workspaceLabel={workspace?.rootPath ?? null}
                     interactiveEnabled={Boolean(workspace?.rootPath)}
+                    showHeader={false}
                     onClear={() => setTerminalLogs([])}
                   />
                 }
                 pendingReviewCount={pendingReviewCount}
+                contextSummary={rightRailContextSummary}
                 tab={rightRailTab}
                 onTabChange={setRightRailTab}
+                onOpenReview={openReviewPanel}
                 onHideRightPanel={hideTripleRightPanel}
               />
             </aside>

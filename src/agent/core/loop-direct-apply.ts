@@ -20,6 +20,7 @@ import { emitKernelBootstrapValidateFlow } from "@/agent/core/kernel-bootstrap-v
 import {
   buildReplicateAfterWriteNudge,
 } from "@/agent/core/loop-replicate-nudge";
+import { computeLineDiff } from "@/lib/line-diff";
 
 export const DIRECT_MUTATION_TOOL_NAMES = new Set([
   "file.replace",
@@ -51,6 +52,43 @@ export function fileDiffSnippetFromPreview(
     return `--- ${preview.path ?? preview.fromPath ?? "file"}\n+++ ${preview.path ?? preview.toPath ?? "file"}\n(old ${preview.oldSize ?? 0} bytes → new ${preview.newSize ?? 0} bytes)`;
   }
   return `Applied ${preview.type} to ${preview.path ?? preview.toPath ?? preview.fromPath ?? "file"}`;
+}
+
+function unifiedDiffLineCount(text: string): number {
+  if (!text) return 0;
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const lines = normalized.split("\n");
+  if (normalized.endsWith("\n")) lines.pop();
+  return lines.length;
+}
+
+function appendTurnDiff(previous: string | undefined, next: string): string {
+  const parts = [previous?.trimEnd(), next.trimEnd()].filter(Boolean);
+  return parts.join("\n");
+}
+
+export function unifiedDiffFromContents(input: {
+  filePath: string;
+  oldContent?: string;
+  newContent?: string;
+}): string {
+  const before = input.oldContent ?? "";
+  const after = input.newContent ?? "";
+  const rows = computeLineDiff(before, after);
+  const oldPath = before ? `a/${input.filePath}` : "/dev/null";
+  const newPath = after ? `b/${input.filePath}` : "/dev/null";
+  const body = rows.map((row) => {
+    if (row.kind === "equal") return ` ${row.line}`;
+    if (row.kind === "delete") return `-${row.line}`;
+    return `+${row.line}`;
+  });
+
+  return [
+    `--- ${oldPath}`,
+    `+++ ${newPath}`,
+    `@@ -1,${unifiedDiffLineCount(before)} +1,${unifiedDiffLineCount(after)} @@`,
+    ...body,
+  ].join("\n");
 }
 
 export async function attachLoopPostExecuteVerification(input: {
@@ -88,14 +126,29 @@ export async function emitDirectApplySideEffects(input: {
   patchText?: string;
 }): Promise<string | null> {
   const changedPaths: string[] = [];
-  const fileEvents: Array<{ path: string; diff: string }> = [];
+  const fileEvents: Array<{
+    path: string;
+    diff: string;
+    oldContent?: string;
+    newContent?: string;
+  }> = [];
 
   if (input.fileResult) {
     const paths = changedPathsFromDirectFileResult(input.fileResult);
     changedPaths.push(...paths);
-    const diff = fileDiffSnippetFromPreview(input.fileResult.preview);
+    const oldContent = input.fileResult.preview.oldContent ?? "";
+    const newContent = input.fileResult.preview.newContent ?? "";
     for (const filePath of paths) {
-      fileEvents.push({ path: filePath, diff });
+      fileEvents.push({
+        path: filePath,
+        oldContent,
+        newContent,
+        diff: unifiedDiffFromContents({
+          filePath,
+          oldContent,
+          newContent,
+        }),
+      });
     }
   }
 
@@ -107,7 +160,16 @@ export async function emitDirectApplySideEffects(input: {
       if (!file.changed) continue;
       const filePath = file.newPath || file.oldPath;
       if (filePath && filePath !== "/dev/null") {
-        fileEvents.push({ path: filePath, diff });
+        fileEvents.push({
+          path: filePath,
+          oldContent: file.oldContent,
+          newContent: file.newContent,
+          diff: unifiedDiffFromContents({
+            filePath,
+            oldContent: file.oldContent,
+            newContent: file.newContent,
+          }) || diff,
+        });
       }
     }
   }
@@ -120,11 +182,21 @@ export async function emitDirectApplySideEffects(input: {
   }
 
   for (const file of fileEvents) {
+    input.runState.turnDiff = appendTurnDiff(input.runState.turnDiff, file.diff);
+    input.emit({
+      type: "turn.diff.updated",
+      taskId: input.taskId,
+      filePath: file.path,
+      diff: input.runState.turnDiff,
+      at: new Date().toISOString(),
+    });
     input.emit({
       type: "file.changed",
       taskId: input.taskId,
       filePath: file.path,
       diff: file.diff,
+      oldContent: file.oldContent,
+      newContent: file.newContent,
     });
   }
 

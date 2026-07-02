@@ -17,6 +17,7 @@ const PRIMARY_COUNT = 3;
 type AgentTurnChangeCardProps = {
   summary: TurnFileChangeSummary;
   onReview?: (approvalId: string, filePath?: string) => void;
+  onReviewFileChange?: (filePath: string) => void;
   onApply?: (approvalId: string) => void;
   onReject?: (approvalId: string) => void;
   applyBusy?: boolean;
@@ -96,6 +97,7 @@ function FileRow({
 export function AgentTurnChangeCard({
   summary,
   onReview,
+  onReviewFileChange,
   onApply,
   onReject,
   applyBusy = false,
@@ -111,13 +113,15 @@ export function AgentTurnChangeCard({
   const secondary = files.slice(PRIMARY_COUNT);
   const visible = showAll ? files : primary;
   const isPending = status === "pending" && Boolean(approvalId);
+  const statusLabel =
+    status === "writing" ? "正在写入" : status === "applied" ? "已写入" : "已编辑";
 
   return (
     <article className="overflow-hidden rounded-xl border border-zinc-200/90 bg-white shadow-sm dark:border-zinc-700/70 dark:bg-zinc-900/40">
       <div className="flex items-center gap-3 px-4 py-3">
         <div className="min-w-0 flex-1">
           <p className="text-[13px] font-medium text-zinc-900 dark:text-zinc-100">
-            {status === "applied" ? "已写入" : "已编辑"}{" "}
+            {statusLabel}{" "}
             {files.length} 个文件
             <DiffStats
               additions={totalAdditions}
@@ -167,6 +171,8 @@ export function AgentTurnChangeCard({
               onClick={
                 approvalId && onReview
                   ? () => onReview(approvalId, file.path)
+                  : onReviewFileChange
+                    ? () => onReviewFileChange(file.path)
                   : undefined
               }
             />

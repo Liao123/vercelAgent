@@ -29,6 +29,7 @@ export type ModelInput = {
   metadata?: Record<string, unknown>;
   tools?: ModelToolDefinition[];
   toolChoice?: "auto" | "none";
+  signal?: AbortSignal;
 };
 
 export type ModelOutput = {

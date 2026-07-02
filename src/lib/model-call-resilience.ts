@@ -19,6 +19,10 @@ export function modelCallMaxRetries(): number {
 }
 
 export function isRetriableModelError(error: unknown): boolean {
+  const errorName =
+    error && typeof error === "object" && "name" in error
+      ? String((error as { name?: unknown }).name).toLowerCase()
+      : "";
   const raw =
     error instanceof Error
       ? error.message
@@ -27,6 +31,7 @@ export function isRetriableModelError(error: unknown): boolean {
         : String(error);
   const message = `${raw} ${formatModelErrorMessage(error)}`.toLowerCase();
   return (
+    errorName === "timeouterror" ||
     /524|502|503|504|429/.test(message) ||
     /rate_limit|concurrency limit|too many requests/.test(message) ||
     /html 错误页|html error/.test(message) ||

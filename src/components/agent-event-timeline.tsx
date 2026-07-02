@@ -614,6 +614,8 @@ type AgentEventTimelineProps = {
   showRestoreHint?: boolean;
   /** 点击带审批的活动行时，滚动定位到审查面板 */
   onFocusApproval?: (approvalId: string, filePath?: string) => void;
+  /** 点击已自动写入的文件时，打开右侧审查并定位文件 */
+  onFocusFileChange?: (filePath: string) => void;
   onApplyApproval?: (approvalId: string) => void;
   onRejectApproval?: (approvalId: string) => void;
   applyApprovalBusy?: boolean;
@@ -639,6 +641,7 @@ export function AgentEventTimeline({
   excludeEventTypes = [],
   showRestoreHint = false,
   onFocusApproval,
+  onFocusFileChange,
   onApplyApproval,
   onRejectApproval,
   applyApprovalBusy = false,
@@ -750,6 +753,7 @@ export function AgentEventTimeline({
                   isLatest={turnIndex === turns.length - 1}
                   running={running}
                   onReviewApproval={onFocusApproval}
+                  onReviewFileChange={onFocusFileChange}
                   onApplyApproval={onApplyApproval}
                   onRejectApproval={onRejectApproval}
                   applyApprovalBusy={applyApprovalBusy}

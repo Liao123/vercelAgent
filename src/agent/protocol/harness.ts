@@ -52,6 +52,7 @@ export const HARNESS_LOOP_EVENT_TYPES = [
   "approval.executed",
   "assistant.notice",
   "file.changed",
+  "turn.diff.updated",
   "kernel.bootstrap.validate",
   "kernel.bootstrap.restart",
   "verification.completed",

@@ -24,6 +24,18 @@ function eventTimestamp(event: AgentEvent): string | null {
   return null;
 }
 
+function isBackgroundWorkspaceInspect(event: AgentEvent): boolean {
+  if (event.type !== "tool.started" && event.type !== "tool.completed") {
+    return false;
+  }
+  return (
+    event.toolCall.toolName === "workspace.inspect" &&
+    (event.toolCall.rationale ?? "").includes(
+      "\u542f\u52a8\u65f6\u9884\u8f7d\u5de5\u4f5c\u533a\u7ed3\u6784\u4e8b\u5b9e",
+    )
+  );
+}
+
 /** A155：进度类 runtime 反思不单独占一步，避免时间线刷屏。 */
 export function isNoisyRuntimeReflection(reflection: AgentReflection): boolean {
   if (reflection.source !== "runtime") return false;
@@ -69,6 +81,10 @@ export function groupNarrativeIntoSteps(
   };
 
   for (const event of events) {
+    if (isBackgroundWorkspaceInspect(event)) {
+      continue;
+    }
+
     if (event.type === "guidance.received") {
       flush(event.at);
       current = {

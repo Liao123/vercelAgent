@@ -34,6 +34,12 @@ async function main(): Promise<void> {
     "triple review revert wiring",
   );
   assert.ok(
+    panel.includes("currentTurnFileChanges") &&
+      panel.includes("reviewDisplayFromTurnFileChanges") &&
+      reviewPanel.includes("directFileChanges"),
+    "triple review prioritizes current turn direct-write changes",
+  );
+  assert.ok(
     await fs
       .access(path.join(ROOT, "src/lib/workspace-revert-file.ts"))
       .then(() => true)
@@ -56,6 +62,12 @@ async function main(): Promise<void> {
   assert.ok(
     panel.includes("setRightRailTab(\"review\")"),
     "auto focus review tab",
+  );
+  assert.ok(
+    panel.includes("const openReviewPanel = useCallback") &&
+      panel.includes("onOpenReview={openReviewPanel}") &&
+      panel.includes("setReviewFileKey(reviewDisplay.files[0]?.fileKey ?? null)"),
+    "review click opens the review surface and selects a file",
   );
   assert.ok(
     rightRail.includes("pendingReviewCount") && rightRail.includes("showBadge"),
